@@ -109,13 +109,9 @@ function sampleTerrainY(t: TerrainGrid | null, x: number, z: number): number | n
   if (!Number.isFinite(u) || !Number.isFinite(v)) return null;
   if (u < 0 || u > 1 || v < 0 || v > 1) return null;
 
-  // Match the terrain mesh orientation (east/west flipped).
-  // Mirror, then flip: match the mesh transform (X mirror + Z flip).
-  const uFlip = 1 - u;
-  const vFlip = 1 - v;
-
-  const fx = uFlip * (w - 1);
-  const fz = vFlip * (h - 1);
+  // Terrain grid is aligned with world axes (east = +X, north = +Z).
+  const fx = u * (w - 1);
+  const fz = v * (h - 1);
   const x0 = Math.floor(fx);
   const z0 = Math.floor(fz);
   const x1 = Math.min(w - 1, x0 + 1);

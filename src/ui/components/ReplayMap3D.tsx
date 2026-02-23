@@ -730,12 +730,12 @@ export function ReplayMap3D(props: ReplayMap3DProps) {
       const waterY = 0;
       const cWater = new THREE.Color(0x0b3a66);
       for (let j = 0; j < h; j++) {
-        // Mirror, then flip: the exported grid orientation is mirrored along X (east/west)
-        // and also needs a Z flip (north/south) to match world X/Z.
-        const srcRow = (h - 1 - j);
+        const srcRow = j;
         const dstRow = j;
         for (let i = 0; i < w; i++) {
-          const srcIdx = (w - 1 - i) + w * srcRow;
+          // Terrain grid is already aligned with world axes:
+          // east = +X, north = +Z.
+          const srcIdx = i + w * srcRow;
           const dstIdx = i + w * dstRow;
           const hv = t.heights[srcIdx];
           pos.setY(dstIdx, hv);
