@@ -80,8 +80,12 @@ function withIngestLock(lockKey, fn) {
   const prev = ingestLocks.get(lockKey) || Promise.resolve();
   const next = prev.then(fn, fn);
   ingestLocks.set(lockKey, next);
+  // IMPORTANT: .finally() returns a new promise. If we drop it and `next` rejects,
+  // Node will treat that as an unhandled rejection and can crash the process.
   next.finally(() => {
     if (ingestLocks.get(lockKey) === next) ingestLocks.delete(lockKey);
+  }).catch(() => {
+    // ignore
   });
   return next;
 }
@@ -300,48 +304,6 @@ async function writeJsonAtomic(filePath, obj) {
         continue;
       }
 
-      // Town names cache: exporter can send a list of map name descriptors once per server restart.
-      if (normalizedPayload && normalizedPayload.type === 'towns') {
-        const ev = normalizedPayload.event && typeof normalizedPayload.event === 'object'
-          ? normalizedPayload.event
-          : null;
-
-        const wf = ev ? ev.worldFile : null;
-        const worldFile = typeof wf === 'string' ? wf : '';
-        const mapId = worldFile
-          ? crypto.createHash('sha256').update(worldFile, 'utf8').digest('hex').slice(0, 16)
-          : (typeof next.mapId === 'string' ? next.mapId : null);
-
-        if (mapId) {
-          next.mapId = mapId;
-          if (worldFile) next.mapWorldFile = worldFile;
-
-          await ensureDir(MAPS_DIR);
-          const townsPath = path.join(MAPS_DIR, `${mapId}.towns.json`);
-          const existing = await readJsonOrNull(townsPath);
-
-          const shouldWrite = !existing
-            || (existing && typeof existing === 'object' && worldFile && typeof existing.worldFile === 'string' && existing.worldFile !== worldFile);
-
-          if (shouldWrite) {
-            await writeJsonAtomic(townsPath, {
-              mapId,
-              worldFile,
-              createdAt: receivedAt,
-              updatedAt: receivedAt,
-              ...ev,
-            });
-          } else {
-            await writeJsonAtomic(townsPath, {
-              ...existing,
-              mapId,
-              worldFile: worldFile || (existing && existing.worldFile),
-              updatedAt: receivedAt,
-            });
-          }
-        }
-      }
-
       try {
         await fs.copyFile(tmp, filePath);
         await fs.unlink(tmp);
@@ -358,6 +320,60 @@ async function writeJsonAtomic(filePath, obj) {
       }
     }
   }
+}
+
+async function getOrInferServerMapId(safeId) {
+  const idxPath = path.join(DATA_DIR, 'servers', safeId, 'index.json');
+  const idx = await readJsonOrNull(idxPath);
+  const existingMapId = idx && typeof idx.mapId === 'string' ? idx.mapId : '';
+  if (existingMapId) return { mapId: existingMapId, idx };
+
+  const existingWorldFile = idx && typeof idx.mapWorldFile === 'string' ? idx.mapWorldFile : '';
+  if (existingWorldFile) {
+    const mapId = crypto.createHash('sha256').update(existingWorldFile, 'utf8').digest('hex').slice(0, 16);
+    const nextIdx = { ...(idx && typeof idx === 'object' ? idx : {}), id: safeId, mapId, mapWorldFile: existingWorldFile };
+    await writeJsonAtomic(idxPath, nextIdx);
+    return { mapId, idx: nextIdx };
+  }
+
+  // Fallback: pick the most recently updated cached map artifact.
+  // This is primarily to recover from a manual/dev clear that wiped index.json.
+  try {
+    await ensureDir(MAPS_DIR);
+    const entries = await fs.readdir(MAPS_DIR);
+    const candidates = entries
+      .filter((n) => n.endsWith('.descriptors.json') || n.endsWith('.towns.json') || n.endsWith('.terrain.json'))
+      .map((name) => ({ name, full: path.join(MAPS_DIR, name) }));
+
+    let best = null;
+    for (const c of candidates) {
+      try {
+        const st = await fs.stat(c.full);
+        const mtimeMs = st && typeof st.mtimeMs === 'number' ? st.mtimeMs : 0;
+        if (!best || mtimeMs > best.mtimeMs) best = { ...c, mtimeMs };
+      } catch {
+        // ignore
+      }
+    }
+
+    if (best) {
+      const mapId = String(best.name).split('.')[0];
+      const cached = await readJsonOrNull(best.full);
+      const worldFile = cached && typeof cached.worldFile === 'string' ? cached.worldFile : '';
+      const nextIdx = {
+        ...(idx && typeof idx === 'object' ? idx : {}),
+        id: safeId,
+        mapId,
+        ...(worldFile ? { mapWorldFile: worldFile } : {}),
+      };
+      await writeJsonAtomic(idxPath, nextIdx);
+      return { mapId, idx: nextIdx };
+    }
+  } catch {
+    // ignore
+  }
+
+  return { mapId: '', idx: idx || null };
 }
 
 async function readNdjsonWindow(filePath, opts) {
@@ -418,8 +434,36 @@ async function compactNdjsonToRetention(filePath, cutoffTsMs) {
   await ensureDir(dir);
   const tmp = `${filePath}.tmp-${crypto.randomBytes(6).toString('hex')}`;
 
+  const replaceFileWithRetries = async (tmpPath, destPath) => {
+    const maxAttempts = 10;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        await fs.rename(tmpPath, destPath);
+        return;
+      } catch (err) {
+        const code = err && typeof err === 'object' ? err.code : null;
+        if ((code === 'EPERM' || code === 'EACCES') && attempt < maxAttempts) {
+          await sleep(30 * attempt);
+          continue;
+        }
+
+        try {
+          await fs.copyFile(tmpPath, destPath);
+          await fs.unlink(tmpPath);
+          return;
+        } catch {
+          const text = await fs.readFile(tmpPath, 'utf8');
+          await fs.writeFile(destPath, text, 'utf8');
+          try { await fs.unlink(tmpPath); } catch { /* ignore */ }
+          return;
+        }
+      }
+    }
+  };
+
+  const input = createReadStream(filePath, { encoding: 'utf8' });
   const rl = readline.createInterface({
-    input: createReadStream(filePath, { encoding: 'utf8' }),
+    input,
     crlfDelay: Infinity,
   });
 
@@ -452,10 +496,19 @@ async function compactNdjsonToRetention(filePath, cutoffTsMs) {
       await outHandle.write(`${JSON.stringify(obj)}\n`);
     }
   } finally {
+    try { rl.close(); } catch { /* ignore */ }
+    try { input.destroy(); } catch { /* ignore */ }
+    // Best-effort wait for the file handle to be released (Windows rename needs it).
+    await new Promise((resolve) => {
+      if (input.destroyed || input.closed) return resolve();
+      const done = () => resolve();
+      input.once('close', done);
+      input.once('error', done);
+    });
     await outHandle.close();
   }
 
-  await fs.rename(tmp, filePath);
+  await replaceFileWithRetries(tmp, filePath);
   return { kept, dropped, minTsMs };
 }
 
@@ -604,9 +657,7 @@ app.get('/api/replay/mapTerrain', requireAuth, requireTool('replay'), asyncRoute
   }
 
   const safeId = sanitizeServerId(serverId);
-  const idxPath = path.join(DATA_DIR, 'servers', safeId, 'index.json');
-  const idx = await readJsonOrNull(idxPath);
-  const mapId = idx && typeof idx.mapId === 'string' ? idx.mapId : '';
+  const { mapId } = await getOrInferServerMapId(safeId);
 
   if (!mapId) {
     res.status(404).send('No mapId for server');
@@ -631,9 +682,7 @@ app.get('/api/replay/mapTowns', requireAuth, requireTool('replay'), asyncRoute(a
   }
 
   const safeId = sanitizeServerId(serverId);
-  const idxPath = path.join(DATA_DIR, 'servers', safeId, 'index.json');
-  const idx = await readJsonOrNull(idxPath);
-  const mapId = idx && typeof idx.mapId === 'string' ? idx.mapId : '';
+  const { mapId } = await getOrInferServerMapId(safeId);
 
   if (!mapId) {
     res.status(404).send('No mapId for server');
@@ -648,6 +697,39 @@ app.get('/api/replay/mapTowns', requireAuth, requireTool('replay'), asyncRoute(a
   }
 
   res.json(towns);
+}));
+
+app.get('/api/replay/mapDescriptors', requireAuth, requireTool('replay'), asyncRoute(async (req, res) => {
+  const serverId = String(req.query.serverId || '');
+  if (!serverId) {
+    res.status(400).send('Missing serverId');
+    return;
+  }
+
+  const safeId = sanitizeServerId(serverId);
+  const { mapId } = await getOrInferServerMapId(safeId);
+
+  if (!mapId) {
+    res.status(404).send('No mapId for server');
+    return;
+  }
+
+  const descriptorsPath = path.join(MAPS_DIR, `${mapId}.descriptors.json`);
+  const descriptors = await readJsonOrNull(descriptorsPath);
+  if (descriptors) {
+    res.json(descriptors);
+    return;
+  }
+
+  // Back-compat: older exporters only send `towns`.
+  const townsPath = path.join(MAPS_DIR, `${mapId}.towns.json`);
+  const towns = await readJsonOrNull(townsPath);
+  if (towns) {
+    res.json(towns);
+    return;
+  }
+
+  res.status(404).send('No descriptors cached for map');
 }));
 
 app.get('/api/replay/range', requireAuth, requireTool('replay'), asyncRoute(async (req, res) => {
@@ -910,13 +992,52 @@ app.post('/api/dev/servers/clear', requireAuth, requireTool('dev'), asyncRoute(a
   // Preserve name/id if present.
   const idx = (await readJsonOrNull(idxPath)) || {};
   const keepName = typeof idx.name === 'string' ? idx.name : safeId;
+  const keepMapId = typeof idx.mapId === 'string' ? idx.mapId : '';
+  const keepMapWorldFile = typeof idx.mapWorldFile === 'string' ? idx.mapWorldFile : '';
 
   try { await fs.unlink(eventsPath); } catch { /* ignore */ }
   try { await fs.unlink(snapPath); } catch { /* ignore */ }
 
-  const nextIdx = { id: safeId, name: keepName, clearedAt: Date.now() };
+  const nextIdx = {
+    id: safeId,
+    name: keepName,
+    clearedAt: Date.now(),
+    // Keep map identity so map endpoints don't 404 after a clear.
+    ...(keepMapId ? { mapId: keepMapId } : {}),
+    ...(keepMapWorldFile ? { mapWorldFile: keepMapWorldFile } : {}),
+  };
   await writeJsonAtomic(idxPath, nextIdx);
 
+  res.json({ ok: true });
+}));
+
+app.post('/api/dev/servers/regenerateTerrain', requireAuth, requireTool('dev'), asyncRoute(async (req, res) => {
+  const serverId = String(req.query.serverId || '');
+  if (!serverId) {
+    res.status(400).send('Missing serverId');
+    return;
+  }
+
+  const safeId = sanitizeServerId(serverId);
+  const serverDir = path.join(DATA_DIR, 'servers', safeId);
+  await ensureDir(serverDir);
+
+  const idxPath = path.join(serverDir, 'index.json');
+  const idx = (await readJsonOrNull(idxPath)) || {};
+  const prevPending = (idx.pendingCommands && typeof idx.pendingCommands === 'object' && !Array.isArray(idx.pendingCommands))
+    ? idx.pendingCommands
+    : {};
+
+  const nextIdx = {
+    ...idx,
+    id: safeId,
+    pendingCommands: {
+      ...prevPending,
+      regenTerrain: Date.now(),
+    },
+  };
+
+  await writeJsonAtomic(idxPath, nextIdx);
   res.json({ ok: true });
 }));
 
@@ -943,6 +1064,8 @@ app.post('/api/replay/ingest', async (req, res) => {
       res.status(401).send('Invalid serverKey');
       return;
     }
+
+    let commandsToSend = null;
 
     await withIngestLock(safeId, async () => {
       const receivedAt = Date.now();
@@ -1105,8 +1228,102 @@ app.post('/api/replay/ingest', async (req, res) => {
         }
       }
 
+      // Town names cache: exporter can send a list of map name descriptors once per server restart.
+      if (normalizedPayload && normalizedPayload.type === 'towns') {
+        const ev = normalizedPayload.event && typeof normalizedPayload.event === 'object'
+          ? normalizedPayload.event
+          : null;
+
+        const wf = ev ? ev.worldFile : null;
+        const worldFile = typeof wf === 'string' ? wf : '';
+        const mapId = worldFile
+          ? crypto.createHash('sha256').update(worldFile, 'utf8').digest('hex').slice(0, 16)
+          : (typeof next.mapId === 'string' ? next.mapId : null);
+
+        if (mapId) {
+          next.mapId = mapId;
+          if (worldFile) next.mapWorldFile = worldFile;
+
+          await ensureDir(MAPS_DIR);
+          const townsPath = path.join(MAPS_DIR, `${mapId}.towns.json`);
+          const existing = await readJsonOrNull(townsPath);
+
+          const shouldWrite = !existing
+            || (existing && typeof existing === 'object' && worldFile && typeof existing.worldFile === 'string' && existing.worldFile !== worldFile);
+
+          if (shouldWrite) {
+            await writeJsonAtomic(townsPath, {
+              mapId,
+              worldFile,
+              createdAt: receivedAt,
+              updatedAt: receivedAt,
+              ...ev,
+            });
+          } else {
+            await writeJsonAtomic(townsPath, {
+              ...existing,
+              mapId,
+              worldFile: worldFile || (existing && existing.worldFile),
+              updatedAt: receivedAt,
+            });
+          }
+        }
+      }
+
+      // Full map descriptors cache (optional; newer exporters).
+      if (normalizedPayload && normalizedPayload.type === 'descriptors') {
+        const ev = normalizedPayload.event && typeof normalizedPayload.event === 'object'
+          ? normalizedPayload.event
+          : null;
+
+        const wf = ev ? ev.worldFile : null;
+        const worldFile = typeof wf === 'string' ? wf : '';
+        const mapId = worldFile
+          ? crypto.createHash('sha256').update(worldFile, 'utf8').digest('hex').slice(0, 16)
+          : (typeof next.mapId === 'string' ? next.mapId : null);
+
+        if (mapId) {
+          next.mapId = mapId;
+          if (worldFile) next.mapWorldFile = worldFile;
+
+          await ensureDir(MAPS_DIR);
+          const descriptorsPath = path.join(MAPS_DIR, `${mapId}.descriptors.json`);
+          const existing = await readJsonOrNull(descriptorsPath);
+
+          const shouldWrite = !existing
+            || (existing && typeof existing === 'object' && worldFile && typeof existing.worldFile === 'string' && existing.worldFile !== worldFile);
+
+          if (shouldWrite) {
+            await writeJsonAtomic(descriptorsPath, {
+              mapId,
+              worldFile,
+              createdAt: receivedAt,
+              updatedAt: receivedAt,
+              ...ev,
+            });
+          } else {
+            await writeJsonAtomic(descriptorsPath, {
+              ...existing,
+              mapId,
+              worldFile: worldFile || (existing && existing.worldFile),
+              updatedAt: receivedAt,
+            });
+          }
+        }
+      }
+
       // Enforce 24h rolling buffer.
       next = await maybeCompactServerEvents(serverDir, next, tsMs);
+
+      // If a dev/user queued commands, pass them to the exporter via the ingest response.
+      // Clear them once returned so the request is one-shot.
+      const pending = (next.pendingCommands && typeof next.pendingCommands === 'object' && !Array.isArray(next.pendingCommands))
+        ? next.pendingCommands
+        : null;
+      if (pending && Object.keys(pending).length > 0) {
+        commandsToSend = pending;
+        next = { ...next, pendingCommands: {} };
+      }
 
       await writeJsonAtomic(idxPath, next);
 
@@ -1120,7 +1337,7 @@ app.post('/api/replay/ingest', async (req, res) => {
       }
     });
 
-    res.json({ ok: true });
+    res.json(commandsToSend ? { ok: true, commands: commandsToSend } : { ok: true });
   } catch (err) {
     // eslint-disable-next-line no-console
     console.error('[reforgedz] ingest error', err);
@@ -1138,11 +1355,21 @@ app.get('*', (req, res, next) => {
   res.sendFile(path.join(distDir, 'index.html'));
 });
 
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   // eslint-disable-next-line no-console
   console.log(`[reforgedz] admin server listening on :${PORT}`);
   // eslint-disable-next-line no-console
   console.log(`[reforgedz] ingest keys loaded: ${ingestKeyMap.size}`);
+});
+
+server.on('error', (err) => {
+  if (err && typeof err === 'object' && err.code === 'EADDRINUSE') {
+    // eslint-disable-next-line no-console
+    console.error(`[reforgedz] port ${PORT} is already in use. Stop the existing server or set PORT to a free port.`);
+    process.exit(1);
+  }
+  // Re-throw unknown errors so they fail loudly during development.
+  throw err;
 });
 
 app.use((err, req, res, next) => {

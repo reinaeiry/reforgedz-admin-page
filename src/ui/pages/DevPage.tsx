@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { addDevServer, clearServerHistory, listDevServers, type DevServerInfo } from '../../util/api';
+import { addDevServer, clearServerHistory, listDevServers, regenerateTerrainData, type DevServerInfo } from '../../util/api';
 
 export function DevPage() {
   const [error, setError] = useState<string | null>(null);
@@ -136,6 +136,26 @@ export function DevPage() {
                       }}
                     >
                       Clear history
+                    </button>
+
+                    <button
+                      className="button"
+                      disabled={busy}
+                      onClick={async () => {
+                        if (!confirm(`Regenerate terrain data for '${s.id}'? This queues a command for the exporter to re-send map terrain.`)) return;
+                        setBusy(true);
+                        setError(null);
+                        try {
+                          await regenerateTerrainData(s.id);
+                          await refresh();
+                        } catch (e) {
+                          setError(e instanceof Error ? e.message : 'Failed to regenerate terrain');
+                        } finally {
+                          setBusy(false);
+                        }
+                      }}
+                    >
+                      Regenerate terrain data
                     </button>
                   </div>
                 </div>

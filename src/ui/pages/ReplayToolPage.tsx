@@ -3,13 +3,13 @@ import { useLocation } from 'react-router-dom';
 import {
   getReplayEvents,
   getReplayMapTerrain,
-  getReplayMapTowns,
+  getReplayMapDescriptors,
   getReplayRange,
   listReplayPlayers,
   listServers,
   type IngestRecord,
+  type MapDescriptors,
   type MapTerrain,
-  type MapTowns,
   type ReplayPlayer,
   type ServerInfo,
 } from '../../util/api';
@@ -64,16 +64,20 @@ function coerceTerrainGrid(t: MapTerrain | null): TerrainGrid | null {
   return null;
 }
 
-function coerceTownLabels(t: MapTowns | null): TownLabel[] | null {
+function coerceTownLabels(t: MapDescriptors | null): TownLabel[] | null {
   if (!t) return null;
-  const items = Array.isArray((t as any).towns) ? ((t as any).towns as any[]) : [];
+  const items = Array.isArray((t as any).descriptors)
+    ? ((t as any).descriptors as any[])
+    : (Array.isArray((t as any).towns) ? ((t as any).towns as any[]) : []);
   if (items.length === 0) return null;
 
   const out: TownLabel[] = [];
   for (const it of items) {
     if (!it) continue;
-    const name = typeof it.name === 'string' ? it.name.trim() : '';
-    if (!name) continue;
+    const rawName = typeof it.name === 'string' ? it.name.trim() : '';
+    const rawType = typeof it.type === 'string' ? it.type.trim() : '';
+    const baseType = typeof it.baseType === 'number' ? it.baseType : null;
+    const name = rawName || rawType || (baseType !== null ? `type:${baseType}` : 'descriptor');
     const pos = coerceVec3(it.pos);
     if (!pos) continue;
     out.push({ name, pos });
@@ -105,8 +109,13 @@ function sampleTerrainY(t: TerrainGrid | null, x: number, z: number): number | n
   if (!Number.isFinite(u) || !Number.isFinite(v)) return null;
   if (u < 0 || u > 1 || v < 0 || v > 1) return null;
 
-  const fx = u * (w - 1);
-  const fz = v * (h - 1);
+  // Match the terrain mesh orientation (east/west flipped).
+  // Mirror, then flip: match the mesh transform (X mirror + Z flip).
+  const uFlip = 1 - u;
+  const vFlip = 1 - v;
+
+  const fx = uFlip * (w - 1);
+  const fz = vFlip * (h - 1);
   const x0 = Math.floor(fx);
   const z0 = Math.floor(fz);
   const x1 = Math.min(w - 1, x0 + 1);
@@ -196,7 +205,7 @@ export function ReplayToolPage() {
   const [showEventTimeline, setShowEventTimeline] = useState(true);
   const [hoveredEventDot, setHoveredEventDot] = useState<null | {
     tsMs: number;
-    type: 'kill' | 'join' | 'disconnect' | 'restart';
+    type: 'kill' | 'death' | 'aiKill' | 'join' | 'disconnect' | 'restart';
     title: string;
     subtitle: string;
     leftPct: number;
@@ -288,7 +297,7 @@ export function ReplayToolPage() {
           getReplayRange(serverIdValue),
           listReplayPlayers(serverIdValue),
           getReplayMapTerrain(serverIdValue).catch(() => null as MapTerrain | null),
-          getReplayMapTowns(serverIdValue).catch(() => null as MapTowns | null),
+          getReplayMapDescriptors(serverIdValue).catch(() => null as MapDescriptors | null),
         ]);
         if (cancelled) {
           return;
@@ -372,13 +381,13 @@ export function ReplayToolPage() {
 
     const hasSignal = events.some((rec) => {
       const p: any = rec.payload;
-      return p && (p.type === 'map' || p.type === 'terrain' || p.type === 'towns');
+      return p && (p.type === 'map' || p.type === 'terrain' || p.type === 'towns' || p.type === 'descriptors');
     });
     if (!hasSignal) return;
 
     let cancelled = false;
     townsFetchInFlightRef.current = true;
-    getReplayMapTowns(serverId)
+    getReplayMapDescriptors(serverId)
       .then((t) => {
         if (cancelled) return;
         const townLabels = coerceTownLabels(t);
@@ -500,7 +509,7 @@ export function ReplayToolPage() {
             });
 
           townsFetchInFlightRef.current = false;
-          getReplayMapTowns(serverIdValue)
+          getReplayMapDescriptors(serverIdValue)
             .then((t) => {
               if (cancelled) return;
               const townLabels = coerceTownLabels(t);
@@ -622,13 +631,13 @@ export function ReplayToolPage() {
   }, [events]);
 
   const deadUntilByPlayerId = useMemo(() => {
-    // Best-effort: mark victims as "dead" for a short window after a kill event.
+    // Best-effort: mark victims as "dead" for a short window after a death event.
     // (We don't currently receive an explicit respawn event.)
     const map = new Map<number, number>();
     for (const e of events) {
       const p: any = e.payload;
       if (!p || typeof p !== 'object') continue;
-      if (p.type !== 'kill') continue;
+      if (p.type !== 'kill' && p.type !== 'death') continue;
       if (typeof p.tsMs !== 'number') continue;
       const ev: any = (p as any).event;
       const victimId = ev && typeof ev.victimPlayerId === 'number' ? ev.victimPlayerId : null;
@@ -682,13 +691,20 @@ export function ReplayToolPage() {
       const pos = coerceVec3((pj as any).pos);
       if (!pos) continue;
 
+      const inVehicle = !!(pj as any).inVehicle;
+
       const terrainY = sampleTerrainY(terrain, pos.x, pos.z);
-      const snappedPos = (typeof terrainY === 'number' && Number.isFinite(terrainY))
-        ? { ...pos, y: terrainY + 0.35 }
-        : pos;
+
+      // Only snap to terrain when we're plausibly on-foot near the ground.
+      // This keeps markers consistent with trails and avoids "ground-snapping" helicopters/vehicles.
+      const shouldSnapToTerrain = !inVehicle
+        && (typeof terrainY === 'number' && Number.isFinite(terrainY))
+        && (typeof pos.y === 'number' && Number.isFinite(pos.y))
+        && Math.abs(pos.y - terrainY) <= 3.5;
+
+      const snappedPos = shouldSnapToTerrain ? { ...pos, y: terrainY + 0.35 } : pos;
 
       const aimDir = coerceVec3((pj as any).aimDir);
-      const inVehicle = !!(pj as any).inVehicle;
       const vehicleName = (pj as any).vehicle && typeof (pj as any).vehicle.name === 'string' ? String((pj as any).vehicle.name) : '';
 
       const snapTsMs = snap.tsMs;
@@ -727,6 +743,8 @@ export function ReplayToolPage() {
       const pj = s.players.find((p) => p && typeof p === 'object' && (p as any).playerId === selectedPlayerId);
       if (!pj) continue;
 
+      const inVehicle = !!(pj as any).inVehicle;
+
       const entityId = (pj as any).entityId;
       const ent = typeof entityId === 'string' && entityId.length > 0 ? entityId : null;
       if (ent && lastEntityId && ent !== lastEntityId) {
@@ -738,7 +756,15 @@ export function ReplayToolPage() {
 
       const pos = coerceVec3((pj as any).pos);
       if (!pos) continue;
-      pts.push(pos);
+
+      const terrainY = sampleTerrainY(terrain, pos.x, pos.z);
+      const shouldSnapToTerrain = !inVehicle
+        && (typeof terrainY === 'number' && Number.isFinite(terrainY))
+        && (typeof pos.y === 'number' && Number.isFinite(pos.y))
+        && Math.abs(pos.y - terrainY) <= 3.5;
+
+      // Keep trail close to terrain when on-foot; renderer adds a small +Y lift.
+      pts.push(shouldSnapToTerrain ? { ...pos, y: terrainY } : pos);
     }
 
     if (pts.length < 2) return null;
@@ -750,7 +776,7 @@ export function ReplayToolPage() {
       return { points: down };
     }
     return { points: pts };
-  }, [currentTsMs, enableTrails, selectedPlayerId, snapshots, trailSeconds]);
+  }, [currentTsMs, enableTrails, selectedPlayerId, snapshots, terrain, trailSeconds]);
 
   const visibleDeathMarkers = useMemo(() => {
     if (!showDeathMarkers) return [] as Array<{ x: number; y: number; z: number }>;
@@ -761,7 +787,7 @@ export function ReplayToolPage() {
     for (const e of events) {
       const p: any = e.payload;
       if (!p || typeof p !== 'object') continue;
-      if (p.type !== 'kill') continue;
+      if (p.type !== 'kill' && p.type !== 'death') continue;
       if (typeof p.tsMs !== 'number') continue;
       if (t < p.tsMs || t > p.tsMs + 5000) continue;
 
@@ -833,7 +859,9 @@ export function ReplayToolPage() {
     const pid = typeof raw.playerId === 'number' ? raw.playerId : null;
     if (pid === null) return raw;
 
-    const ttlMs = 10_000;
+    // Exporter samples inventory/hotbar on a 10s cadence. Keep a small grace window
+    // so minor jitter/scrub offsets don't cause flicker.
+    const ttlMs = 12_000;
     const cache = equipmentCacheRef.current.get(pid) || {
       invTsMs: -1,
       hotbarTsMs: -1,
@@ -841,13 +869,15 @@ export function ReplayToolPage() {
     };
 
     const rawInv = raw.inventory;
-    if (Array.isArray(rawInv) && rawInv.length > 0) {
+    // Treat an empty array as a real update (player can have empty inventory).
+    // Only use the cache when the field is missing from the snapshot.
+    if (Array.isArray(rawInv)) {
       cache.inventory = rawInv;
       cache.invTsMs = t;
     }
 
     const rawHotbar = raw.attachments;
-    if (Array.isArray(rawHotbar) && rawHotbar.length > 0) {
+    if (Array.isArray(rawHotbar)) {
       cache.attachments = rawHotbar;
       cache.hotbarTsMs = t;
     }
@@ -860,12 +890,12 @@ export function ReplayToolPage() {
 
     equipmentCacheRef.current.set(pid, cache);
 
-    const invIsEmptySignal = !Array.isArray(rawInv) || rawInv.length === 0;
-    const hotbarIsEmptySignal = !Array.isArray(rawHotbar) || rawHotbar.length === 0;
+    const invIsMissingSignal = !Array.isArray(rawInv);
+    const hotbarIsMissingSignal = !Array.isArray(rawHotbar);
     const weaponIsEmptySignal = !rawWeapon || !rawWeapon.name;
 
-    const useCachedInv = !!cache.inventory && (t - cache.invTsMs) <= ttlMs && invIsEmptySignal;
-    const useCachedHotbar = !!cache.attachments && (t - cache.hotbarTsMs) <= ttlMs && hotbarIsEmptySignal;
+    const useCachedInv = ('inventory' in cache) && (t - cache.invTsMs) <= ttlMs && invIsMissingSignal;
+    const useCachedHotbar = ('attachments' in cache) && (t - cache.hotbarTsMs) <= ttlMs && hotbarIsMissingSignal;
     const useCachedWeapon = !!cache.weapon && (t - cache.weaponTsMs) <= ttlMs && weaponIsEmptySignal;
 
     return {
@@ -891,7 +921,7 @@ export function ReplayToolPage() {
       if (!p || typeof p !== 'object') continue;
       if (typeof p.tsMs !== 'number') continue;
       if (p.type === 'snapshot') continue;
-      if (p.type !== 'kill' && p.type !== 'join' && p.type !== 'disconnect' && p.type !== 'restart') continue;
+      if (p.type !== 'kill' && p.type !== 'death' && p.type !== 'aiKill' && p.type !== 'join' && p.type !== 'disconnect' && p.type !== 'restart') continue;
 
       const ev: any = (p as any).event;
 
@@ -915,6 +945,52 @@ export function ReplayToolPage() {
           subtitle: subtitleParts.join(' • '),
           focusPos: victimPos,
           focusPlayerId: victimId,
+        });
+      } else if (p.type === 'death') {
+        // If this death is attributable to another player, it will also have a corresponding `kill` event.
+        // Avoid double-reporting in the timeline by skipping those.
+        const victimId = ev && typeof ev.victimPlayerId === 'number' ? ev.victimPlayerId : null;
+        const killerId = ev && typeof ev.killerPlayerId === 'number' ? ev.killerPlayerId : null;
+        if (victimId !== null && killerId !== null && killerId >= 0 && killerId !== victimId) continue;
+
+        const victimName = ev && typeof ev.victimName === 'string' ? ev.victimName : 'Unknown';
+        const weaponName = ev && typeof ev.weaponName === 'string' ? ev.weaponName : '';
+        const distanceM = ev && typeof ev.distanceM === 'number' ? ev.distanceM : null;
+        const distText = (typeof distanceM === 'number' && Number.isFinite(distanceM)) ? `${Math.round(distanceM)}m` : '';
+        const victimPos = ev ? coerceVec3(ev.victimPos) : null;
+
+        const subtitleParts = [] as string[];
+        if (weaponName) subtitleParts.push(weaponName);
+        if (distText) subtitleParts.push(distText);
+
+        out.push({
+          tsMs: p.tsMs,
+          type: 'death',
+          title: `${victimName} died`,
+          subtitle: subtitleParts.join(' • '),
+          focusPos: victimPos,
+          focusPlayerId: victimId,
+        });
+      } else if (p.type === 'aiKill') {
+        const killerName = ev && typeof ev.killerName === 'string' ? ev.killerName : 'Unknown';
+        const victimName = ev && typeof ev.victimName === 'string' ? ev.victimName : 'Unknown';
+        const weaponName = ev && typeof ev.weaponName === 'string' ? ev.weaponName : '';
+        const distanceM = ev && typeof ev.distanceM === 'number' ? ev.distanceM : null;
+        const distText = (typeof distanceM === 'number' && Number.isFinite(distanceM)) ? `${Math.round(distanceM)}m` : '';
+        const victimPos = ev ? coerceVec3(ev.victimPos) : null;
+        const killerId = ev && typeof ev.killerPlayerId === 'number' ? ev.killerPlayerId : null;
+
+        const subtitleParts = [] as string[];
+        if (weaponName) subtitleParts.push(weaponName);
+        if (distText) subtitleParts.push(distText);
+
+        out.push({
+          tsMs: p.tsMs,
+          type: 'aiKill',
+          title: `${killerName} → AI: ${victimName}`,
+          subtitle: subtitleParts.join(' • '),
+          focusPos: victimPos,
+          focusPlayerId: killerId,
         });
       } else {
         if (p.type === 'restart') {
@@ -966,7 +1042,7 @@ export function ReplayToolPage() {
     const max = range.maxTsMs;
     if (typeof min !== 'number' || typeof max !== 'number') return [] as Array<{
       tsMs: number;
-      type: 'kill' | 'join' | 'disconnect' | 'restart';
+      type: 'kill' | 'death' | 'aiKill' | 'join' | 'disconnect' | 'restart';
       title: string;
       subtitle: string;
       focusPos: { x: number; y: number; z: number } | null;
@@ -975,7 +1051,7 @@ export function ReplayToolPage() {
 
     const out: Array<{
       tsMs: number;
-      type: 'kill' | 'join' | 'disconnect' | 'restart';
+      type: 'kill' | 'death' | 'aiKill' | 'join' | 'disconnect' | 'restart';
       title: string;
       subtitle: string;
       focusPos: { x: number; y: number; z: number } | null;
@@ -985,7 +1061,7 @@ export function ReplayToolPage() {
     for (const rec of events) {
       const p: any = (rec as any).payload;
       if (!p || typeof p !== 'object') continue;
-      if (p.type !== 'kill' && p.type !== 'join' && p.type !== 'disconnect' && p.type !== 'restart') continue;
+      if (p.type !== 'kill' && p.type !== 'death' && p.type !== 'aiKill' && p.type !== 'join' && p.type !== 'disconnect' && p.type !== 'restart') continue;
       if (typeof p.tsMs !== 'number') continue;
       if (p.tsMs < min || p.tsMs > max) continue;
 
@@ -1008,6 +1084,47 @@ export function ReplayToolPage() {
           subtitle: subtitleParts.join(' • '),
           focusPos: victimPos,
           focusPlayerId: victimId,
+        });
+      } else if (p.type === 'death') {
+        // Avoid double-reporting attributed kills.
+        const victimId = ev && typeof ev.victimPlayerId === 'number' ? ev.victimPlayerId : null;
+        const killerId = ev && typeof ev.killerPlayerId === 'number' ? ev.killerPlayerId : null;
+        if (victimId !== null && killerId !== null && killerId >= 0 && killerId !== victimId) continue;
+
+        const victimName = ev && typeof ev.victimName === 'string' ? ev.victimName : 'Unknown';
+        const weaponName = ev && typeof ev.weaponName === 'string' ? ev.weaponName : '';
+        const distanceM = ev && typeof ev.distanceM === 'number' ? ev.distanceM : null;
+        const distText = (typeof distanceM === 'number' && Number.isFinite(distanceM)) ? `${Math.round(distanceM)}m` : '';
+        const victimPos = ev ? coerceVec3(ev.victimPos) : null;
+        const subtitleParts = [] as string[];
+        if (weaponName) subtitleParts.push(weaponName);
+        if (distText) subtitleParts.push(distText);
+        out.push({
+          tsMs: p.tsMs,
+          type: 'death',
+          title: `${victimName} died`,
+          subtitle: subtitleParts.join(' • '),
+          focusPos: victimPos,
+          focusPlayerId: victimId,
+        });
+      } else if (p.type === 'aiKill') {
+        const killerName = ev && typeof ev.killerName === 'string' ? ev.killerName : 'Unknown';
+        const victimName = ev && typeof ev.victimName === 'string' ? ev.victimName : 'Unknown';
+        const weaponName = ev && typeof ev.weaponName === 'string' ? ev.weaponName : '';
+        const distanceM = ev && typeof ev.distanceM === 'number' ? ev.distanceM : null;
+        const distText = (typeof distanceM === 'number' && Number.isFinite(distanceM)) ? `${Math.round(distanceM)}m` : '';
+        const victimPos = ev ? coerceVec3(ev.victimPos) : null;
+        const killerId = ev && typeof ev.killerPlayerId === 'number' ? ev.killerPlayerId : null;
+        const subtitleParts = [] as string[];
+        if (weaponName) subtitleParts.push(weaponName);
+        if (distText) subtitleParts.push(distText);
+        out.push({
+          tsMs: p.tsMs,
+          type: 'aiKill',
+          title: `${killerName} → AI: ${victimName}`,
+          subtitle: subtitleParts.join(' • '),
+          focusPos: victimPos,
+          focusPlayerId: killerId,
         });
       } else if (p.type === 'restart') {
         out.push({
@@ -1101,6 +1218,43 @@ export function ReplayToolPage() {
           kind: 'kill',
           title: `${killerName} → ${victimName}`,
           subtitle: subtitleParts.length > 0 ? subtitleParts.join(' • ') : 'Kill',
+        });
+      } else if (p.type === 'death') {
+        const ev: any = (p as any).event;
+        const victimId = ev && typeof ev.victimPlayerId === 'number' ? ev.victimPlayerId : null;
+        const killerId = ev && typeof ev.killerPlayerId === 'number' ? ev.killerPlayerId : null;
+        if (victimId !== null && killerId !== null && killerId >= 0 && killerId !== victimId) continue;
+
+        const victimName = ev && typeof ev.victimName === 'string' ? ev.victimName : 'Unknown';
+        const weaponName = ev && typeof ev.weaponName === 'string' && ev.weaponName.length > 0 ? ev.weaponName : '';
+        const distanceM = ev && typeof ev.distanceM === 'number' ? ev.distanceM : null;
+        const distText = (typeof distanceM === 'number' && Number.isFinite(distanceM)) ? `${Math.round(distanceM)}m` : '';
+
+        const subtitleParts = [] as string[];
+        if (weaponName) subtitleParts.push(weaponName);
+        if (distText) subtitleParts.push(distText);
+
+        pushToast({
+          kind: 'event',
+          title: `${victimName} died`,
+          subtitle: subtitleParts.length > 0 ? subtitleParts.join(' • ') : 'Death',
+        });
+      } else if (p.type === 'aiKill') {
+        const ev: any = (p as any).event;
+        const killerName = ev && typeof ev.killerName === 'string' ? ev.killerName : 'Unknown';
+        const victimName = ev && typeof ev.victimName === 'string' ? ev.victimName : 'Unknown';
+        const weaponName = ev && typeof ev.weaponName === 'string' && ev.weaponName.length > 0 ? ev.weaponName : '';
+        const distanceM = ev && typeof ev.distanceM === 'number' ? ev.distanceM : null;
+        const distText = (typeof distanceM === 'number' && Number.isFinite(distanceM)) ? `${Math.round(distanceM)}m` : '';
+
+        const subtitleParts = [] as string[];
+        if (weaponName) subtitleParts.push(weaponName);
+        if (distText) subtitleParts.push(distText);
+
+        pushToast({
+          kind: 'kill',
+          title: `${killerName} → AI: ${victimName}`,
+          subtitle: subtitleParts.length > 0 ? subtitleParts.join(' • ') : 'AI kill',
         });
       }
     }
@@ -1578,7 +1732,7 @@ export function ReplayToolPage() {
                         return eventDots.map((ev, idx) => {
                           const pct = (ev.tsMs - min) / span;
                           const leftPct = Math.min(1, Math.max(0, pct)) * 100;
-                          const baseColor = ev.type === 'kill'
+                          const baseColor = (ev.type === 'kill' || ev.type === 'death' || ev.type === 'aiKill')
                             ? 'rgba(255,74,74,0.95)'
                             : ev.type === 'restart'
                               ? 'rgba(255,217,102,0.95)'

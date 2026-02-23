@@ -219,7 +219,7 @@ export function ReplayMap3D(props: ReplayMap3DProps) {
     let waterMesh: THREE.Mesh | null = null;
     let lastTerrainKey = '';
 
-    let lastTownsKey = '';
+    let lastTownsRef: TownLabel[] | null = null;
 
     function disposeSprite(sp: THREE.Sprite) {
       const mat = sp.material as THREE.SpriteMaterial;
@@ -229,9 +229,8 @@ export function ReplayMap3D(props: ReplayMap3DProps) {
 
     function updateTowns() {
       const towns = townsRef.current;
-      const key = `${towns.length}|${towns.map((t) => t.name).join('|')}`;
-      if (key === lastTownsKey) return;
-      lastTownsKey = key;
+      if (towns === lastTownsRef) return;
+      lastTownsRef = towns;
 
       // Clear existing
       for (const sp of townSprites.values()) {
@@ -242,15 +241,38 @@ export function ReplayMap3D(props: ReplayMap3DProps) {
 
       if (!towns || towns.length === 0) return;
 
+      const townTagOpts: NameTagOptions = { enabled: true, scale: 2.8, background: false };
+
+      const isFallbackTypeLabel = (name: string) => /^type:\s*\d+\s*$/i.test(name.trim());
+
+      const cleanPlaceName = (name: string) => {
+        let s = (name || '').trim();
+        s = s.replace(/^#AR-MapLocation_/i, '');
+        s = s.replace(/_/g, ' ').trim();
+        return s;
+      };
+
       for (const t of towns) {
         if (!t || typeof t.name !== 'string' || !t.name) continue;
+        const label = cleanPlaceName(t.name);
+        if (!label) continue;
+        if (isFallbackTypeLabel(label)) continue;
         const p = t.pos;
         if (!p || !Number.isFinite(p.x) || !Number.isFinite(p.y) || !Number.isFinite(p.z)) continue;
 
-        const sp = makeLabelSprite(t.name, { enabled: true, scale: 0.85, background: false });
-        sp.position.set(p.x, p.y + 0.9, p.z);
+        const sp = makeLabelSprite(label, townTagOpts);
+        setSpriteWorldScale(sp, townTagOpts);
+        // Make sure labels don't disappear due to frustum/bounds quirks.
+        sp.frustumCulled = false;
+        // Ensure labels don't write depth (they're informational overlays).
+        (sp.material as THREE.SpriteMaterial).depthWrite = false;
+        sp.position.set(p.x, p.y + 5.0, p.z);
         townGroup.add(sp);
-        townSprites.set(t.name, sp);
+
+        const kx = Math.round(p.x);
+        const kz = Math.round(p.z);
+        const key = `${label}|${kx}|${kz}`;
+        townSprites.set(key, sp);
       }
     }
 
@@ -708,10 +730,12 @@ export function ReplayMap3D(props: ReplayMap3DProps) {
       const waterY = 0;
       const cWater = new THREE.Color(0x0b3a66);
       for (let j = 0; j < h; j++) {
-        const srcRow = j;
+        // Mirror, then flip: the exported grid orientation is mirrored along X (east/west)
+        // and also needs a Z flip (north/south) to match world X/Z.
+        const srcRow = (h - 1 - j);
         const dstRow = j;
         for (let i = 0; i < w; i++) {
-          const srcIdx = i + w * srcRow;
+          const srcIdx = (w - 1 - i) + w * srcRow;
           const dstIdx = i + w * dstRow;
           const hv = t.heights[srcIdx];
           pos.setY(dstIdx, hv);

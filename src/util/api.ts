@@ -209,6 +209,33 @@ export type MapTowns = {
   updatedAt?: number;
 };
 
+export type MapDescriptors = {
+  mapId: string;
+  worldFile?: string;
+  // Newer exporters may send `descriptors`; older ones use `towns`.
+  descriptors?: Array<{ name?: string; pos: unknown; baseType?: number; type?: string }>;
+  towns?: Array<{ name?: string; pos: unknown; baseType?: number; type?: string }>;
+  createdAt?: number;
+  updatedAt?: number;
+};
+
+export async function getReplayMapDescriptors(serverId: string): Promise<MapDescriptors> {
+  const base = requireApiBaseUrl();
+  const session = getSession();
+  if (!session) throw new Error('Not authenticated');
+
+  const res = await fetch(`${base}/api/replay/mapDescriptors?serverId=${encodeURIComponent(serverId)}`, {
+    headers: { Authorization: `Bearer ${session.token}` },
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || `Failed to get map descriptors (${res.status})`);
+  }
+
+  return (await res.json()) as MapDescriptors;
+}
+
 export async function getReplayMapTowns(serverId: string): Promise<MapTowns> {
   const base = requireApiBaseUrl();
   const session = getSession();
@@ -341,5 +368,18 @@ export async function clearServerHistory(serverId: string): Promise<{ ok: true }
     headers: { Authorization: `Bearer ${session.token}` },
   });
   if (!res.ok) throw new Error((await res.text()) || `Failed to clear history (${res.status})`);
+  return (await res.json()) as { ok: true };
+}
+
+export async function regenerateTerrainData(serverId: string): Promise<{ ok: true }> {
+  const base = requireApiBaseUrl();
+  const session = getSession();
+  if (!session) throw new Error('Not authenticated');
+
+  const res = await fetch(`${base}/api/dev/servers/regenerateTerrain?serverId=${encodeURIComponent(serverId)}`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${session.token}` },
+  });
+  if (!res.ok) throw new Error((await res.text()) || `Failed to regenerate terrain (${res.status})`);
   return (await res.json()) as { ok: true };
 }
