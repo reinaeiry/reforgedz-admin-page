@@ -1,0 +1,11 @@
+# Example Cloudflare Tunnel config
+# This file is an example only. The real config normally lives at:
+#   %USERPROFILE%\.cloudflared\config.yml
+
+# tunnel: <TUNNEL-UUID>
+# credentials-file: C:\Users\<you>\.cloudflared\<TUNNEL-UUID>.json
+
+ingress:
+  - hostname: admin.reforgedz.xyz
+    service: http://localhost:3001
+  - service: http_status:404

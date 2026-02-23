@@ -1,0 +1,120 @@
+{
+  "id": "reforgedz-dev-eu-1",
+  "name": "reforgedz-dev-eu-1",
+  "clearedAt": 1771856912694,
+  "lastReceivedAt": 1771861129821,
+  "lastIngestTsMs": 535617,
+  "lastSessionId": "1d635597-e524-434d-ba1c-deae1590f41a",
+  "minTsMs": 0,
+  "maxTsMs": 535617,
+  "totalEvents": 5133,
+  "sessions": {
+    "987e679f-4e34-40a5-92d8-2874f670e4c2": {
+      "offsetMs": -52290,
+      "firstReceivedAt": 1771856912696,
+      "firstSessionTsMs": 52290,
+      "lastReceivedAt": 1771856960470,
+      "lastSessionTsMs": 99977,
+      "lastTsMs": 47687
+    },
+    "73c78fd8-da8c-40ea-8e5a-b1507f71b830": {
+      "offsetMs": 47688,
+      "firstReceivedAt": 1771856971327,
+      "firstSessionTsMs": 0,
+      "lastReceivedAt": 1771856971327,
+      "lastSessionTsMs": 0,
+      "lastTsMs": 47688
+    },
+    "067ed914-32d6-4d8d-bc50-ab73934adb8b": {
+      "offsetMs": 47689,
+      "firstReceivedAt": 1771857491057,
+      "firstSessionTsMs": 0,
+      "lastReceivedAt": 1771857657423,
+      "lastSessionTsMs": 161055,
+      "lastTsMs": 208744
+    },
+    "3e84ed50-cf54-41f2-b2b0-370222dfec8c": {
+      "offsetMs": 208745,
+      "firstReceivedAt": 1771857668624,
+      "firstSessionTsMs": 0,
+      "lastReceivedAt": 1771857668624,
+      "lastSessionTsMs": 0,
+      "lastTsMs": 208745
+    },
+    "9bc5fdec-b21a-46f6-8f76-586df2bbed66": {
+      "offsetMs": 208746,
+      "firstReceivedAt": 1771857888910,
+      "firstSessionTsMs": 0,
+      "lastReceivedAt": 1771857966524,
+      "lastSessionTsMs": 71846,
+      "lastTsMs": 280592
+    },
+    "b8def2a4-b8b2-4c5d-83bf-d80c26b601e8": {
+      "offsetMs": 280593,
+      "firstReceivedAt": 1771857977731,
+      "firstSessionTsMs": 0,
+      "lastReceivedAt": 1771857977731,
+      "lastSessionTsMs": 0,
+      "lastTsMs": 280593
+    },
+    "5053e5cd-668e-4ebc-ace8-1e1cf5616195": {
+      "offsetMs": 280594,
+      "firstReceivedAt": 1771859058590,
+      "firstSessionTsMs": 0,
+      "lastReceivedAt": 1771859167107,
+      "lastSessionTsMs": 102546,
+      "lastTsMs": 383140
+    },
+    "f9f90edf-e5ef-43b6-b34a-5111b37e6ee7": {
+      "offsetMs": 383141,
+      "firstReceivedAt": 1771859178666,
+      "firstSessionTsMs": 0,
+      "lastReceivedAt": 1771859178666,
+      "lastSessionTsMs": 0,
+      "lastTsMs": 383141
+    },
+    "e50861bf-dcf2-4b41-a841-af5a2ba5d1d5": {
+      "offsetMs": 383142,
+      "firstReceivedAt": 1771860327090,
+      "firstSessionTsMs": 0,
+      "lastReceivedAt": 1771860416136,
+      "lastSessionTsMs": 83497,
+      "lastTsMs": 466639
+    },
+    "4a1cf630-7e1c-4203-a21d-ce4d82230fa2": {
+      "offsetMs": 466640,
+      "firstReceivedAt": 1771860426946,
+      "firstSessionTsMs": 0,
+      "lastReceivedAt": 1771860426946,
+      "lastSessionTsMs": 0,
+      "lastTsMs": 466640
+    },
+    "de5b43a9-0ccf-441e-acef-60da91d1d333": {
+      "offsetMs": 466641,
+      "firstReceivedAt": 1771860471609,
+      "firstSessionTsMs": 0,
+      "lastReceivedAt": 1771860471609,
+      "lastSessionTsMs": 0,
+      "lastTsMs": 466641
+    },
+    "0ea18fa3-b746-4f65-960d-a31c05bd8108": {
+      "offsetMs": 466642,
+      "firstReceivedAt": 1771861044218,
+      "firstSessionTsMs": 0,
+      "lastReceivedAt": 1771861119232,
+      "lastSessionTsMs": 68974,
+      "lastTsMs": 535616
+    },
+    "1d635597-e524-434d-ba1c-deae1590f41a": {
+      "offsetMs": 535617,
+      "firstReceivedAt": 1771861129821,
+      "firstSessionTsMs": 0,
+      "lastReceivedAt": 1771861129821,
+      "lastSessionTsMs": 0,
+      "lastTsMs": 535617
+    }
+  },
+  "lastCompactionAt": 1771861105130,
+  "mapId": "9346ef4366c58979",
+  "mapWorldFile": "$eirysreplays:Worlds/EdenTest.ent"
+}
