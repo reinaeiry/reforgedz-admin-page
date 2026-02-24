@@ -720,6 +720,10 @@ async function buildReplayEventGif({ safeId, serverId, tsMs, title, pos, focusPl
   const lastById = new Map();
   for (const id of trackedIds) lastById.set(id, eventPoint);
 
+  // Keep the terrain grid anchored so it visibly moves under the followed player.
+  // (If we center the grid on the camera target every frame, the terrain appears stationary.)
+  const gridAnchor = eventPoint ? { x: eventPoint.x, z: eventPoint.z } : { x: 0, z: 0 };
+
   /** @type {Map<number, string>} */
   const lastNameById = new Map();
 
@@ -771,7 +775,14 @@ async function buildReplayEventGif({ safeId, serverId, tsMs, title, pos, focusPl
     }
 
     const pointsNow = playerNow.map((p) => p.pos).filter(Boolean);
-    const target = vAvg(pointsNow) || eventPoint || { x: 0, y: 0, z: 0 };
+    let target = vAvg(pointsNow) || eventPoint || { x: 0, y: 0, z: 0 };
+
+    // Follow the focus player when available.
+    // For kills, the UI sets focusPlayerId to the victim.
+    if (focusId !== null) {
+      const fp = playerNow.find((p) => p && p.id === focusId);
+      if (fp && fp.pos) target = fp.pos;
+    }
 
     // Viewport camera: PerspectiveCamera(70) with followOffset (0,25,60).
     // Apply "scroll up" 3 times while following: factor 0.90 each tick.
@@ -859,7 +870,7 @@ async function buildReplayEventGif({ safeId, serverId, tsMs, title, pos, focusPl
       absTsMs,
       wallClockAbsMs: absWallClockMs,
       requester,
-      gridCenter: { x: target.x, z: target.z },
+      gridCenter: gridAnchor,
       terrain,
       camera,
       basis,

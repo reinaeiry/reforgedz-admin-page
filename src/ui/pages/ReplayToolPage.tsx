@@ -1320,6 +1320,34 @@ export function ReplayToolPage() {
     return p ? p.name : String(attachedPlayerId);
   }, [attachedPlayerId, knownPlayers]);
 
+  const playersAtTime = useMemo((): ReplayPlayer[] => {
+    const t = currentTsMs;
+    if (typeof t !== 'number' || !Number.isFinite(t)) return [];
+
+    // Primary signal: join/disconnect presence timeline.
+    // Fallback: if presence is unknown (no join/disconnect seen), include only if we have a recent
+    // player snapshot at-or-before t (prevents listing hundreds of historical players).
+    const unknownPresenceMaxAgeMs = 30_000;
+
+    const out: ReplayPlayer[] = [];
+    for (const p of knownPlayers) {
+      const pid = p.playerId;
+      const connected = isConnectedAt(pid, t);
+      if (connected === true) {
+        out.push(p);
+        continue;
+      }
+      if (connected === false) continue;
+
+      const st = findPlayerStateAt(pid, t);
+      if (!st) continue;
+      if ((t - st.tsMs) <= unknownPresenceMaxAgeMs) out.push(p);
+    }
+
+    out.sort((a, b) => a.name.localeCompare(b.name) || a.playerId - b.playerId);
+    return out;
+  }, [currentTsMs, findPlayerStateAt, isConnectedAt, knownPlayers]);
+
   function jumpToEventTs(tsMs: number) {
     const offsetMs = Math.max(0, Math.floor(eventClickOffsetSeconds * 1000));
     const min = scrubber.disabled ? 0 : scrubber.min;
@@ -1330,13 +1358,13 @@ export function ReplayToolPage() {
 
   const filteredPlayers = useMemo((): ReplayPlayer[] => {
     const q = playerSearch.trim().toLowerCase();
-    const base = Array.isArray(knownPlayers) ? knownPlayers : [];
+    const base = Array.isArray(playersAtTime) ? playersAtTime : [];
     if (!q) return base;
     return base.filter((p) => {
       const name = (p.name || '').toLowerCase();
       return name.includes(q) || String(p.playerId).includes(q);
     });
-  }, [knownPlayers, playerSearch]);
+  }, [playerSearch, playersAtTime]);
 
   const selectedPlayerState = useMemo((): { snapTsMs: number; player: any } | null => {
     if (selectedPlayerId === null) return null;
@@ -2411,7 +2439,7 @@ export function ReplayToolPage() {
                                 title="Filter events by player"
                               >
                                 <option value="">All players</option>
-                                {knownPlayers.map((p) => (
+                                {playersAtTime.map((p) => (
                                   <option key={p.playerId} value={String(p.playerId)}>
                                     {p.name} (#{p.playerId})
                                   </option>
