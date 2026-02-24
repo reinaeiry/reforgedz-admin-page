@@ -8,6 +8,7 @@ import {
   getReplayStatusAll,
   listReplayPlayers,
   listServers,
+  exportReplayEventToDiscord,
   sendReplayGmPing,
   type IngestRecord,
   type MapDescriptors,
@@ -894,6 +895,45 @@ export function ReplayToolPage() {
     };
   }, [snapshots]);
 
+  const findLastNonOriginPosBefore = useMemo(() => {
+    // Best-effort: disconnect events often don't include a reliable position.
+    // Find the last position at/before `tsMs` that is not within the origin XZ box.
+    return (playerId: number, tsMs: number, maxWindowMs = 60000): { x: number; y: number; z: number } | null => {
+      if (typeof playerId !== 'number' || playerId < 0) return null;
+      if (typeof tsMs !== 'number' || !Number.isFinite(tsMs)) return null;
+      if (snapshots.length === 0) return null;
+
+      const since = tsMs - Math.max(1000, Math.min(5 * 60 * 1000, Math.floor(maxWindowMs)));
+
+      // Last snapshot with ts <= tsMs.
+      let lo = 0;
+      let hi = snapshots.length - 1;
+      let idx = -1;
+      while (lo <= hi) {
+        const mid = (lo + hi) >> 1;
+        if (snapshots[mid].tsMs <= tsMs) {
+          idx = mid;
+          lo = mid + 1;
+        } else {
+          hi = mid - 1;
+        }
+      }
+
+      for (let i = idx; i >= 0; i--) {
+        const s = snapshots[i];
+        if (s.tsMs < since) break;
+        const pj = s.players.find((p) => p && typeof p === 'object' && (p as any).playerId === playerId);
+        if (!pj) continue;
+        const pos = coerceVec3((pj as any).pos);
+        if (!pos) continue;
+        if (isNearOriginXZ(pos, 30)) continue;
+        return pos;
+      }
+
+      return null;
+    };
+  }, [snapshots]);
+
   const deadUntilByPlayerId = useMemo(() => {
     // Best-effort: mark victims as "dead" for a short window after a death event.
     // (We don't currently receive an explicit respawn event.)
@@ -1338,12 +1378,16 @@ export function ReplayToolPage() {
           ? findFirstNonOriginPosAfter(id, p.tsMs, 90_000)
           : null;
 
+        const disconnectFocusPos = (p.type === 'disconnect' && typeof id === 'number')
+          ? findLastNonOriginPosBefore(id, p.tsMs, 90_000)
+          : null;
+
         out.push({
           tsMs: p.tsMs,
           type: String(p.type),
           title: `${p.type === 'join' ? 'Join' : 'Disconnect'}: ${name}`,
           subtitle: p.type === 'disconnect' && ev && typeof ev.kickCause === 'string' && ev.kickCause ? `cause: ${ev.kickCause}` : '',
-          focusPos: joinFocusPos,
+          focusPos: joinFocusPos || disconnectFocusPos,
           focusPlayerId: id,
           playerIds: [id].filter((x): x is number => typeof x === 'number'),
         });
@@ -2029,7 +2073,8 @@ export function ReplayToolPage() {
                                         onClick={(e) => {
                                           e.stopPropagation();
                                           if (!serverId) return;
-                                          if (!ev.focusPos) return;
+                                          const pingPos = ev.focusPos;
+                                          if (!pingPos) return;
 
                                           const reporterPlayerId = (typeof ev.focusPlayerId === 'number')
                                             ? ev.focusPlayerId
@@ -2038,13 +2083,52 @@ export function ReplayToolPage() {
                                           void sendReplayGmPing({
                                             serverId,
                                             tsMs: ev.tsMs,
-                                            pos: ev.focusPos,
+                                            pos: pingPos,
                                             title: pingTitle,
                                             reporterPlayerId,
                                           });
                                         }}
                                       >
                                         GM ping
+                                      </button>
+
+                                      <button
+                                        type="button"
+                                        className="button"
+                                        style={{
+                                          position: 'absolute',
+                                          top: 34,
+                                          right: 8,
+                                          padding: '4px 8px',
+                                          fontSize: 11,
+                                          opacity: canPing ? 1 : 0.4,
+                                        }}
+                                        title={canPing ? 'Export 5s before/after as a GIF to Discord' : 'No position for this event'}
+                                        disabled={!canPing}
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          if (!serverId) return;
+                                          const exportPos = ev.focusPos;
+                                          if (!exportPos) return;
+
+                                          void (async () => {
+                                            try {
+                                              await exportReplayEventToDiscord({
+                                                serverId,
+                                                tsMs: ev.tsMs,
+                                                title: ev.title,
+                                                pos: exportPos,
+                                                focusPlayerId: (typeof ev.focusPlayerId === 'number') ? ev.focusPlayerId : null,
+                                                playerIds: Array.isArray(ev.playerIds) ? ev.playerIds : null,
+                                              });
+                                              pushToast({ kind: 'event', title: 'Discord export', subtitle: 'Sent' });
+                                            } catch (err) {
+                                              setError(err instanceof Error ? err.message : 'Failed to export to Discord');
+                                            }
+                                          })();
+                                        }}
+                                      >
+                                        Export
                                       </button>
                                       <div style={{ fontWeight: 800, fontSize: 12 }}>{ev.title}</div>
                                       <div className="muted" style={{ fontSize: 11, marginTop: 2 }}>

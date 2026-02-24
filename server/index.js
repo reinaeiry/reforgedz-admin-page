@@ -8,6 +8,11 @@ import dotenv from 'dotenv';
 import express from 'express';
 import compression from 'compression';
 
+import { createCanvas } from '@napi-rs/canvas';
+import gifenc from 'gifenc';
+
+const { GIFEncoder, quantize, applyPalette } = gifenc;
+
 dotenv.config();
 
 const app = express();
@@ -79,6 +84,7 @@ const ingestKeyMap = parseIngestKeyMap(INGEST_KEYS);
 const USERS_PATH = path.join(DATA_DIR, 'users.json');
 const INGEST_KEYS_PATH = path.join(DATA_DIR, 'ingestKeys.json');
 const MAPS_DIR = path.join(DATA_DIR, 'maps');
+const SETTINGS_PATH = path.join(DATA_DIR, 'settings.json');
 
 /** @type {Map<string,{ key: string, name?: string }>} */
 const dynamicIngestKeys = new Map();
@@ -116,6 +122,664 @@ async function loadDynamicIngestKeys() {
     const name = typeof v.name === 'string' ? v.name : undefined;
     dynamicIngestKeys.set(serverId, { key, name });
   }
+}
+
+async function readSettings() {
+  await ensureDir(DATA_DIR);
+  const obj = (await readJsonOrNull(SETTINGS_PATH)) || {};
+  return (obj && typeof obj === 'object') ? obj : {};
+}
+
+async function writeSettings(next) {
+  await ensureDir(DATA_DIR);
+  await writeJsonAtomic(SETTINGS_PATH, next);
+}
+
+function maskSecretUrl(url) {
+  const s = String(url || '').trim();
+  if (!s) return '';
+  if (s.length <= 16) return '***';
+  return `${s.slice(0, 8)}…${s.slice(-6)}`;
+}
+
+async function getDiscordWebhookUrl() {
+  const st = await readSettings();
+  const url = st.discordWebhookUrl;
+  return (typeof url === 'string' && url.trim().length > 0) ? url.trim() : '';
+}
+
+function coerceVec3(v) {
+  if (!v) return null;
+  if (typeof v === 'object') {
+    if (Array.isArray(v)) {
+      if (v.length < 3) return null;
+      const x = Number(v[0]);
+      const y = Number(v[1]);
+      const z = Number(v[2]);
+      if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return null;
+      return { x, y, z };
+    }
+    const x = Number(v.x);
+    const y = Number(v.y);
+    const z = Number(v.z);
+    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return null;
+    return { x, y, z };
+  }
+  if (typeof v === 'string') {
+    const parts = v.trim().split(/\s+/g);
+    if (parts.length < 3) return null;
+    const x = Number(parts[0]);
+    const y = Number(parts[1]);
+    const z = Number(parts[2]);
+    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return null;
+    return { x, y, z };
+  }
+  return null;
+}
+
+function vAdd(a, b) {
+  return { x: a.x + b.x, y: a.y + b.y, z: a.z + b.z };
+}
+
+function vSub(a, b) {
+  return { x: a.x - b.x, y: a.y - b.y, z: a.z - b.z };
+}
+
+function vMul(a, s) {
+  return { x: a.x * s, y: a.y * s, z: a.z * s };
+}
+
+function vDot(a, b) {
+  return a.x * b.x + a.y * b.y + a.z * b.z;
+}
+
+function vCross(a, b) {
+  return {
+    x: a.y * b.z - a.z * b.y,
+    y: a.z * b.x - a.x * b.z,
+    z: a.x * b.y - a.y * b.x,
+  };
+}
+
+function vLen(a) {
+  return Math.sqrt(a.x * a.x + a.y * a.y + a.z * a.z);
+}
+
+function vNorm(a) {
+  const l = vLen(a);
+  if (!Number.isFinite(l) || l <= 1e-9) return { x: 0, y: 0, z: 0 };
+  return { x: a.x / l, y: a.y / l, z: a.z / l };
+}
+
+function vDist(a, b) {
+  return vLen(vSub(a, b));
+}
+
+function vAvg(points) {
+  if (!points || points.length === 0) return null;
+  let sx = 0;
+  let sy = 0;
+  let sz = 0;
+  let n = 0;
+  for (const p of points) {
+    if (!p) continue;
+    sx += p.x;
+    sy += p.y;
+    sz += p.z;
+    n++;
+  }
+  if (n === 0) return null;
+  return { x: sx / n, y: sy / n, z: sz / n };
+}
+
+function projectPointPerspective(p, cam, basis, f, cx, cy) {
+  const v = vSub(p, cam);
+  const camX = vDot(v, basis.right);
+  const camY = vDot(v, basis.up);
+  const camZ = vDot(v, basis.forward);
+  if (!Number.isFinite(camZ) || camZ <= 0.01) return null;
+  const x = cx + (camX / camZ) * f;
+  const y = cy - (camY / camZ) * f;
+  return { x, y, z: camZ };
+}
+
+function drawReplay3DFrame(ctx, opts) {
+  const {
+    w,
+    h,
+    title,
+    serverId,
+    relMs,
+    absTsMs,
+    fromTsMs,
+    toTsMs,
+    camera,
+    basis,
+    f,
+    deathXs,
+    trails,
+    playerNow,
+    focusId,
+  } = opts;
+
+  ctx.clearRect(0, 0, w, h);
+  // Match ReplayMap3D viewport background.
+  ctx.fillStyle = '#0b0f19';
+  ctx.fillRect(0, 0, w, h);
+
+  const cx = w / 2;
+  const cy = h / 2 + 8;
+
+  // GridHelper(2000, 200, 0x32405e, 0x1d2638) on XZ plane at y=0.
+  const gridSize = 2000;
+  const gridDiv = 200;
+  const gridHalf = gridSize / 2;
+  const gridStep = gridSize / gridDiv;
+  const gridCenterColor = '#32405e';
+  const gridColor = '#1d2638';
+  ctx.lineWidth = 1;
+
+  for (let i = -gridHalf; i <= gridHalf + 1e-6; i += gridStep) {
+    const isCenter = Math.abs(i) < 1e-6;
+    ctx.strokeStyle = isCenter ? gridCenterColor : gridColor;
+    const a = { x: i, y: 0, z: -gridHalf };
+    const b = { x: i, y: 0, z: gridHalf };
+    const pa = projectPointPerspective(a, camera, basis, f, cx, cy);
+    const pb = projectPointPerspective(b, camera, basis, f, cx, cy);
+    if (!pa || !pb) continue;
+    ctx.beginPath();
+    ctx.moveTo(pa.x, pa.y);
+    ctx.lineTo(pb.x, pb.y);
+    ctx.stroke();
+  }
+
+  for (let j = -gridHalf; j <= gridHalf + 1e-6; j += gridStep) {
+    const isCenter = Math.abs(j) < 1e-6;
+    ctx.strokeStyle = isCenter ? gridCenterColor : gridColor;
+    const a = { x: -gridHalf, y: 0, z: j };
+    const b = { x: gridHalf, y: 0, z: j };
+    const pa = projectPointPerspective(a, camera, basis, f, cx, cy);
+    const pb = projectPointPerspective(b, camera, basis, f, cx, cy);
+    if (!pa || !pb) continue;
+    ctx.beginPath();
+    ctx.moveTo(pa.x, pa.y);
+    ctx.lineTo(pb.x, pb.y);
+    ctx.stroke();
+  }
+
+  // AxesHelper(10) at origin.
+  const axesLen = 10;
+  ctx.lineWidth = 2;
+  // X axis (red)
+  ctx.strokeStyle = '#ff0000';
+  {
+    const a = { x: 0, y: 0, z: 0 };
+    const b = { x: axesLen, y: 0, z: 0 };
+    const pa = projectPointPerspective(a, camera, basis, f, cx, cy);
+    const pb = projectPointPerspective(b, camera, basis, f, cx, cy);
+    if (pa && pb) {
+      ctx.beginPath();
+      ctx.moveTo(pa.x, pa.y);
+      ctx.lineTo(pb.x, pb.y);
+      ctx.stroke();
+    }
+  }
+  // Y axis (green)
+  ctx.strokeStyle = '#00ff00';
+  {
+    const a = { x: 0, y: 0, z: 0 };
+    const b = { x: 0, y: axesLen, z: 0 };
+    const pa = projectPointPerspective(a, camera, basis, f, cx, cy);
+    const pb = projectPointPerspective(b, camera, basis, f, cx, cy);
+    if (pa && pb) {
+      ctx.beginPath();
+      ctx.moveTo(pa.x, pa.y);
+      ctx.lineTo(pb.x, pb.y);
+      ctx.stroke();
+    }
+  }
+  // Z axis (blue)
+  ctx.strokeStyle = '#0000ff';
+  {
+    const a = { x: 0, y: 0, z: 0 };
+    const b = { x: 0, y: 0, z: axesLen };
+    const pa = projectPointPerspective(a, camera, basis, f, cx, cy);
+    const pb = projectPointPerspective(b, camera, basis, f, cx, cy);
+    if (pa && pb) {
+      ctx.beginPath();
+      ctx.moveTo(pa.x, pa.y);
+      ctx.lineTo(pb.x, pb.y);
+      ctx.stroke();
+    }
+  }
+  ctx.lineWidth = 1;
+
+  // Trails
+  for (const t of trails) {
+    const { id, points, color, alpha } = t;
+    if (!points || points.length < 2) continue;
+    ctx.strokeStyle = color;
+    ctx.globalAlpha = alpha;
+    ctx.lineWidth = (id === focusId) ? 2.5 : 2;
+    ctx.beginPath();
+    let moved = false;
+    for (let i = 0; i < points.length; i++) {
+      const p = projectPointPerspective(points[i], camera, basis, f, cx, cy);
+      if (!p) continue;
+      if (!moved) {
+        ctx.moveTo(p.x, p.y);
+        moved = true;
+      } else {
+        ctx.lineTo(p.x, p.y);
+      }
+    }
+    if (moved) ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+
+  // Players (draw sorted by depth)
+  const sprites = [];
+  for (const p of playerNow) {
+    const pp = projectPointPerspective(p.pos, camera, basis, f, cx, cy);
+    if (!pp) continue;
+    sprites.push({ ...pp, id: p.id });
+  }
+  sprites.sort((a, b) => b.z - a.z);
+  for (const s of sprites) {
+    const isFocus = s.id === focusId;
+    const worldR = isFocus ? 0.55 : 0.45;
+    const pxRRaw = (Number.isFinite(s.z) && s.z > 0.01) ? (worldR * (f / s.z)) : (isFocus ? 5 : 4);
+    const pxR = Math.max(2.5, Math.min(10, pxRRaw));
+    ctx.fillStyle = isFocus ? '#f9bc59' : 'rgba(255,255,255,0.85)';
+    ctx.beginPath();
+    ctx.arc(s.x, s.y, pxR, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(0,0,0,0.35)';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+  }
+
+  // Death markers: match ReplayMap3D "X" line segments (size 1.8, y+0.15).
+  if (Array.isArray(deathXs) && deathXs.length > 0) {
+    const size = 1.8;
+    ctx.strokeStyle = 'rgba(255,74,74,0.9)';
+    ctx.lineWidth = 2;
+    for (const d of deathXs) {
+      if (!d || !d.pos) continue;
+      const x = d.pos.x;
+      const y = d.pos.y + 0.15;
+      const z = d.pos.z;
+
+      const a1 = { x: x - size, y, z: z - size };
+      const b1 = { x: x + size, y, z: z + size };
+      const a2 = { x: x - size, y, z: z + size };
+      const b2 = { x: x + size, y, z: z - size };
+
+      const pA1 = projectPointPerspective(a1, camera, basis, f, cx, cy);
+      const pB1 = projectPointPerspective(b1, camera, basis, f, cx, cy);
+      const pA2 = projectPointPerspective(a2, camera, basis, f, cx, cy);
+      const pB2 = projectPointPerspective(b2, camera, basis, f, cx, cy);
+
+      if (pA1 && pB1) {
+        ctx.beginPath();
+        ctx.moveTo(pA1.x, pA1.y);
+        ctx.lineTo(pB1.x, pB1.y);
+        ctx.stroke();
+      }
+      if (pA2 && pB2) {
+        ctx.beginPath();
+        ctx.moveTo(pA2.x, pA2.y);
+        ctx.lineTo(pB2.x, pB2.y);
+        ctx.stroke();
+      }
+    }
+  }
+
+  ctx.globalAlpha = 1;
+  ctx.lineWidth = 1;
+
+  // Overlays
+  const relS = (relMs / 1000).toFixed(1);
+  const absIso = new Date(absTsMs).toISOString().replace('T', ' ').replace('Z', 'Z');
+  const fromIso = new Date(fromTsMs).toISOString().replace('T', ' ').replace('Z', 'Z');
+  const toIso = new Date(toTsMs).toISOString().replace('T', ' ').replace('Z', 'Z');
+
+  ctx.fillStyle = 'rgba(0,0,0,0.45)';
+  ctx.fillRect(0, 0, w, 54);
+  ctx.fillRect(0, h - 34, w, 34);
+
+  ctx.fillStyle = 'rgba(255,255,255,0.92)';
+  ctx.font = 'bold 14px sans-serif';
+  ctx.textAlign = 'left';
+  ctx.fillText(serverId, 10, 18);
+  ctx.font = '12px sans-serif';
+  ctx.fillText(title, 10, 36);
+
+  ctx.textAlign = 'right';
+  ctx.font = 'bold 14px sans-serif';
+  ctx.fillText(`t${relMs >= 0 ? '+' : ''}${relS}s`, w - 10, 18);
+  ctx.font = '12px sans-serif';
+  ctx.fillText(absIso, w - 10, 36);
+
+  ctx.textAlign = 'left';
+  ctx.font = '11px sans-serif';
+  ctx.fillText(`window: ${fromIso} → ${toIso}`, 10, h - 14);
+}
+
+function drawReplayMapFrame(ctx, opts) {
+  const {
+    w,
+    h,
+    bounds,
+    pathPoints,
+    currentPoint,
+    eventPoint,
+    title,
+    serverId,
+    relMs,
+    absTsMs,
+    fromTsMs,
+    toTsMs,
+  } = opts;
+
+  ctx.clearRect(0, 0, w, h);
+  ctx.fillStyle = '#181b21';
+  ctx.fillRect(0, 0, w, h);
+
+  const margin = 22;
+  const minX = bounds.minX;
+  const maxX = bounds.maxX;
+  const minZ = bounds.minZ;
+  const maxZ = bounds.maxZ;
+
+  function toPx(p) {
+    const nx = (p.x - minX) / Math.max(1e-6, (maxX - minX));
+    const nz = (p.z - minZ) / Math.max(1e-6, (maxZ - minZ));
+    const x = margin + nx * (w - margin * 2);
+    const y = margin + (1 - nz) * (h - margin * 2);
+    return { x, y };
+  }
+
+  // Grid
+  ctx.strokeStyle = 'rgba(255,255,255,0.08)';
+  ctx.lineWidth = 1;
+  for (let i = 0; i <= 4; i++) {
+    const x = margin + (i / 4) * (w - margin * 2);
+    ctx.beginPath();
+    ctx.moveTo(x, margin);
+    ctx.lineTo(x, h - margin);
+    ctx.stroke();
+  }
+  for (let j = 0; j <= 4; j++) {
+    const y = margin + (j / 4) * (h - margin * 2);
+    ctx.beginPath();
+    ctx.moveTo(margin, y);
+    ctx.lineTo(w - margin, y);
+    ctx.stroke();
+  }
+
+  // Path
+  if (pathPoints && pathPoints.length > 1) {
+    ctx.strokeStyle = '#f9bc59';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    const p0 = toPx(pathPoints[0]);
+    ctx.moveTo(p0.x, p0.y);
+    for (let i = 1; i < pathPoints.length; i++) {
+      const pp = toPx(pathPoints[i]);
+      ctx.lineTo(pp.x, pp.y);
+    }
+    ctx.stroke();
+  }
+
+  // Event marker
+  if (eventPoint) {
+    const e = toPx(eventPoint);
+    ctx.strokeStyle = 'rgba(255,255,255,0.9)';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(e.x - 6, e.y - 6);
+    ctx.lineTo(e.x + 6, e.y + 6);
+    ctx.moveTo(e.x + 6, e.y - 6);
+    ctx.lineTo(e.x - 6, e.y + 6);
+    ctx.stroke();
+  }
+
+  // Current point
+  if (currentPoint) {
+    const c = toPx(currentPoint);
+    ctx.fillStyle = '#f9bc59';
+    ctx.beginPath();
+    ctx.arc(c.x, c.y, 4, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // Overlays
+  const relS = (relMs / 1000).toFixed(1);
+  const absIso = new Date(absTsMs).toISOString().replace('T', ' ').replace('Z', 'Z');
+  const fromIso = new Date(fromTsMs).toISOString().replace('T', ' ').replace('Z', 'Z');
+  const toIso = new Date(toTsMs).toISOString().replace('T', ' ').replace('Z', 'Z');
+
+  ctx.fillStyle = 'rgba(0,0,0,0.45)';
+  ctx.fillRect(0, 0, w, 54);
+  ctx.fillRect(0, h - 34, w, 34);
+
+  ctx.fillStyle = 'rgba(255,255,255,0.92)';
+  ctx.font = 'bold 14px sans-serif';
+  ctx.fillText(serverId, 10, 18);
+  ctx.font = '12px sans-serif';
+  ctx.fillText(title, 10, 36);
+
+  ctx.textAlign = 'right';
+  ctx.font = 'bold 14px sans-serif';
+  ctx.fillText(`t${relMs >= 0 ? '+' : ''}${relS}s`, w - 10, 18);
+  ctx.font = '12px sans-serif';
+  ctx.fillText(absIso, w - 10, 36);
+  ctx.textAlign = 'left';
+  ctx.font = '11px sans-serif';
+  ctx.fillText(`window: ${fromIso} → ${toIso}`, 10, h - 14);
+}
+
+async function buildReplayEventGif({ safeId, serverId, tsMs, title, pos, focusPlayerId, playerIds }) {
+  const fromTsMs = tsMs - 5_000;
+  const toTsMs = tsMs + 5_000;
+
+  const eventsPath = path.join(DATA_DIR, 'servers', safeId, 'events.ndjson');
+  const windowItems = await readNdjsonWindow(eventsPath, {
+    sinceTsMs: fromTsMs,
+    untilTsMs: toTsMs,
+    limit: 20000,
+    tail: false,
+  });
+
+  const snapshots = [];
+  for (const rec of windowItems) {
+    const p = rec && rec.payload;
+    if (!p || typeof p !== 'object') continue;
+    if (p.type !== 'snapshot') continue;
+    if (typeof p.tsMs !== 'number') continue;
+    const players = Array.isArray(p.players) ? p.players : [];
+    snapshots.push({ tsMs: p.tsMs, players });
+  }
+  snapshots.sort((a, b) => a.tsMs - b.tsMs);
+
+  // Death events for timed "X" markers (5s after death).
+  const deathEvents = [];
+  for (const rec of windowItems) {
+    const p = rec && rec.payload;
+    if (!p || typeof p !== 'object') continue;
+    if (p.type !== 'kill' && p.type !== 'death') continue;
+    if (typeof p.tsMs !== 'number') continue;
+    const vp = coerceVec3(p.victimPos);
+    if (!vp) continue;
+    deathEvents.push({ tsMs: p.tsMs, pos: vp });
+  }
+
+  const focusId = (typeof focusPlayerId === 'number' && Number.isFinite(focusPlayerId) && focusPlayerId >= 0)
+    ? Math.floor(focusPlayerId)
+    : null;
+
+  const trackedIds = [];
+  if (Array.isArray(playerIds)) {
+    for (const v of playerIds) {
+      if (typeof v !== 'number' || !Number.isFinite(v) || v < 0) continue;
+      const id = Math.floor(v);
+      if (trackedIds.includes(id)) continue;
+      trackedIds.push(id);
+      if (trackedIds.length >= 2) break;
+    }
+  }
+  if (trackedIds.length === 0 && focusId !== null) trackedIds.push(focusId);
+
+  const eventPoint = coerceVec3(pos);
+  const lastById = new Map();
+  for (const id of trackedIds) lastById.set(id, eventPoint);
+
+  const fps = 2;
+  const stepMs = 1000 / fps;
+  const frameCount = Math.floor((toTsMs - fromTsMs) / stepMs) + 1;
+
+  /** @type {Map<number, Array<{x:number,y:number,z:number}>>} */
+  const trailsById = new Map();
+  for (const id of trackedIds) trailsById.set(id, []);
+
+  let snapIdx = 0;
+  const w = 600;
+  const h = 338;
+  const canvas = createCanvas(w, h);
+  const ctx = canvas.getContext('2d');
+
+  const gif = GIFEncoder();
+  let palette = null;
+
+  for (let fi = 0; fi < frameCount; fi++) {
+    const absTsMs = fromTsMs + fi * stepMs;
+    const relMs = absTsMs - tsMs;
+    const t = absTsMs;
+
+    while (snapIdx + 1 < snapshots.length && snapshots[snapIdx + 1].tsMs <= t) snapIdx++;
+    const snap = snapshots.length > 0 ? snapshots[Math.min(snapIdx, snapshots.length - 1)] : null;
+
+    const playerNow = [];
+    for (const id of trackedIds) {
+      let pt = null;
+      if (snap) {
+        const pl = snap.players.find((x) => x && typeof x === 'object' && x.playerId === id);
+        pt = pl ? coerceVec3(pl.pos) : null;
+      }
+      if (!pt) pt = lastById.get(id) || null;
+      if (!pt) pt = eventPoint;
+      if (pt) {
+        lastById.set(id, pt);
+        playerNow.push({ id, pos: pt });
+        const tr = trailsById.get(id);
+        if (tr) tr.push(pt);
+      }
+    }
+
+    const pointsNow = playerNow.map((p) => p.pos).filter(Boolean);
+    const target = vAvg(pointsNow) || eventPoint || { x: 0, y: 0, z: 0 };
+
+    // Viewport camera: PerspectiveCamera(70) with followOffset (0,25,60).
+    // Apply "scroll up" 3 times while following: factor 0.90 each tick.
+    const fovDeg = 70;
+    const fov = (fovDeg * Math.PI) / 180;
+    const f = (0.5 * h) / Math.tan(fov / 2);
+
+    // Death X markers visible at this frame (5s after death).
+    const deathXs = [];
+    for (const d of deathEvents) {
+      if (t < d.tsMs) continue;
+      if (t > d.tsMs + 5_000) continue;
+      deathXs.push(d);
+    }
+
+    const baseFollowOffset = { x: 0, y: 25, z: 60 };
+    const zoomIn = Math.pow(0.90, 3);
+
+    // Ensure both tracked players fit; only zooms OUT from the baseline.
+    const safePad = 18;
+    const safeTop = 54 + safePad;
+    const safeBottom = h - 34 - safePad;
+    const safeLeft = safePad;
+    const safeRight = w - safePad;
+
+    const fitPoints = pointsNow.length > 0 ? pointsNow : (eventPoint ? [eventPoint] : []);
+    const lookAt = { x: target.x, y: target.y + 1.5, z: target.z };
+    const upWorld = { x: 0, y: 1, z: 0 };
+
+    let offsetScale = zoomIn;
+    let camera = vAdd(target, vMul(baseFollowOffset, offsetScale));
+    let forward = vNorm(vSub(lookAt, camera));
+    let right = vNorm(vCross(forward, upWorld));
+    let up = vCross(right, forward);
+    let basis = { forward, right, up };
+
+    function isFit(camPos, bas) {
+      for (const p of fitPoints) {
+        const pp = projectPointPerspective({ x: p.x, y: p.y + 1.0, z: p.z }, camPos, bas, f, w / 2, h / 2 + 8);
+        if (!pp) return false;
+        if (pp.x < safeLeft || pp.x > safeRight) return false;
+        if (pp.y < safeTop || pp.y > safeBottom) return false;
+      }
+      return true;
+    }
+
+    for (let iter = 0; iter < 50; iter++) {
+      const off = vMul(baseFollowOffset, offsetScale);
+      const offLen = vLen(off);
+      if (!Number.isFinite(offLen) || offLen < 1) offsetScale = zoomIn;
+      if (offLen > 500) break;
+
+      camera = vAdd(target, off);
+      forward = vNorm(vSub(lookAt, camera));
+      right = vNorm(vCross(forward, upWorld));
+      up = vCross(right, forward);
+      basis = { forward, right, up };
+
+      if (isFit(camera, basis)) break;
+      offsetScale *= 1.10;
+    }
+
+    const trails = [];
+    for (const id of trackedIds) {
+      const pts = trailsById.get(id) || [];
+      trails.push({
+        id,
+        points: pts,
+        color: id === focusId ? '#f9bc59' : 'rgba(255,255,255,0.9)',
+        alpha: id === focusId ? 0.95 : 0.55,
+      });
+    }
+
+    drawReplay3DFrame(ctx, {
+      w,
+      h,
+      title,
+      serverId,
+      relMs,
+      absTsMs,
+      fromTsMs,
+      toTsMs,
+      camera,
+      basis,
+      f,
+      deathXs,
+      trails,
+      playerNow,
+      focusId,
+    });
+
+    const img = ctx.getImageData(0, 0, w, h);
+    const rgba = img.data;
+    if (!palette) palette = quantize(rgba, 256);
+    const index = applyPalette(rgba, palette);
+
+    gif.writeFrame(index, w, h, fi === 0 ? { palette, delay: 500, repeat: 0 } : { delay: 500 });
+  }
+
+  gif.finish();
+  return Buffer.from(gif.bytes());
 }
 
 function getExpectedIngestKey(serverId, safeId) {
@@ -284,7 +948,8 @@ function sanitizeServerId(serverId) {
 async function readJsonOrNull(filePath) {
   try {
     const text = await fs.readFile(filePath, 'utf8');
-    return JSON.parse(text);
+    const clean = text && text.charCodeAt(0) === 0xFEFF ? text.slice(1) : text;
+    return JSON.parse(clean);
   } catch {
     return null;
   }
@@ -403,12 +1068,60 @@ async function readNdjsonWindow(filePath, opts) {
 
   if (!stat || stat.size <= 0) return out;
 
+  const stream = createReadStream(filePath, { encoding: 'utf8' });
   const rl = readline.createInterface({
-    input: createReadStream(filePath, { encoding: 'utf8' }),
+    input: stream,
     crlfDelay: Infinity,
   });
 
+  async function cleanup() {
+    try {
+      rl.close();
+    } catch {
+      // ignore
+    }
+    try {
+      stream.destroy();
+    } catch {
+      // ignore
+    }
+  }
+
   if (!tail) {
+    try {
+      for await (const line of rl) {
+        if (!line) continue;
+
+        let obj;
+        try {
+          obj = JSON.parse(line);
+        } catch {
+          continue;
+        }
+
+        const payload = obj && obj.payload;
+        const tsMs = payload && typeof payload.tsMs === 'number' ? payload.tsMs : null;
+        if (tsMs === null) continue;
+
+        if (sinceTsMs !== null && tsMs < sinceTsMs) continue;
+        if (untilTsMs !== null && tsMs > untilTsMs) continue;
+
+        out.push(obj);
+        if (out.length >= limit) break;
+      }
+
+      return out;
+    } finally {
+      await cleanup();
+    }
+  }
+
+  // Tail mode: return the last `limit` matching records in the window.
+  const ring = new Array(limit);
+  let count = 0;
+  let start = 0;
+
+  try {
     for await (const line of rl) {
       if (!line) continue;
 
@@ -426,42 +1139,16 @@ async function readNdjsonWindow(filePath, opts) {
       if (sinceTsMs !== null && tsMs < sinceTsMs) continue;
       if (untilTsMs !== null && tsMs > untilTsMs) continue;
 
-      out.push(obj);
-      if (out.length >= limit) break;
+      if (count < limit) {
+        ring[count] = obj;
+        count++;
+      } else {
+        ring[start] = obj;
+        start = (start + 1) % limit;
+      }
     }
-
-    return out;
-  }
-
-  // Tail mode: return the last `limit` matching records in the window.
-  const ring = new Array(limit);
-  let count = 0;
-  let start = 0;
-
-  for await (const line of rl) {
-    if (!line) continue;
-
-    let obj;
-    try {
-      obj = JSON.parse(line);
-    } catch {
-      continue;
-    }
-
-    const payload = obj && obj.payload;
-    const tsMs = payload && typeof payload.tsMs === 'number' ? payload.tsMs : null;
-    if (tsMs === null) continue;
-
-    if (sinceTsMs !== null && tsMs < sinceTsMs) continue;
-    if (untilTsMs !== null && tsMs > untilTsMs) continue;
-
-    if (count < limit) {
-      ring[count] = obj;
-      count++;
-    } else {
-      ring[start] = obj;
-      start = (start + 1) % limit;
-    }
+  } finally {
+    await cleanup();
   }
 
   if (count <= 0) return [];
@@ -1105,6 +1792,84 @@ app.post('/api/replay/gmPing', requireAuth, requireTool('replay'), asyncRoute(as
   res.json({ ok: true });
 }));
 
+app.post('/api/replay/exportDiscord', requireAuth, requireTool('replay'), asyncRoute(async (req, res) => {
+  const body = (req.body && typeof req.body === 'object') ? req.body : {};
+  const { serverId, tsMs, title, pos, focusPlayerId, playerIds } = body;
+
+  if (typeof serverId !== 'string' || serverId.trim().length === 0) {
+    res.status(400).send('Invalid serverId');
+    return;
+  }
+  if (typeof tsMs !== 'number' || !Number.isFinite(tsMs) || tsMs < 0) {
+    res.status(400).send('Invalid tsMs');
+    return;
+  }
+  if (typeof title !== 'string' || title.trim().length === 0) {
+    res.status(400).send('Invalid title');
+    return;
+  }
+
+  const eventPos = coerceVec3(pos);
+  if (!eventPos) {
+    res.status(400).send('Invalid pos');
+    return;
+  }
+
+  const url = await getDiscordWebhookUrl();
+  if (!url) {
+    res.status(400).send('Discord webhook not configured');
+    return;
+  }
+
+  const id = serverId.trim();
+  const safeId = sanitizeServerId(id);
+  const fp = (typeof focusPlayerId === 'number' && Number.isFinite(focusPlayerId) && focusPlayerId >= 0)
+    ? Math.floor(focusPlayerId)
+    : undefined;
+
+  const gifBuf = await buildReplayEventGif({
+    safeId,
+    serverId: id,
+    tsMs,
+    title: title.trim().slice(0, 140),
+    pos: eventPos,
+    focusPlayerId: fp,
+    playerIds: Array.isArray(playerIds) ? playerIds : null,
+  });
+
+  const fromUnix = Math.floor((tsMs - 5_000) / 1000);
+  const toUnix = Math.floor((tsMs + 5_000) / 1000);
+  const whenUnix = Math.floor(tsMs / 1000);
+  const content = [
+    `Server: **${id}**`,
+    `Event: **${title.trim().slice(0, 140)}**`,
+    `At: <t:${whenUnix}:f>`,
+    `Window: <t:${fromUnix}:f> → <t:${toUnix}:f>`,
+  ].join('\n');
+
+  const form = new FormData();
+  form.append('payload_json', JSON.stringify({ content }));
+  form.append('file', new Blob([gifBuf], { type: 'image/gif' }), `replay-${safeId}-${tsMs}.gif`);
+
+  let resp;
+  try {
+    resp = await fetch(url, { method: 'POST', body: form });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : 'fetch failed';
+    const cause = err && typeof err === 'object' && err.cause ? String(err.cause) : '';
+    res.status(502).send(cause ? `${msg}: ${cause}` : msg);
+    return;
+  }
+
+  if (!resp.ok) {
+    const text = await resp.text().catch(() => '');
+    res.status(502).send(text || `Discord webhook returned ${resp.status}`);
+    return;
+  }
+
+  res.json({ ok: true });
+}));
+
 app.get('/api/admin/users', requireAuth, requireTool('admin'), asyncRoute(async (req, res) => {
   const { users } = await readUsersFile();
   const out = Object.entries(users).map(([username, v]) => ({
@@ -1243,6 +2008,39 @@ app.get('/api/dev/servers', requireAuth, requireTool('dev'), asyncRoute(async (r
   }
   out.sort((a, b) => a.id.localeCompare(b.id));
   res.json(out);
+}));
+
+app.get('/api/dev/discordWebhook', requireAuth, requireTool('dev'), asyncRoute(async (req, res) => {
+  const url = await getDiscordWebhookUrl();
+  res.json({ isSet: Boolean(url), masked: url ? maskSecretUrl(url) : '' });
+}));
+
+app.post('/api/dev/discordWebhook', requireAuth, requireTool('dev'), asyncRoute(async (req, res) => {
+  const { webhookUrl } = req.body || {};
+  if (typeof webhookUrl !== 'string') {
+    res.status(400).send('Invalid webhookUrl');
+    return;
+  }
+
+  const trimmed = webhookUrl.trim();
+  if (trimmed.length === 0) {
+    const st = await readSettings();
+    const next = { ...st };
+    delete next.discordWebhookUrl;
+    await writeSettings(next);
+    res.json({ ok: true, isSet: false, masked: '' });
+    return;
+  }
+
+  // Basic sanity checks; real validation is Discord returning 2xx.
+  if (!/^https:\/\//i.test(trimmed) || trimmed.length < 20) {
+    res.status(400).send('Invalid webhookUrl');
+    return;
+  }
+
+  const st = await readSettings();
+  await writeSettings({ ...st, discordWebhookUrl: trimmed });
+  res.json({ ok: true, isSet: true, masked: maskSecretUrl(trimmed) });
 }));
 
 app.post('/api/dev/servers', requireAuth, requireTool('dev'), asyncRoute(async (req, res) => {

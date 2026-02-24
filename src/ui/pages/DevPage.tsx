@@ -1,10 +1,22 @@
 import React, { useEffect, useState } from 'react';
-import { addDevServer, clearServerHistory, listDevServers, regenerateTerrainData, type DevServerInfo } from '../../util/api';
+import {
+  addDevServer,
+  clearServerHistory,
+  getDevDiscordWebhook,
+  listDevServers,
+  regenerateTerrainData,
+  setDevDiscordWebhook,
+  type DevServerInfo,
+} from '../../util/api';
 
 export function DevPage() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [servers, setServers] = useState<DevServerInfo[]>([]);
+
+  const [discordWebhookMasked, setDiscordWebhookMasked] = useState<string>('');
+  const [discordWebhookDraft, setDiscordWebhookDraft] = useState<string>('');
+  const [discordWebhookIsSet, setDiscordWebhookIsSet] = useState(false);
 
   const [serverId, setServerId] = useState('');
   const [serverKey, setServerKey] = useState('');
@@ -16,6 +28,10 @@ export function DevPage() {
     try {
       const s = await listDevServers();
       setServers(s);
+
+      const wh = await getDevDiscordWebhook();
+      setDiscordWebhookIsSet(!!wh.isSet);
+      setDiscordWebhookMasked(wh.masked || '');
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to load dev servers');
     } finally {
@@ -35,6 +51,56 @@ export function DevPage() {
 
         <div className="card">
           <div className="stack">
+            <div>
+              <div className="label">Discord webhook (global)</div>
+              <div className="muted" style={{ fontSize: 12 }}>
+                Used by “Export event to Discord”. One webhook URL is shared for all servers.
+              </div>
+            </div>
+
+            <div>
+              <div className="label">Current</div>
+              <div className="muted" style={{ fontSize: 12 }}>
+                {discordWebhookIsSet ? (discordWebhookMasked || 'set') : 'not set'}
+              </div>
+            </div>
+
+            <div>
+              <div className="label">Webhook URL</div>
+              <input
+                className="input"
+                type="password"
+                value={discordWebhookDraft}
+                onChange={(e) => setDiscordWebhookDraft(e.target.value)}
+                placeholder="https://discord.com/api/webhooks/..."
+              />
+              <div className="muted" style={{ fontSize: 12, marginTop: 6 }}>
+                Leave blank and click Save to clear.
+              </div>
+            </div>
+
+            <div className="row" style={{ justifyContent: 'flex-end' }}>
+              <button
+                className="button buttonPrimary"
+                disabled={busy}
+                onClick={async () => {
+                  setBusy(true);
+                  setError(null);
+                  try {
+                    await setDevDiscordWebhook(discordWebhookDraft.trim());
+                    setDiscordWebhookDraft('');
+                    await refresh();
+                  } catch (e) {
+                    setError(e instanceof Error ? e.message : 'Failed to save webhook');
+                  } finally {
+                    setBusy(false);
+                  }
+                }}
+              >
+                Save webhook
+              </button>
+            </div>
+
             <div>
               <div className="label">Add server</div>
               <div className="muted" style={{ fontSize: 12 }}>

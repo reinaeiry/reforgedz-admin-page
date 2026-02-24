@@ -444,3 +444,61 @@ export async function regenerateTerrainData(serverId: string): Promise<{ ok: tru
   if (!res.ok) throw new Error((await res.text()) || `Failed to regenerate terrain (${res.status})`);
   return (await res.json()) as { ok: true };
 }
+
+export type DevDiscordWebhookStatus = {
+  isSet: boolean;
+  masked: string;
+};
+
+export async function getDevDiscordWebhook(): Promise<DevDiscordWebhookStatus> {
+  const base = requireApiBaseUrl();
+  const session = getSession();
+  if (!session) throw new Error('Not authenticated');
+
+  const res = await fetch(`${base}/api/dev/discordWebhook`, {
+    headers: { Authorization: `Bearer ${session.token}` },
+  });
+  if (!res.ok) throw new Error((await res.text()) || `Failed to load webhook (${res.status})`);
+  return (await res.json()) as DevDiscordWebhookStatus;
+}
+
+export async function setDevDiscordWebhook(webhookUrl: string): Promise<{ ok: true }> {
+  const base = requireApiBaseUrl();
+  const session = getSession();
+  if (!session) throw new Error('Not authenticated');
+
+  const res = await fetch(`${base}/api/dev/discordWebhook`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${session.token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ webhookUrl }),
+  });
+  if (!res.ok) throw new Error((await res.text()) || `Failed to save webhook (${res.status})`);
+  return (await res.json()) as { ok: true };
+}
+
+export async function exportReplayEventToDiscord(params: {
+  serverId: string;
+  tsMs: number;
+  title: string;
+  pos: { x: number; y: number; z: number };
+  focusPlayerId?: number | null;
+  playerIds?: number[] | null;
+}): Promise<{ ok: true }> {
+  const base = requireApiBaseUrl();
+  const session = getSession();
+  if (!session) throw new Error('Not authenticated');
+
+  const res = await fetch(`${base}/api/replay/exportDiscord`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${session.token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(params),
+  });
+  if (!res.ok) throw new Error((await res.text()) || `Failed to export to Discord (${res.status})`);
+  return (await res.json()) as { ok: true };
+}

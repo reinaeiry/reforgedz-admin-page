@@ -4,12 +4,12 @@
   "clearedAt": 1771867704713,
   "mapId": "9346ef4366c58979",
   "mapWorldFile": "$eirysreplays:Worlds/EdenTest.ent",
-  "lastReceivedAt": 1771899919842,
-  "lastIngestTsMs": 4717420,
-  "lastSessionId": "e3c0267a-f874-43a6-b178-dab6605fdf12",
+  "lastReceivedAt": 1771903730698,
+  "lastIngestTsMs": 5639058,
+  "lastSessionId": "5b0ac19d-a73d-423e-ac2e-333f3077b9e9",
   "minTsMs": 0,
-  "maxTsMs": 4717420,
-  "totalEvents": 26075,
+  "maxTsMs": 5639058,
+  "totalEvents": 31020,
   "sessions": {
     "2b8934bf-6a2d-47de-a844-f777861e517b": {
       "offsetMs": 0,
@@ -354,11 +354,83 @@
       "lastReceivedAt": 1771899919842,
       "lastSessionTsMs": 0,
       "lastTsMs": 4717420
+    },
+    "75b291c7-75aa-47d1-a49f-4a15333dd9a8": {
+      "offsetMs": 4717421,
+      "firstReceivedAt": 1771901574322,
+      "firstSessionTsMs": 0,
+      "lastReceivedAt": 1771901574322,
+      "lastSessionTsMs": 0,
+      "lastTsMs": 4717421
+    },
+    "aab57cb3-22e7-40a3-9b99-26b406dc41fc": {
+      "offsetMs": 4717422,
+      "firstReceivedAt": 1771901614420,
+      "firstSessionTsMs": 0,
+      "lastReceivedAt": 1771901767304,
+      "lastSessionTsMs": 145320,
+      "lastTsMs": 4862742
+    },
+    "4ed078a4-1e05-49b6-a508-71a0327a2a84": {
+      "offsetMs": 4862743,
+      "firstReceivedAt": 1771901779946,
+      "firstSessionTsMs": 0,
+      "lastReceivedAt": 1771901779946,
+      "lastSessionTsMs": 0,
+      "lastTsMs": 4862743
+    },
+    "71ceda25-f318-4680-82f3-3d01f95e7822": {
+      "offsetMs": 4862744,
+      "firstReceivedAt": 1771902085370,
+      "firstSessionTsMs": 0,
+      "lastReceivedAt": 1771902388564,
+      "lastSessionTsMs": 295475,
+      "lastTsMs": 5158219
+    },
+    "02839275-c3fc-4e19-ba98-aa1353af2eb8": {
+      "offsetMs": 5158220,
+      "firstReceivedAt": 1771902401648,
+      "firstSessionTsMs": 0,
+      "lastReceivedAt": 1771902401648,
+      "lastSessionTsMs": 0,
+      "lastTsMs": 5158220
+    },
+    "b7b98e35-2441-49b9-9598-18afecc33d67": {
+      "offsetMs": 5158221,
+      "firstReceivedAt": 1771903121132,
+      "firstSessionTsMs": 0,
+      "lastReceivedAt": 1771903592134,
+      "lastSessionTsMs": 460100,
+      "lastTsMs": 5618321
+    },
+    "f776be5e-37a0-4eb6-baae-3d9ad365e678": {
+      "offsetMs": 5618322,
+      "firstReceivedAt": 1771903605702,
+      "firstSessionTsMs": 0,
+      "lastReceivedAt": 1771903605702,
+      "lastSessionTsMs": 0,
+      "lastTsMs": 5618322
+    },
+    "0e07af45-8a04-4e8c-955d-4b6f79b1570b": {
+      "offsetMs": 5618323,
+      "firstReceivedAt": 1771903689526,
+      "firstSessionTsMs": 0,
+      "lastReceivedAt": 1771903718062,
+      "lastSessionTsMs": 20734,
+      "lastTsMs": 5639057
+    },
+    "5b0ac19d-a73d-423e-ac2e-333f3077b9e9": {
+      "offsetMs": 5639058,
+      "firstReceivedAt": 1771903730698,
+      "firstSessionTsMs": 0,
+      "lastReceivedAt": 1771903730698,
+      "lastSessionTsMs": 0,
+      "lastTsMs": 5639058
     }
   },
-  "lastCompactionAt": 1771899922969,
+  "lastCompactionAt": 1771903693448,
   "pendingCommands": {},
   "firstReceivedAt": 1771867737721,
-  "storedEvents": 4638,
+  "storedEvents": 9583,
   "retentionMs": 86400000
 }
