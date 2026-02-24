@@ -299,6 +299,7 @@ export function ReplayToolPage() {
   const [trailSeconds, setTrailSeconds] = useState(20);
   const [toasts, setToasts] = useState<Array<{ id: string; kind: 'kill' | 'event'; title: string; subtitle: string; visible: boolean }>>([]);
   const lastToastReceivedAtRef = useRef<number>(0);
+  const lastPlaybackToastTsMsRef = useRef<number | null>(null);
 
   const [eventClickOffsetSeconds, setEventClickOffsetSeconds] = useState<number>(() => {
     try {
@@ -480,6 +481,7 @@ export function ReplayToolPage() {
 
         // Avoid showing a burst of historical popups on initial load.
         lastToastReceivedAtRef.current = Date.now();
+        lastPlaybackToastTsMsRef.current = null;
 
         // Default to paused when switching servers until the user hits Play.
         setIsPlaying(false);
@@ -1053,8 +1055,62 @@ export function ReplayToolPage() {
       const MAX_SCAN_POINTS = 25;
       const MAX_SCAN_BACK_MS = 60_000;
       const MAX_INTERP_GAP_MS = 2500;
+      const MAX_ANCHOR_WINDOW_MS = 5000;
+      const MAX_ANCHOR_POINTS = 80;
+
+      const getEntityId = (p: any): string | null => {
+        const raw = p && typeof p === 'object' ? (p as any).entityId : null;
+        if (typeof raw !== 'string') return null;
+        const s = raw.trim();
+        return s.length > 0 ? s : null;
+      };
+
+      // Anchor all scanning/interpolation to a stable entityId when possible.
+      // Prefer the entityId at-or-before `tsMs` to avoid oscillating between lives while scrubbing.
+      // If the at-or-before sample looks like an origin glitch and we can see a near-future entityId,
+      // prefer the forward entity to avoid snapping back to a previous life.
+      let anchorEntityId: string | null = null;
+      const idxEnt = getEntityId(series[idx].player);
+      if (idxEnt) {
+        anchorEntityId = idxEnt;
+      } else {
+        let prevEnt: string | null = null;
+        for (let i = idx; i >= 0 && (idx - i) < MAX_ANCHOR_POINTS; i--) {
+          const rec = series[i];
+          const dist = tsMs - rec.tsMs;
+          if (dist > MAX_ANCHOR_WINDOW_MS) break;
+          const ent = getEntityId(rec.player);
+          if (ent) {
+            prevEnt = ent;
+            break;
+          }
+        }
+
+        let nextEnt: string | null = null;
+        for (let i = idx + 1; i < series.length && (i - idx) < MAX_ANCHOR_POINTS; i++) {
+          const rec = series[i];
+          const dist = rec.tsMs - tsMs;
+          if (dist > MAX_ANCHOR_WINDOW_MS) break;
+          const ent = getEntityId(rec.player);
+          if (ent) {
+            nextEnt = ent;
+            break;
+          }
+        }
+
+        const idxPos = coerceVec3(series[idx].player && (series[idx].player as any).pos);
+        const idxLooksBogus = !!(idxPos && isNearOriginXZ(idxPos, ORIGIN_BOUND));
+
+        if (idxLooksBogus && nextEnt) anchorEntityId = nextEnt;
+        else anchorEntityId = prevEnt || nextEnt;
+      }
 
       const isGood = (p: any) => {
+        if (anchorEntityId) {
+          const ent = getEntityId(p);
+          // If the sample has an entityId and it doesn't match, treat it as unrelated.
+          if (ent && ent !== anchorEntityId) return null;
+        }
         const pos = coerceVec3(p && (p as any).pos);
         if (!pos) return null;
         if (isNearOriginXZ(pos, ORIGIN_BOUND)) return null;
@@ -1066,6 +1122,12 @@ export function ReplayToolPage() {
       for (let i = idx; i >= 0 && (idx - i) < MAX_SCAN_POINTS; i--) {
         const rec = series[i];
         if ((tsMs - rec.tsMs) > MAX_SCAN_BACK_MS) break;
+
+        if (anchorEntityId) {
+          const ent = getEntityId(rec.player);
+          if (ent && ent !== anchorEntityId) break;
+        }
+
         const pos = isGood(rec.player);
         if (!pos) continue;
         prev = { pos, tsMs: rec.tsMs, player: rec.player };
@@ -1077,13 +1139,23 @@ export function ReplayToolPage() {
       for (let i = idx + 1; i < series.length && (i - idx) < MAX_SCAN_POINTS; i++) {
         const rec = series[i];
         if ((rec.tsMs - tsMs) > MAX_SCAN_BACK_MS) break;
+
+        if (anchorEntityId) {
+          const ent = getEntityId(rec.player);
+          if (ent && ent !== anchorEntityId) break;
+        }
+
         const pos = isGood(rec.player);
         if (!pos) continue;
         next = { pos, tsMs: rec.tsMs, player: rec.player };
         break;
       }
 
-      if (!prev && next) return next;
+      // Avoid jumping forward to a far-future sample; it can look like jitter when scrubbing.
+      if (!prev && next) {
+        if ((next.tsMs - tsMs) <= 750) return next;
+        return null;
+      }
       if (!prev) return null;
 
       if (next && next.tsMs > prev.tsMs && tsMs >= prev.tsMs && tsMs <= next.tsMs) {
@@ -1097,6 +1169,73 @@ export function ReplayToolPage() {
       return prev;
     };
   }, [playerSeriesById]);
+
+  const toastTimeline = useMemo(() => {
+    const out: Array<{ tsMs: number; kind: 'kill' | 'event'; title: string; subtitle: string }> = [];
+
+    for (const rec of events) {
+      const p: any = rec && (rec as any).payload;
+      if (!p || typeof p !== 'object') continue;
+      if (typeof p.tsMs !== 'number') continue;
+      if (p.type === 'snapshot') continue;
+
+      if (p.type === 'gmPing') {
+        const ev: any = (p as any).event;
+        const by = ev && typeof ev.by === 'string' && ev.by.length > 0 ? ev.by : '';
+        const title = ev && typeof ev.title === 'string' && ev.title.length > 0 ? ev.title : 'Ping';
+        out.push({ tsMs: p.tsMs, kind: 'event', title: 'GM ping', subtitle: by ? `${by} • ${title}` : title });
+        continue;
+      }
+
+      if (p.type === 'kill') {
+        const ev: any = (p as any).event;
+        const killerName = ev && typeof ev.killerName === 'string' ? ev.killerName : 'Unknown';
+        const victimName = ev && typeof ev.victimName === 'string' ? ev.victimName : 'Unknown';
+        const weaponName = ev && typeof ev.weaponName === 'string' && ev.weaponName.length > 0 ? ev.weaponName : '';
+        const distanceM = ev && typeof ev.distanceM === 'number' ? ev.distanceM : null;
+        const distText = (typeof distanceM === 'number' && Number.isFinite(distanceM)) ? `${Math.round(distanceM)}m` : '';
+        const subtitleParts = [] as string[];
+        if (weaponName) subtitleParts.push(weaponName);
+        if (distText) subtitleParts.push(distText);
+        out.push({ tsMs: p.tsMs, kind: 'kill', title: `${killerName} → ${victimName}`, subtitle: subtitleParts.length > 0 ? subtitleParts.join(' • ') : 'Kill' });
+        continue;
+      }
+
+      if (p.type === 'death') {
+        // Avoid duplicate toasts when we have both kill + death for the same event.
+        const ev: any = (p as any).event;
+        const victimId = ev && typeof ev.victimPlayerId === 'number' ? ev.victimPlayerId : null;
+        const killerId = ev && typeof ev.killerPlayerId === 'number' ? ev.killerPlayerId : null;
+        if (victimId !== null && killerId !== null && killerId >= 0 && killerId !== victimId) continue;
+
+        const victimName = ev && typeof ev.victimName === 'string' ? ev.victimName : 'Unknown';
+        const weaponName = ev && typeof ev.weaponName === 'string' && ev.weaponName.length > 0 ? ev.weaponName : '';
+        const distanceM = ev && typeof ev.distanceM === 'number' ? ev.distanceM : null;
+        const distText = (typeof distanceM === 'number' && Number.isFinite(distanceM)) ? `${Math.round(distanceM)}m` : '';
+        const subtitleParts = [] as string[];
+        if (weaponName) subtitleParts.push(weaponName);
+        if (distText) subtitleParts.push(distText);
+        out.push({ tsMs: p.tsMs, kind: 'event', title: `${victimName} died`, subtitle: subtitleParts.length > 0 ? subtitleParts.join(' • ') : 'Death' });
+        continue;
+      }
+
+      if (p.type === 'aiKill') {
+        const ev: any = (p as any).event;
+        const killerName = ev && typeof ev.killerName === 'string' ? ev.killerName : 'Unknown';
+        const victimName = ev && typeof ev.victimName === 'string' ? ev.victimName : 'Unknown';
+        const weaponName = ev && typeof ev.weaponName === 'string' && ev.weaponName.length > 0 ? ev.weaponName : '';
+        const distanceM = ev && typeof ev.distanceM === 'number' ? ev.distanceM : null;
+        const distText = (typeof distanceM === 'number' && Number.isFinite(distanceM)) ? `${Math.round(distanceM)}m` : '';
+        const subtitleParts = [] as string[];
+        if (weaponName) subtitleParts.push(weaponName);
+        if (distText) subtitleParts.push(distText);
+        out.push({ tsMs: p.tsMs, kind: 'kill', title: `${killerName} → AI: ${victimName}`, subtitle: subtitleParts.length > 0 ? subtitleParts.join(' • ') : 'AI kill' });
+      }
+    }
+
+    out.sort((a, b) => a.tsMs - b.tsMs);
+    return out;
+  }, [events]);
 
   const presenceSeriesById = useMemo(() => {
     const map = new Map<number, Array<{ tsMs: number; type: 'join' | 'disconnect' }>>();
@@ -1501,13 +1640,23 @@ export function ReplayToolPage() {
       if (t < p.tsMs || t > p.tsMs + 3000) continue;
 
       const ev: any = (p as any).event;
-      const victimPos = ev ? coerceVec3(ev.victimPos) : null;
+      let victimPos = ev ? coerceVec3(ev.victimPos) : null;
+
+      // Older events may not include victimPos; fall back to victim player series at event time.
+      if (!victimPos && ev && typeof ev === 'object') {
+        const victimId = typeof ev.victimPlayerId === 'number' ? ev.victimPlayerId : null;
+        if (typeof victimId === 'number') {
+          const best = findBestPlayerPosAt(victimId, p.tsMs);
+          if (best) victimPos = best.pos;
+        }
+      }
+
       if (!victimPos) continue;
       out.push(victimPos);
       if (out.length >= 40) break;
     }
     return out;
-  }, [currentTsMs, events, showDeathMarkers]);
+  }, [currentTsMs, events, findBestPlayerPosAt, showDeathMarkers]);
 
   const scrubber = useMemo(() => {
     const min = range.minTsMs;
@@ -2143,6 +2292,58 @@ export function ReplayToolPage() {
     if (maxSeen > lastSeen) lastToastReceivedAtRef.current = maxSeen;
   }, [events, live]);
 
+  // Show event toasts while replaying/scrubbing (non-live): drive off replay time, not receivedAt.
+  useEffect(() => {
+    if (!serverId) return;
+    if (live) return;
+    const t = currentTsMs;
+    if (typeof t !== 'number' || !Number.isFinite(t)) return;
+    if (toastTimeline.length === 0) return;
+
+    const last = lastPlaybackToastTsMsRef.current;
+    if (typeof last !== 'number' || !Number.isFinite(last)) {
+      // Avoid a burst on initial load.
+      lastPlaybackToastTsMsRef.current = t;
+      return;
+    }
+
+    // If user scrubbed backwards, reset cursor so they can see events again.
+    if (t + 50 < last) {
+      lastPlaybackToastTsMsRef.current = t;
+      setToasts([]);
+      return;
+    }
+
+    if (t <= last) return;
+
+    // Find items with (last, t].
+    let lo = 0;
+    let hi = toastTimeline.length - 1;
+    let startIdx = toastTimeline.length;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (toastTimeline[mid].tsMs > last) {
+        startIdx = mid;
+        hi = mid - 1;
+      } else {
+        lo = mid + 1;
+      }
+    }
+
+    const pending: Array<{ tsMs: number; kind: 'kill' | 'event'; title: string; subtitle: string }> = [];
+    for (let i = startIdx; i < toastTimeline.length; i++) {
+      const item = toastTimeline[i];
+      if (item.tsMs > t) break;
+      pending.push(item);
+    }
+
+    // Don’t spam on large scrubs; show only the most recent couple.
+    const toShow = pending.length > 2 ? pending.slice(-2) : pending;
+    for (const item of toShow) pushToast({ kind: item.kind, title: item.title, subtitle: item.subtitle });
+
+    lastPlaybackToastTsMsRef.current = t;
+  }, [currentTsMs, live, serverId, toastTimeline]);
+
   return (
     <div style={{ width: '100vw', height: '100vh', overflow: 'hidden' }}>
       <div className="row" style={{ gap: 12, padding: 12, alignItems: 'center' }}>
@@ -2162,6 +2363,7 @@ export function ReplayToolPage() {
               setCurrentTsMs(null);
               lastFetchedTsMsRef.current = null;
               lastToastReceivedAtRef.current = 0;
+              lastPlaybackToastTsMsRef.current = null;
               setToasts([]);
             }}
           >
