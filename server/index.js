@@ -380,24 +380,42 @@ function drawReplay3DFrame(ctx, opts) {
   const gridMinor = 'rgba(29,38,56,0.9)';
   ctx.lineWidth = 1;
 
-  for (let i = -gridHalf; i <= gridHalf + 1e-6; i += gridStep) {
-    const isMajor = Math.abs(i) < 1e-6 || (Math.abs(i) % majorEvery) < 1e-6;
+  function mod(a, b) {
+    const r = a % b;
+    return r < 0 ? r + b : r;
+  }
+
+  function isMajorLineWorld(v) {
+    // Major lines are aligned to world coordinates (multiples of majorEvery).
+    // Using a tolerant check avoids float drift.
+    const m = mod(v, majorEvery);
+    return m < 1e-6 || Math.abs(m - majorEvery) < 1e-6;
+  }
+
+  // Render a world-aligned grid "window" around (gx,gz).
+  // This keeps the grid visible while the camera follows a player, and because the grid lines
+  // are anchored in world space, it visually moves under the player instead of sticking to them.
+  const xStart = Math.floor((gx - gridHalf) / gridStep) * gridStep;
+  const xEnd = Math.floor((gx + gridHalf) / gridStep) * gridStep;
+  const zStart = Math.floor((gz - gridHalf) / gridStep) * gridStep;
+  const zEnd = Math.floor((gz + gridHalf) / gridStep) * gridStep;
+
+  for (let x = xStart; x <= xEnd + 1e-6; x += gridStep) {
+    const isMajor = isMajorLineWorld(x);
     ctx.strokeStyle = isMajor ? gridMajor : gridMinor;
     const pts = [];
-    const x = gx + i;
-    for (let z = gz - gridHalf; z <= gz + gridHalf + 1e-6; z += gridStep) {
+    for (let z = zStart; z <= zEnd + 1e-6; z += gridStep) {
       const y = terrainYAt(x, z) + 0.06;
       pts.push({ x, y, z });
     }
     strokeWorldPolyline(pts);
   }
 
-  for (let j = -gridHalf; j <= gridHalf + 1e-6; j += gridStep) {
-    const isMajor = Math.abs(j) < 1e-6 || (Math.abs(j) % majorEvery) < 1e-6;
+  for (let z = zStart; z <= zEnd + 1e-6; z += gridStep) {
+    const isMajor = isMajorLineWorld(z);
     ctx.strokeStyle = isMajor ? gridMajor : gridMinor;
     const pts = [];
-    const z = gz + j;
-    for (let x = gx - gridHalf; x <= gx + gridHalf + 1e-6; x += gridStep) {
+    for (let x = xStart; x <= xEnd + 1e-6; x += gridStep) {
       const y = terrainYAt(x, z) + 0.06;
       pts.push({ x, y, z });
     }
@@ -720,12 +738,48 @@ async function buildReplayEventGif({ safeId, serverId, tsMs, title, pos, focusPl
   const lastById = new Map();
   for (const id of trackedIds) lastById.set(id, eventPoint);
 
-  // Keep the terrain grid anchored so it visibly moves under the followed player.
-  // (If we center the grid on the camera target every frame, the terrain appears stationary.)
-  const gridAnchor = eventPoint ? { x: eventPoint.x, z: eventPoint.z } : { x: 0, z: 0 };
-
   /** @type {Map<number, string>} */
   const lastNameById = new Map();
+
+  // Build per-player time series from snapshots (snapshots can be partial).
+  /** @type {Map<number, Array<{tsMs:number, pos:{x:number,y:number,z:number}, name:string}>>} */
+  const seriesById = new Map();
+  for (const s of snapshots) {
+    const t = s.tsMs;
+    for (const pl of s.players) {
+      if (!pl || typeof pl !== 'object') continue;
+      const id = pl.playerId;
+      if (typeof id !== 'number' || !Number.isFinite(id) || id < 0) continue;
+      const pos = coerceVec3(pl.pos);
+      if (!pos) continue;
+      const name = (typeof pl.name === 'string' && pl.name.trim().length > 0) ? pl.name.trim() : '';
+      let arr = seriesById.get(id);
+      if (!arr) {
+        arr = [];
+        seriesById.set(id, arr);
+      }
+      arr.push({ tsMs: t, pos, name });
+    }
+  }
+  for (const arr of seriesById.values()) arr.sort((a, b) => a.tsMs - b.tsMs);
+
+  function findAtOrBefore(series, t) {
+    if (!series || series.length === 0) return null;
+    let lo = 0;
+    let hi = series.length - 1;
+    let idx = -1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      const v = series[mid].tsMs;
+      if (v <= t) {
+        idx = mid;
+        lo = mid + 1;
+      } else {
+        hi = mid - 1;
+      }
+    }
+    return idx >= 0 ? series[idx] : null;
+  }
 
   const fps = 2;
   const stepMs = 1000 / fps;
@@ -735,7 +789,6 @@ async function buildReplayEventGif({ safeId, serverId, tsMs, title, pos, focusPl
   const trailsById = new Map();
   for (const id of trackedIds) trailsById.set(id, []);
 
-  let snapIdx = 0;
   const w = 600;
   const h = 338;
   const canvas = createCanvas(w, h);
@@ -749,18 +802,16 @@ async function buildReplayEventGif({ safeId, serverId, tsMs, title, pos, focusPl
     const relMs = absTsMs - tsMs;
     const t = absTsMs;
 
-    while (snapIdx + 1 < snapshots.length && snapshots[snapIdx + 1].tsMs <= t) snapIdx++;
-    const snap = snapshots.length > 0 ? snapshots[Math.min(snapIdx, snapshots.length - 1)] : null;
-
     const playerNow = [];
     for (const id of trackedIds) {
       let pt = null;
       let name = lastNameById.get(id) || '';
-      if (snap) {
-        const pl = snap.players.find((x) => x && typeof x === 'object' && x.playerId === id);
-        pt = pl ? coerceVec3(pl.pos) : null;
-        if (pl && typeof pl === 'object' && typeof pl.name === 'string' && pl.name.trim().length > 0) {
-          name = pl.name.trim();
+      const series = seriesById.get(id);
+      const rec = findAtOrBefore(series, t);
+      if (rec && rec.pos) {
+        pt = rec.pos;
+        if (rec.name) {
+          name = rec.name;
           lastNameById.set(id, name);
         }
       }
@@ -870,7 +921,7 @@ async function buildReplayEventGif({ safeId, serverId, tsMs, title, pos, focusPl
       absTsMs,
       wallClockAbsMs: absWallClockMs,
       requester,
-      gridCenter: gridAnchor,
+      gridCenter: { x: target.x, z: target.z },
       terrain,
       camera,
       basis,
