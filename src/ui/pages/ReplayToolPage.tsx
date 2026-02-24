@@ -308,6 +308,9 @@ export function ReplayToolPage() {
   const [events, setEvents] = useState<IngestRecord[]>([]);
   const lastFetchedTsMsRef = useRef<number | null>(null);
   const backfillInFlightRef = useRef(false);
+  const autoBackfillStoppedForServerRef = useRef<string | null>(null);
+  const autoBackfillNoProgressRef = useRef(0);
+  const autoBackfillLastAttemptAtRef = useRef(0);
   const terrainFetchInFlightRef = useRef(false);
   const townsFetchInFlightRef = useRef(false);
 
@@ -329,6 +332,13 @@ export function ReplayToolPage() {
   useEffect(() => {
     currentTsMsRef.current = currentTsMs;
   }, [currentTsMs]);
+
+  useEffect(() => {
+    // Reset auto-backfill guards when switching servers.
+    autoBackfillStoppedForServerRef.current = null;
+    autoBackfillNoProgressRef.current = 0;
+    autoBackfillLastAttemptAtRef.current = 0;
+  }, [selectedServerId]);
 
   useEffect(() => {
     try {
@@ -844,6 +854,82 @@ export function ReplayToolPage() {
         backfillInFlightRef.current = false;
       });
   }, [currentTsMs, loadedEventRange.minTsMs, range.minTsMs, serverId]);
+
+  // Auto-backfill older history in the background so a refresh doesn't look like we only retained
+  // a few minutes (initial load intentionally pulls a tail window).
+  useEffect(() => {
+    if (!serverId) return;
+    const serverIdValue = serverId;
+
+    if (autoBackfillStoppedForServerRef.current === serverIdValue) return;
+
+    const loadedMin = loadedEventRange.minTsMs;
+    const absoluteMin = range.minTsMs;
+    if (typeof loadedMin !== 'number') return;
+    if (typeof absoluteMin !== 'number') return;
+
+    // Nothing left to warm.
+    if (loadedMin <= absoluteMin + 1) return;
+
+    // Don't churn if we're already at the in-memory cap.
+    const CAP = 250000;
+    if (events.length >= CAP - 5000) {
+      autoBackfillStoppedForServerRef.current = serverIdValue;
+      return;
+    }
+
+    // Avoid rapid-fire retries (especially on slow links).
+    const now = Date.now();
+    if (now - autoBackfillLastAttemptAtRef.current < 400) return;
+    if (backfillInFlightRef.current) return;
+
+    autoBackfillLastAttemptAtRef.current = now;
+    backfillInFlightRef.current = true;
+
+    const untilTsMs = Math.max(0, Math.floor(loadedMin) - 1);
+
+    getReplayEvents({
+      serverId: serverIdValue,
+      untilTsMs,
+      limit: 5000,
+      tail: true,
+    })
+      .then((items) => {
+        if (items.length === 0) {
+          autoBackfillNoProgressRef.current += 1;
+          if (autoBackfillNoProgressRef.current >= 3) {
+            autoBackfillStoppedForServerRef.current = serverIdValue;
+          }
+          return;
+        }
+
+        autoBackfillNoProgressRef.current = 0;
+
+        setEvents((prev) => {
+          const head = prev.slice(0, 800);
+          const seen = new Set<string>();
+          for (const e of head) {
+            seen.add(getRecordKey(e));
+          }
+
+          const nextItems: IngestRecord[] = [];
+          for (const e of items) {
+            const k = getRecordKey(e);
+            if (seen.has(k)) continue;
+            nextItems.push(e);
+          }
+
+          const next = nextItems.concat(prev);
+          return trimEventsToCap(next, CAP, currentTsMsRef.current);
+        });
+      })
+      .catch(() => {
+        // ignore
+      })
+      .finally(() => {
+        backfillInFlightRef.current = false;
+      });
+  }, [events.length, loadedEventRange.minTsMs, range.minTsMs, serverId]);
 
   const snapshots = useMemo(() => {
     const out: Array<{ tsMs: number; players: any[] }> = [];
