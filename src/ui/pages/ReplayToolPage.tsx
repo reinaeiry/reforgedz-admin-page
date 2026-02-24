@@ -8,6 +8,7 @@ import {
   getReplayStatusAll,
   listReplayPlayers,
   listServers,
+  sendReplayGmPing,
   type IngestRecord,
   type MapDescriptors,
   type MapTerrain,
@@ -49,6 +50,12 @@ function coerceVec3(v: any): { x: number; y: number; z: number } | null {
   }
 
   return null;
+}
+
+function isNearOriginXZ(pos: { x: number; y: number; z: number } | null, bound = 30): boolean {
+  if (!pos) return true;
+  if (typeof pos.x !== 'number' || typeof pos.z !== 'number') return true;
+  return Math.abs(pos.x) <= bound && Math.abs(pos.z) <= bound;
 }
 
 function coerceTerrainGrid(t: MapTerrain | null): TerrainGrid | null {
@@ -259,13 +266,13 @@ export function ReplayToolPage() {
   const [showEventTimeline, setShowEventTimeline] = useState(true);
   const [hoveredEventDot, setHoveredEventDot] = useState<null | {
     tsMs: number;
-    type: 'kill' | 'death' | 'aiKill' | 'join' | 'disconnect' | 'restart';
+    type: 'kill' | 'death' | 'aiKill' | 'join' | 'disconnect' | 'restart' | 'gmPing';
     title: string;
     subtitle: string;
     leftPct: number;
   }>(null);
   const [selectedEventKey, setSelectedEventKey] = useState<string | null>(null);
-  const eventCardRefs = useRef<Map<string, HTMLButtonElement>>(new Map());
+  const eventCardRefs = useRef<Map<string, HTMLElement>>(new Map());
 
   const [isPlaying, setIsPlaying] = useState(false);
   const [playbackSpeed, setPlaybackSpeed] = useState(1);
@@ -292,6 +299,8 @@ export function ReplayToolPage() {
       return 5;
     }
   });
+
+  const [eventPlayerFilterId, setEventPlayerFilterId] = useState<number | null>(null);
 
   const [attachedPlayerId, setAttachedPlayerId] = useState<number | null>(null);
 
@@ -847,6 +856,44 @@ export function ReplayToolPage() {
     return out;
   }, [events]);
 
+  const findFirstNonOriginPosAfter = useMemo(() => {
+    // Best-effort: join/login snapshots can report 0,*,0 briefly. Find the first position after `tsMs`
+    // that is not within the origin XZ box.
+    return (playerId: number, tsMs: number, maxWindowMs = 60000): { x: number; y: number; z: number } | null => {
+      if (typeof playerId !== 'number' || playerId < 0) return null;
+      if (typeof tsMs !== 'number' || !Number.isFinite(tsMs)) return null;
+      if (snapshots.length === 0) return null;
+
+      const until = tsMs + Math.max(1000, Math.min(5 * 60 * 1000, Math.floor(maxWindowMs)));
+
+      // First snapshot with ts >= tsMs.
+      let lo = 0;
+      let hi = snapshots.length - 1;
+      let idx = snapshots.length;
+      while (lo <= hi) {
+        const mid = (lo + hi) >> 1;
+        if (snapshots[mid].tsMs >= tsMs) {
+          idx = mid;
+          hi = mid - 1;
+        } else {
+          lo = mid + 1;
+        }
+      }
+
+      for (let i = idx; i < snapshots.length; i++) {
+        const s = snapshots[i];
+        if (s.tsMs > until) break;
+        const pj = s.players.find((p) => p && typeof p === 'object' && (p as any).playerId === playerId);
+        if (!pj) continue;
+        const pos = coerceVec3((pj as any).pos);
+        if (!pos) continue;
+        if (isNearOriginXZ(pos, 30)) continue;
+        return pos;
+      }
+      return null;
+    };
+  }, [snapshots]);
+
   const deadUntilByPlayerId = useMemo(() => {
     // Best-effort: mark victims as "dead" for a short window after a death event.
     // (We don't currently receive an explicit respawn event.)
@@ -973,6 +1020,9 @@ export function ReplayToolPage() {
 
       const pos = coerceVec3((pj as any).pos);
       if (!pos) continue;
+
+      // Ignore bogus origin-space points; they create misleading trails and jumps.
+      if (isNearOriginXZ(pos, 30)) continue;
 
       const terrainY = sampleTerrainY(terrain, pos.x, pos.z);
       const shouldSnapToTerrain = !inVehicle
@@ -1171,6 +1221,7 @@ export function ReplayToolPage() {
       subtitle: string;
       focusPos: { x: number; y: number; z: number } | null;
       focusPlayerId: number | null;
+      playerIds: number[];
     }> = [];
 
     for (const e of events) {
@@ -1178,7 +1229,7 @@ export function ReplayToolPage() {
       if (!p || typeof p !== 'object') continue;
       if (typeof p.tsMs !== 'number') continue;
       if (p.type === 'snapshot') continue;
-      if (p.type !== 'kill' && p.type !== 'death' && p.type !== 'aiKill' && p.type !== 'join' && p.type !== 'disconnect' && p.type !== 'restart') continue;
+      if (p.type !== 'kill' && p.type !== 'death' && p.type !== 'aiKill' && p.type !== 'join' && p.type !== 'disconnect' && p.type !== 'restart' && p.type !== 'gmPing') continue;
 
       const ev: any = (p as any).event;
 
@@ -1190,6 +1241,7 @@ export function ReplayToolPage() {
         const distText = (typeof distanceM === 'number' && Number.isFinite(distanceM)) ? `${Math.round(distanceM)}m` : '';
         const victimPos = ev ? coerceVec3(ev.victimPos) : null;
         const victimId = ev && typeof ev.victimPlayerId === 'number' ? ev.victimPlayerId : null;
+        const killerId = ev && typeof ev.killerPlayerId === 'number' ? ev.killerPlayerId : null;
 
         const subtitleParts = [] as string[];
         if (weaponName) subtitleParts.push(weaponName);
@@ -1202,6 +1254,7 @@ export function ReplayToolPage() {
           subtitle: subtitleParts.join(' • '),
           focusPos: victimPos,
           focusPlayerId: victimId,
+          playerIds: [killerId, victimId].filter((x): x is number => typeof x === 'number'),
         });
       } else if (p.type === 'death') {
         // If this death is attributable to another player, it will also have a corresponding `kill` event.
@@ -1227,6 +1280,7 @@ export function ReplayToolPage() {
           subtitle: subtitleParts.join(' • '),
           focusPos: victimPos,
           focusPlayerId: victimId,
+          playerIds: [victimId].filter((x): x is number => typeof x === 'number'),
         });
       } else if (p.type === 'aiKill') {
         const killerName = ev && typeof ev.killerName === 'string' ? ev.killerName : 'Unknown';
@@ -1248,6 +1302,21 @@ export function ReplayToolPage() {
           subtitle: subtitleParts.join(' • '),
           focusPos: victimPos,
           focusPlayerId: killerId,
+          playerIds: [killerId].filter((x): x is number => typeof x === 'number'),
+        });
+      } else if (p.type === 'gmPing') {
+        const by = ev && typeof ev.by === 'string' && ev.by.length > 0 ? ev.by : '';
+        const target = ev && typeof ev.title === 'string' && ev.title.length > 0 ? ev.title : 'event';
+        const pos = ev ? coerceVec3(ev.pos) : null;
+        const msg = by ? `(${by} sent a GM ping to ${target})` : `GM ping to ${target}`;
+        out.push({
+          tsMs: p.tsMs,
+          type: 'gmPing',
+          title: msg,
+          subtitle: '',
+          focusPos: pos,
+          focusPlayerId: null,
+          playerIds: [],
         });
       } else {
         if (p.type === 'restart') {
@@ -1258,18 +1327,25 @@ export function ReplayToolPage() {
             subtitle: 'restart / history cleared',
             focusPos: null,
             focusPlayerId: null,
+            playerIds: [],
           });
           continue;
         }
         const name = ev && typeof ev.name === 'string' ? ev.name : String(ev && ev.playerId ? ev.playerId : 'player');
         const id = ev && typeof ev.playerId === 'number' ? ev.playerId : null;
+
+        const joinFocusPos = (p.type === 'join' && typeof id === 'number')
+          ? findFirstNonOriginPosAfter(id, p.tsMs, 90_000)
+          : null;
+
         out.push({
           tsMs: p.tsMs,
           type: String(p.type),
           title: `${p.type === 'join' ? 'Join' : 'Disconnect'}: ${name}`,
           subtitle: p.type === 'disconnect' && ev && typeof ev.kickCause === 'string' && ev.kickCause ? `cause: ${ev.kickCause}` : '',
-          focusPos: null,
+          focusPos: joinFocusPos,
           focusPlayerId: id,
+          playerIds: [id].filter((x): x is number => typeof x === 'number'),
         });
       }
     }
@@ -1277,11 +1353,17 @@ export function ReplayToolPage() {
     out.sort((a, b) => a.tsMs - b.tsMs);
 
     const t = currentTsMs;
+    const filterId = eventPlayerFilterId;
+
+    let visible = out;
     if (typeof t === 'number') {
-      return out.filter((x) => x.tsMs <= t).slice(-200);
+      visible = visible.filter((x) => x.tsMs <= t);
     }
-    return out.slice(-200);
-  }, [currentTsMs, events]);
+    if (typeof filterId === 'number') {
+      visible = visible.filter((x) => x.playerIds.includes(filterId));
+    }
+    return visible.slice(-200);
+  }, [currentTsMs, eventPlayerFilterId, events, findFirstNonOriginPosAfter]);
 
   useEffect(() => {
     if (!selectedEventKey) return;
@@ -1299,26 +1381,28 @@ export function ReplayToolPage() {
     const max = range.maxTsMs;
     if (typeof min !== 'number' || typeof max !== 'number') return [] as Array<{
       tsMs: number;
-      type: 'kill' | 'death' | 'aiKill' | 'join' | 'disconnect' | 'restart';
+      type: 'kill' | 'death' | 'aiKill' | 'join' | 'disconnect' | 'restart' | 'gmPing';
       title: string;
       subtitle: string;
       focusPos: { x: number; y: number; z: number } | null;
       focusPlayerId: number | null;
+      playerIds: number[];
     }>;
 
-    const out: Array<{
+    let out: Array<{
       tsMs: number;
-      type: 'kill' | 'death' | 'aiKill' | 'join' | 'disconnect' | 'restart';
+      type: 'kill' | 'death' | 'aiKill' | 'join' | 'disconnect' | 'restart' | 'gmPing';
       title: string;
       subtitle: string;
       focusPos: { x: number; y: number; z: number } | null;
       focusPlayerId: number | null;
+      playerIds: number[];
     }> = [];
 
     for (const rec of events) {
       const p: any = (rec as any).payload;
       if (!p || typeof p !== 'object') continue;
-      if (p.type !== 'kill' && p.type !== 'death' && p.type !== 'aiKill' && p.type !== 'join' && p.type !== 'disconnect' && p.type !== 'restart') continue;
+      if (p.type !== 'kill' && p.type !== 'death' && p.type !== 'aiKill' && p.type !== 'join' && p.type !== 'disconnect' && p.type !== 'restart' && p.type !== 'gmPing') continue;
       if (typeof p.tsMs !== 'number') continue;
       if (p.tsMs < min || p.tsMs > max) continue;
 
@@ -1331,6 +1415,7 @@ export function ReplayToolPage() {
         const distText = (typeof distanceM === 'number' && Number.isFinite(distanceM)) ? `${Math.round(distanceM)}m` : '';
         const victimPos = ev ? coerceVec3(ev.victimPos) : null;
         const victimId = ev && typeof ev.victimPlayerId === 'number' ? ev.victimPlayerId : null;
+        const killerId = ev && typeof ev.killerPlayerId === 'number' ? ev.killerPlayerId : null;
         const subtitleParts = [] as string[];
         if (weaponName) subtitleParts.push(weaponName);
         if (distText) subtitleParts.push(distText);
@@ -1341,6 +1426,7 @@ export function ReplayToolPage() {
           subtitle: subtitleParts.join(' • '),
           focusPos: victimPos,
           focusPlayerId: victimId,
+          playerIds: [killerId, victimId].filter((x): x is number => typeof x === 'number'),
         });
       } else if (p.type === 'death') {
         // Avoid double-reporting attributed kills.
@@ -1363,6 +1449,7 @@ export function ReplayToolPage() {
           subtitle: subtitleParts.join(' • '),
           focusPos: victimPos,
           focusPlayerId: victimId,
+          playerIds: [victimId].filter((x): x is number => typeof x === 'number'),
         });
       } else if (p.type === 'aiKill') {
         const killerName = ev && typeof ev.killerName === 'string' ? ev.killerName : 'Unknown';
@@ -1382,6 +1469,21 @@ export function ReplayToolPage() {
           subtitle: subtitleParts.join(' • '),
           focusPos: victimPos,
           focusPlayerId: killerId,
+          playerIds: [killerId].filter((x): x is number => typeof x === 'number'),
+        });
+      } else if (p.type === 'gmPing') {
+        const by = ev && typeof ev.by === 'string' && ev.by.length > 0 ? ev.by : '';
+        const target = ev && typeof ev.title === 'string' && ev.title.length > 0 ? ev.title : 'event';
+        const pos = ev ? coerceVec3(ev.pos) : null;
+        const msg = by ? `(${by} sent a GM ping to ${target})` : `GM ping to ${target}`;
+        out.push({
+          tsMs: p.tsMs,
+          type: 'gmPing',
+          title: msg,
+          subtitle: '',
+          focusPos: pos,
+          focusPlayerId: null,
+          playerIds: [],
         });
       } else if (p.type === 'restart') {
         const reason = ev && typeof ev.reason === 'string' ? ev.reason : '';
@@ -1395,22 +1497,34 @@ export function ReplayToolPage() {
           subtitle,
           focusPos: null,
           focusPlayerId: null,
+          playerIds: [],
         });
       } else {
         const name = ev && typeof ev.name === 'string' ? ev.name : String(ev && ev.playerId ? ev.playerId : 'player');
         const id = ev && typeof ev.playerId === 'number' ? ev.playerId : null;
+
+        const joinFocusPos = (p.type === 'join' && typeof id === 'number')
+          ? findFirstNonOriginPosAfter(id, p.tsMs, 90_000)
+          : null;
+
         out.push({
           tsMs: p.tsMs,
           type: p.type,
           title: `${p.type === 'join' ? 'Join' : 'Disconnect'}: ${name}`,
           subtitle: p.type === 'disconnect' && ev && typeof ev.kickCause === 'string' && ev.kickCause ? `cause: ${ev.kickCause}` : '',
-          focusPos: null,
+          focusPos: joinFocusPos,
           focusPlayerId: id,
+          playerIds: [id].filter((x): x is number => typeof x === 'number'),
         });
       }
     }
 
     out.sort((a, b) => a.tsMs - b.tsMs);
+
+    const filterId = eventPlayerFilterId;
+    if (typeof filterId === 'number') {
+      out = out.filter((x) => x.playerIds.includes(filterId));
+    }
 
     // Cap dots to keep UI snappy.
     const maxDots = 420;
@@ -1422,7 +1536,7 @@ export function ReplayToolPage() {
     }
 
     return out;
-  }, [events, range.maxTsMs, range.minTsMs]);
+  }, [eventPlayerFilterId, events, findFirstNonOriginPosAfter, range.maxTsMs, range.minTsMs]);
 
   function pushToast(t: { kind: 'kill' | 'event'; title: string; subtitle: string }) {
     const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -1462,6 +1576,18 @@ export function ReplayToolPage() {
       const p: any = item.payload;
       if (!p || typeof p !== 'object') continue;
       if (p.type === 'snapshot') continue;
+
+      if (p.type === 'gmPing') {
+        const ev: any = (p as any).event;
+        const by = ev && typeof ev.by === 'string' && ev.by.length > 0 ? ev.by : '';
+        const title = ev && typeof ev.title === 'string' && ev.title.length > 0 ? ev.title : 'Ping';
+        pushToast({
+          kind: 'event',
+          title: 'GM ping',
+          subtitle: by ? `${by} • ${title}` : title,
+        });
+        continue;
+      }
 
       if (p.type === 'kill') {
         const ev: any = (p as any).event;
@@ -1841,14 +1967,15 @@ export function ReplayToolPage() {
                                 {timelineEvents.slice().reverse().map((ev, idx) => {
                                   const key = `${ev.tsMs}|${ev.type}|${ev.title}|${ev.subtitle || ''}`;
                                   const isSelected = selectedEventKey === key;
+                                  const canPing = !!serverId && ev.type !== 'gmPing' && !!ev.focusPos;
+                                  const pingTitle = ev.subtitle ? `${ev.title} • ${ev.subtitle}` : ev.title;
                                   return (
-                                    <button
+                                    <div
                                       key={`${ev.tsMs}-${idx}`}
                                       ref={(el) => {
                                         if (el) eventCardRefs.current.set(key, el);
                                         else eventCardRefs.current.delete(key);
                                       }}
-                                      type="button"
                                       className="button"
                                       style={{
                                         minWidth: 220,
@@ -1857,7 +1984,10 @@ export function ReplayToolPage() {
                                         border: isSelected ? '1px solid rgba(255,255,255,0.35)' : '1px solid rgba(255,255,255,0.10)',
                                         background: isSelected ? 'rgba(255,255,255,0.10)' : 'rgba(255,255,255,0.06)',
                                         padding: '8px 10px',
+                                        position: 'relative',
                                       }}
+                                      role="button"
+                                      tabIndex={0}
                                       onClick={() => {
                                         setSelectedEventKey(key);
                                         setIsPlaying(false);
@@ -1869,12 +1999,53 @@ export function ReplayToolPage() {
                                           setFocusNonce((n) => n + 1);
                                         }
                                       }}
+                                      onKeyDown={(e) => {
+                                        if (e.key !== 'Enter' && e.key !== ' ') return;
+                                        e.preventDefault();
+                                        setSelectedEventKey(key);
+                                        setIsPlaying(false);
+                                        setLive(false);
+                                        jumpToEventTs(ev.tsMs);
+                                        if (typeof ev.focusPlayerId === 'number') setSelectedPlayerId(ev.focusPlayerId);
+                                        if (ev.focusPos) {
+                                          setFocusTarget(ev.focusPos);
+                                          setFocusNonce((n) => n + 1);
+                                        }
+                                      }}
                                     >
+                                      <button
+                                        type="button"
+                                        className="button"
+                                        style={{
+                                          position: 'absolute',
+                                          top: 8,
+                                          right: 8,
+                                          padding: '4px 8px',
+                                          fontSize: 11,
+                                          opacity: canPing ? 1 : 0.4,
+                                        }}
+                                        title={canPing ? 'Send GM ping to this event location' : 'No position for this event'}
+                                        disabled={!canPing}
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          if (!serverId) return;
+                                          if (!ev.focusPos) return;
+
+                                          void sendReplayGmPing({
+                                            serverId,
+                                            tsMs: ev.tsMs,
+                                            pos: ev.focusPos,
+                                            title: pingTitle,
+                                          });
+                                        }}
+                                      >
+                                        GM ping
+                                      </button>
                                       <div style={{ fontWeight: 800, fontSize: 12 }}>{ev.title}</div>
                                       <div className="muted" style={{ fontSize: 11, marginTop: 2 }}>
                                         +{formatElapsedMs(ev.tsMs - scrubber.min)}{formatWallClock ? ` • ${formatWallClock(ev.tsMs)}` : ''}{ev.subtitle ? ` • ${ev.subtitle}` : ''}
                                       </div>
-                                    </button>
+                                    </div>
                                   );
                                 })}
                               </div>
@@ -1943,6 +2114,34 @@ export function ReplayToolPage() {
                                 )}
                               </div>
                             </details>
+
+                            <div style={{ height: 8 }} />
+
+                            <div>
+                              <div className="muted" style={{ fontSize: 12, marginBottom: 6 }}>Filter events by player</div>
+                              <select
+                                className="input"
+                                style={{ width: '100%', padding: '6px 10px' }}
+                                value={eventPlayerFilterId === null ? '' : String(eventPlayerFilterId)}
+                                onChange={(e) => {
+                                  const raw = String(e.target.value || '');
+                                  if (!raw) {
+                                    setEventPlayerFilterId(null);
+                                    return;
+                                  }
+                                  const id = Number(raw);
+                                  setEventPlayerFilterId(Number.isFinite(id) ? id : null);
+                                }}
+                                title="Filter events by player"
+                              >
+                                <option value="">All players</option>
+                                {players.map((p) => (
+                                  <option key={p.playerId} value={String(p.playerId)}>
+                                    {p.name} (#{p.playerId})
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
                           </div>
                         ) : (
                           <div className="muted" style={{ fontSize: 12 }}>No snapshot data for this player at the current time.</div>
@@ -2205,7 +2404,7 @@ export function ReplayToolPage() {
                     </div>
                     <div style={{ gridColumn: '1 / span 2' }}>
                       <div className="muted" style={{ fontSize: 12 }}>Last ingest</div>
-                      <div style={{ fontWeight: 800, fontSize: 13 }}>{formatClockTime(st.lastIngestTsMs)}</div>
+                      <div style={{ fontWeight: 800, fontSize: 13 }}>{formatClockTime(st.lastReceivedAt)}</div>
                     </div>
                   </div>
                 </button>

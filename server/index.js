@@ -1028,6 +1028,79 @@ app.get('/api/replay/events', requireAuth, requireTool('replay'), asyncRoute(asy
   res.json(items);
 }));
 
+app.post('/api/replay/gmPing', requireAuth, requireTool('replay'), asyncRoute(async (req, res) => {
+  const { serverId, tsMs, pos, title } = (req.body && typeof req.body === 'object') ? req.body : {};
+  if (typeof serverId !== 'string' || !serverId) {
+    res.status(400).send('Missing serverId');
+    return;
+  }
+
+  const safeId = sanitizeServerId(serverId);
+  const t = typeof tsMs === 'number' ? tsMs : null;
+  if (t === null || !Number.isFinite(t) || t < 0) {
+    res.status(400).send('Invalid tsMs');
+    return;
+  }
+
+  const p = pos && typeof pos === 'object' ? pos : null;
+  const x = p && typeof p.x === 'number' ? p.x : null;
+  const y = p && typeof p.y === 'number' ? p.y : null;
+  const z = p && typeof p.z === 'number' ? p.z : null;
+  if (x === null || y === null || z === null || !Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) {
+    res.status(400).send('Invalid pos');
+    return;
+  }
+
+  const by = req.user && typeof req.user.sub === 'string' ? req.user.sub : '';
+  const cleanTitle = typeof title === 'string' ? title.trim().slice(0, 140) : '';
+
+  await withIngestLock(safeId, async () => {
+    const receivedAt = Date.now();
+    const serverDir = path.join(DATA_DIR, 'servers', safeId);
+    await ensureDir(serverDir);
+
+    // Queue a best-effort one-shot command for the in-game exporter to execute.
+    // This uses the existing ingest response channel: { ok: true, commands: pendingCommands }.
+    const idxPath = path.join(serverDir, 'index.json');
+    const idx = (await readJsonOrNull(idxPath)) || {};
+    const prevPending = (idx.pendingCommands && typeof idx.pendingCommands === 'object' && !Array.isArray(idx.pendingCommands))
+      ? idx.pendingCommands
+      : {};
+    const prevPings = Array.isArray(prevPending.gmPing) ? prevPending.gmPing : [];
+    const nextPings = prevPings.slice(-49);
+    nextPings.push({ tsMs: t, pos: { x, y, z }, by, title: cleanTitle, receivedAt });
+    const nextIdx = {
+      ...idx,
+      id: safeId,
+      name: typeof idx.name === 'string' ? idx.name : safeId,
+      pendingCommands: {
+        ...prevPending,
+        gmPing: nextPings,
+      },
+    };
+    await writeJsonAtomic(idxPath, nextIdx);
+
+    const record = {
+      receivedAt,
+      remoteAddr: req.ip,
+      payload: {
+        type: 'gmPing',
+        tsMs: t,
+        event: {
+          pos: { x, y, z },
+          by,
+          title: cleanTitle,
+        },
+      },
+    };
+
+    const eventsPath = path.join(serverDir, 'events.ndjson');
+    await fs.appendFile(eventsPath, `${JSON.stringify(record)}\n`, 'utf8');
+  });
+
+  res.json({ ok: true });
+}));
+
 app.get('/api/admin/users', requireAuth, requireTool('admin'), asyncRoute(async (req, res) => {
   const { users } = await readUsersFile();
   const out = Object.entries(users).map(([username, v]) => ({

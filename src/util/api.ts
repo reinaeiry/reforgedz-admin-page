@@ -203,6 +203,35 @@ export async function getReplayEvents(params: {
   return (await res.json()) as IngestRecord[];
 }
 
+export async function sendReplayGmPing(params: {
+  serverId: string;
+  tsMs: number;
+  pos: { x: number; y: number; z: number };
+  title?: string;
+}): Promise<{ ok: true }> {
+  const base = requireApiBaseUrl();
+  const session = getSession();
+  if (!session) {
+    throw new Error('Not authenticated');
+  }
+
+  const res = await fetch(`${base}/api/replay/gmPing`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${session.token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(params),
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || `Failed to send GM ping (${res.status})`);
+  }
+
+  return (await res.json()) as { ok: true };
+}
+
 export type MapTerrain = {
   mapId: string;
   worldFile?: string;

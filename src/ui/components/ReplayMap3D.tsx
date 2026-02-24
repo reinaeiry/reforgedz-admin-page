@@ -42,6 +42,7 @@ export type ReplayMap3DProps = {
   showAimLines?: boolean;
   trail?: Trail | null;
   deathMarkers?: Array<{ x: number; y: number; z: number }>;
+  pingMarkers?: Array<{ x: number; y: number; z: number }>;
   terrain?: TerrainGrid | null;
   towns?: TownLabel[];
 };
@@ -77,6 +78,7 @@ export function ReplayMap3D(props: ReplayMap3DProps) {
   const showAimLinesRef = useRef<boolean>(true);
   const trailRef = useRef<Trail | null>(null);
   const deathMarkersRef = useRef<Array<{ x: number; y: number; z: number }>>([]);
+  const pingMarkersRef = useRef<Array<{ x: number; y: number; z: number }>>([]);
   const terrainRef = useRef<TerrainGrid | null>(null);
   const townsRef = useRef<TownLabel[]>([]);
 
@@ -111,6 +113,10 @@ export function ReplayMap3D(props: ReplayMap3DProps) {
   useEffect(() => {
     deathMarkersRef.current = Array.isArray(props.deathMarkers) ? props.deathMarkers : [];
   }, [props.deathMarkers]);
+
+  useEffect(() => {
+    pingMarkersRef.current = Array.isArray(props.pingMarkers) ? props.pingMarkers : [];
+  }, [props.pingMarkers]);
 
   useEffect(() => {
     terrainRef.current = props.terrain || null;
@@ -175,6 +181,9 @@ export function ReplayMap3D(props: ReplayMap3DProps) {
     const deathGroup = new THREE.Group();
     scene.add(deathGroup);
 
+    const pingGroup = new THREE.Group();
+    scene.add(pingGroup);
+
     const townGroup = new THREE.Group();
     scene.add(townGroup);
 
@@ -192,6 +201,7 @@ export function ReplayMap3D(props: ReplayMap3DProps) {
 
     const trailMat = new THREE.LineBasicMaterial({ color: 0xf9bc59, transparent: true, opacity: 0.35 });
     const deathMat = new THREE.LineBasicMaterial({ color: 0xff4a4a, transparent: true, opacity: 0.9 });
+    const pingMat = new THREE.LineBasicMaterial({ color: 0xf9bc59, transparent: true, opacity: 0.95 });
 
     const terrainMat = new THREE.MeshStandardMaterial({
       vertexColors: true,
@@ -219,6 +229,9 @@ export function ReplayMap3D(props: ReplayMap3DProps) {
 
     /** @type {Map<string, THREE.LineSegments>} */
     const deathMarkers = new Map<string, THREE.LineSegments>();
+
+    /** @type {Map<string, THREE.LineSegments>} */
+    const pingMarkers = new Map<string, THREE.LineSegments>();
 
     let terrainMesh: THREE.Mesh | null = null;
     let terrainEdges: THREE.LineSegments | null = null;
@@ -583,6 +596,39 @@ export function ReplayMap3D(props: ReplayMap3DProps) {
       }
     }
 
+    function updatePingMarkers() {
+      const list = pingMarkersRef.current;
+      const seen = new Set<string>();
+      for (let i = 0; i < list.length; i++) {
+        const p = list[i];
+        const key = `${Math.round(p.x * 10)}|${Math.round(p.y * 10)}|${Math.round(p.z * 10)}|${i}`;
+        seen.add(key);
+
+        let seg = pingMarkers.get(key);
+        if (!seg) {
+          const size = 1.8;
+          const geom = new THREE.BufferGeometry();
+          const arr = new Float32Array([
+            -size, 0, -size, size, 0, size,
+            -size, 0, size, size, 0, -size,
+          ]);
+          geom.setAttribute('position', new THREE.BufferAttribute(arr, 3));
+          seg = new THREE.LineSegments(geom, pingMat);
+          pingMarkers.set(key, seg);
+          pingGroup.add(seg);
+        }
+
+        seg.position.set(p.x, p.y + 0.15, p.z);
+      }
+
+      for (const [key, seg] of pingMarkers) {
+        if (seen.has(key)) continue;
+        pingGroup.remove(seg);
+        (seg.geometry as THREE.BufferGeometry).dispose();
+        pingMarkers.delete(key);
+      }
+    }
+
     function setCameraFromAngles() {
       const qYaw = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), controls.yaw);
       const qPitch = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), controls.pitch);
@@ -841,6 +887,7 @@ export function ReplayMap3D(props: ReplayMap3DProps) {
       updateMarkers();
       updateTrail();
       updateDeathMarkers();
+      updatePingMarkers();
       updateTerrain();
 
       // Continuous follow (camera attachment): keep camera offset relative to the player,
@@ -855,7 +902,8 @@ export function ReplayMap3D(props: ReplayMap3DProps) {
           if (followId !== lastFollowId) {
             // Preserve the user's current camera position as the starting follow offset.
             followOffset.set(camera.position.x - t.x, camera.position.y - t.y, camera.position.z - t.z);
-            if (!Number.isFinite(followOffset.x) || !Number.isFinite(followOffset.y) || !Number.isFinite(followOffset.z) || followOffset.length() < 1) {
+            const dist = followOffset.length();
+            if (!Number.isFinite(followOffset.x) || !Number.isFinite(followOffset.y) || !Number.isFinite(followOffset.z) || !Number.isFinite(dist) || dist < 1 || dist > 500) {
               followOffset.set(0, 25, 60);
             }
             lastFollowId = followId;
@@ -951,6 +999,7 @@ export function ReplayMap3D(props: ReplayMap3DProps) {
       lineMatDead.dispose();
       trailMat.dispose();
       deathMat.dispose();
+      pingMat.dispose();
       terrainMat.dispose();
       terrainEdgeMat.dispose();
 
@@ -967,6 +1016,14 @@ export function ReplayMap3D(props: ReplayMap3DProps) {
       if (terrainEdges) {
         (terrainEdges.geometry as THREE.BufferGeometry).dispose();
         terrainEdges = null;
+      }
+
+      for (const seg of deathMarkers.values()) {
+        (seg.geometry as THREE.BufferGeometry).dispose();
+      }
+
+      for (const seg of pingMarkers.values()) {
+        (seg.geometry as THREE.BufferGeometry).dispose();
       }
 
       renderer.dispose();

@@ -4,12 +4,12 @@
   "clearedAt": 1771867704713,
   "mapId": "9346ef4366c58979",
   "mapWorldFile": "$eirysreplays:Worlds/EdenTest.ent",
-  "lastReceivedAt": 1771887480036,
-  "lastIngestTsMs": 3886775,
-  "lastSessionId": "399df194-ddbb-44da-8899-8a6b90b63a19",
+  "lastReceivedAt": 1771898960126,
+  "lastIngestTsMs": 4381118,
+  "lastSessionId": "fba0de54-c54a-47f4-ba4d-01cda31a4eea",
   "minTsMs": 0,
-  "maxTsMs": 3886775,
-  "totalEvents": 21437,
+  "maxTsMs": 4381118,
+  "totalEvents": 24257,
   "sessions": {
     "2b8934bf-6a2d-47de-a844-f777861e517b": {
       "offsetMs": 0,
@@ -274,9 +274,59 @@
       "lastReceivedAt": 1771887480036,
       "lastSessionTsMs": 0,
       "lastTsMs": 3886775
+    },
+    "9bca49ce-4fdf-4d21-9bd5-32691125773e": {
+      "offsetMs": 3886776,
+      "firstReceivedAt": 1771895100485,
+      "firstSessionTsMs": 0,
+      "lastReceivedAt": 1771895258075,
+      "lastSessionTsMs": 150226,
+      "lastTsMs": 4037002
+    },
+    "209f7d9c-280a-442f-8327-078058d55746": {
+      "offsetMs": 4037003,
+      "firstReceivedAt": 1771895270850,
+      "firstSessionTsMs": 0,
+      "lastReceivedAt": 1771895270850,
+      "lastSessionTsMs": 0,
+      "lastTsMs": 4037003
+    },
+    "d033e14d-3aa9-4960-a584-74b0b55b2f45": {
+      "offsetMs": 4037004,
+      "firstReceivedAt": 1771898056257,
+      "firstSessionTsMs": 0,
+      "lastReceivedAt": 1771898293784,
+      "lastSessionTsMs": 229503,
+      "lastTsMs": 4266507
+    },
+    "fd98a76a-1571-4041-8d84-fc1722d80e38": {
+      "offsetMs": 4266508,
+      "firstReceivedAt": 1771898306589,
+      "firstSessionTsMs": 0,
+      "lastReceivedAt": 1771898306589,
+      "lastSessionTsMs": 0,
+      "lastTsMs": 4266508
+    },
+    "00f8f72d-ad37-4cfa-9314-32f3a83926fa": {
+      "offsetMs": 4266509,
+      "firstReceivedAt": 1771898823665,
+      "firstSessionTsMs": 0,
+      "lastReceivedAt": 1771898946300,
+      "lastSessionTsMs": 114608,
+      "lastTsMs": 4381117
+    },
+    "fba0de54-c54a-47f4-ba4d-01cda31a4eea": {
+      "offsetMs": 4381118,
+      "firstReceivedAt": 1771898960126,
+      "firstSessionTsMs": 0,
+      "lastReceivedAt": 1771898960126,
+      "lastSessionTsMs": 0,
+      "lastTsMs": 4381118
     }
   },
-  "lastCompactionAt": 1771887430880,
+  "lastCompactionAt": 1771898962408,
   "pendingCommands": {},
-  "firstReceivedAt": 1771867737721
+  "firstReceivedAt": 1771867737721,
+  "storedEvents": 2820,
+  "retentionMs": 86400000
 }
