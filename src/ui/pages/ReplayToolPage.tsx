@@ -595,7 +595,7 @@ export function ReplayToolPage() {
       }
 
       if (!cancelled) {
-        timer = window.setTimeout(pollPlayers, live ? 1000 : 2500);
+        timer = window.setTimeout(pollPlayers, live ? 3000 : 5000);
       }
     }
 
@@ -669,7 +669,7 @@ export function ReplayToolPage() {
         // ignore; range is optional
       }
 
-      if (!cancelled) timer = window.setTimeout(poll, live ? 500 : 1500);
+      if (!cancelled) timer = window.setTimeout(poll, live ? 2000 : 3000);
     }
 
     poll();
@@ -695,11 +695,13 @@ export function ReplayToolPage() {
       }
 
       const since = lastFetchedTsMsRef.current;
-      const sinceTsMs = typeof since === 'number' ? (since + 1) : Math.max(0, maxTsMs - 15000);
+      // When starting live, only grab a small recent window; older history can be pulled via backfill.
+      const sinceTsMs = typeof since === 'number' ? (since + 1) : Math.max(0, maxTsMs - 8000);
 
       try {
-        const LIMIT = 5000;
-        const MAX_BATCHES = 5;
+        // Avoid huge multi-batch transfers over remote links; keep polling cheap.
+        const LIMIT = 1500;
+        const MAX_BATCHES = 2;
 
         let cursorSince = sinceTsMs;
         const allItems: IngestRecord[] = [];
@@ -761,7 +763,7 @@ export function ReplayToolPage() {
       }
 
       if (!cancelled) {
-        timer = window.setTimeout(fetchEvents, live ? 200 : 900);
+        timer = window.setTimeout(fetchEvents, live ? 1000 : 1500);
       }
     }
 

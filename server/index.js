@@ -1381,6 +1381,90 @@ async function maybeCompactServerEvents(serverDir, idx, nowTsMs) {
 await ensureDir(DATA_DIR);
 await loadDynamicIngestKeys();
 
+// Replay events are stored as NDJSON on disk. Reading a time window by scanning the file
+// can get expensive as the file grows. Keep a small in-memory tail for fast live polling.
+const REPLAY_RECENT_CACHE_MAX = Math.max(50, Math.min(5000, Number(process.env.REPLAY_RECENT_CACHE_MAX || 500)));
+
+/** @type {Map<string, { items: any[], minTsMs: number|null, maxTsMs: number|null }>} */
+const replayRecentByServer = new Map();
+
+function getPayloadTsMs(rec) {
+  const p = rec && rec.payload;
+  return p && typeof p.tsMs === 'number' ? p.tsMs : null;
+}
+
+function pushReplayRecent(safeId, rec) {
+  if (!safeId || !rec) return;
+  let entry = replayRecentByServer.get(safeId);
+  if (!entry) {
+    entry = { items: [], minTsMs: null, maxTsMs: null };
+    replayRecentByServer.set(safeId, entry);
+  }
+
+  entry.items.push(rec);
+  const ts = getPayloadTsMs(rec);
+  if (typeof ts === 'number') {
+    if (entry.minTsMs === null || ts < entry.minTsMs) entry.minTsMs = ts;
+    if (entry.maxTsMs === null || ts > entry.maxTsMs) entry.maxTsMs = ts;
+  }
+
+  while (entry.items.length > REPLAY_RECENT_CACHE_MAX) {
+    entry.items.shift();
+  }
+
+  // If we dropped items, minTsMs might be stale; recompute cheaply.
+  if (entry.items.length > 0) {
+    const first = getPayloadTsMs(entry.items[0]);
+    if (typeof first === 'number' && entry.minTsMs !== null && first > entry.minTsMs) {
+      let min = null;
+      let max = null;
+      for (const it of entry.items) {
+        const t = getPayloadTsMs(it);
+        if (typeof t !== 'number') continue;
+        if (min === null || t < min) min = t;
+        if (max === null || t > max) max = t;
+      }
+      entry.minTsMs = min;
+      entry.maxTsMs = max;
+    }
+  } else {
+    entry.minTsMs = null;
+    entry.maxTsMs = null;
+  }
+}
+
+function tryReadReplayEventsFromCache(safeId, opts) {
+  const entry = replayRecentByServer.get(safeId);
+  if (!entry || !Array.isArray(entry.items) || entry.items.length === 0) return null;
+
+  const sinceTsMs = (opts && typeof opts.sinceTsMs === 'number') ? opts.sinceTsMs : null;
+  const untilTsMs = (opts && typeof opts.untilTsMs === 'number') ? opts.untilTsMs : null;
+  const limit = (opts && typeof opts.limit === 'number') ? opts.limit : 5000;
+  const tail = !!(opts && opts.tail);
+
+  // Only answer from cache when we can be confident it covers the requested window.
+  if (sinceTsMs !== null && entry.minTsMs !== null && sinceTsMs < entry.minTsMs) return null;
+
+  const effectiveUntil = (untilTsMs !== null && entry.maxTsMs !== null) ? Math.min(untilTsMs, entry.maxTsMs) : untilTsMs;
+
+  const filtered = [];
+  for (const rec of entry.items) {
+    const ts = getPayloadTsMs(rec);
+    if (typeof ts !== 'number') continue;
+    if (sinceTsMs !== null && ts < sinceTsMs) continue;
+    if (effectiveUntil !== null && ts > effectiveUntil) continue;
+    filtered.push(rec);
+  }
+
+  if (tail) {
+    if (filtered.length <= limit) return filtered;
+    return filtered.slice(filtered.length - limit);
+  }
+
+  if (filtered.length <= limit) return filtered;
+  return filtered.slice(0, limit);
+}
+
 app.get('/api/health', (req, res) => {
   res.json({ ok: true });
 });
@@ -1710,6 +1794,14 @@ app.get('/api/replay/events', requireAuth, requireTool('replay'), asyncRoute(asy
     tail,
   };
 
+  // Fast path: if the requested window is within our in-memory recent cache,
+  // return it without scanning the entire NDJSON file.
+  const cached = tryReadReplayEventsFromCache(safeId, opts);
+  if (cached) {
+    res.json(cached);
+    return;
+  }
+
   const eventsPath = path.join(DATA_DIR, 'servers', safeId, 'events.ndjson');
   const items = await readNdjsonWindow(eventsPath, opts);
   res.json(items);
@@ -1787,6 +1879,9 @@ app.post('/api/replay/gmPing', requireAuth, requireTool('replay'), asyncRoute(as
 
     const eventsPath = path.join(serverDir, 'events.ndjson');
     await fs.appendFile(eventsPath, `${JSON.stringify(record)}\n`, 'utf8');
+
+    // Also keep it in the in-memory tail for fast live polling.
+    pushReplayRecent(safeId, record);
   });
 
   res.json({ ok: true });
@@ -2267,9 +2362,13 @@ app.post('/api/replay/ingest', async (req, res) => {
           },
         };
         await fs.appendFile(eventsPath, `${JSON.stringify(restartRecord)}\n`, 'utf8');
+
+        pushReplayRecent(safeId, restartRecord);
       }
 
       await fs.appendFile(eventsPath, `${JSON.stringify(record)}\n`, 'utf8');
+
+      pushReplayRecent(safeId, record);
 
       let minTsMs = (typeof prev.minTsMs === 'number') ? prev.minTsMs : null;
       let maxTsMs = (typeof prev.maxTsMs === 'number') ? prev.maxTsMs : null;
