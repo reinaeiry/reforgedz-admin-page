@@ -59,6 +59,16 @@ function isNearOriginXZ(pos: { x: number; y: number; z: number } | null, bound =
   return Math.abs(pos.x) <= bound && Math.abs(pos.z) <= bound;
 }
 
+function lerp(a: number, b: number, t: number): number {
+  if (!Number.isFinite(a) || !Number.isFinite(b) || !Number.isFinite(t)) return a;
+  const tt = Math.max(0, Math.min(1, t));
+  return a + (b - a) * tt;
+}
+
+function lerpVec3(a: { x: number; y: number; z: number }, b: { x: number; y: number; z: number }, t: number) {
+  return { x: lerp(a.x, b.x, t), y: lerp(a.y, b.y, t), z: lerp(a.z, b.z, t) };
+}
+
 function coerceTerrainGrid(t: MapTerrain | null): TerrainGrid | null {
   if (!t) return null;
   const bbMin = coerceVec3((t as any).bbMin);
@@ -861,15 +871,24 @@ export function ReplayToolPage() {
     if (!serverId) return;
     const serverIdValue = serverId;
 
+    // Keep background work low while the user is replaying.
+    if (!live) return;
+
     if (autoBackfillStoppedForServerRef.current === serverIdValue) return;
 
     const loadedMin = loadedEventRange.minTsMs;
     const absoluteMin = range.minTsMs;
+    const absoluteMax = range.maxTsMs;
     if (typeof loadedMin !== 'number') return;
     if (typeof absoluteMin !== 'number') return;
+    if (typeof absoluteMax !== 'number') return;
+
+    // Warm only a recent window by default; deeper history is fetched on-demand while scrubbing.
+    const WARM_WINDOW_MS = 15 * 60_000;
+    const desiredMin = Math.max(absoluteMin, Math.max(0, Math.floor(absoluteMax - WARM_WINDOW_MS)));
 
     // Nothing left to warm.
-    if (loadedMin <= absoluteMin + 1) return;
+    if (loadedMin <= desiredMin + 1) return;
 
     // Don't churn if we're already at the in-memory cap.
     const CAP = 250000;
@@ -880,7 +899,7 @@ export function ReplayToolPage() {
 
     // Avoid rapid-fire retries (especially on slow links).
     const now = Date.now();
-    if (now - autoBackfillLastAttemptAtRef.current < 400) return;
+    if (now - autoBackfillLastAttemptAtRef.current < 1500) return;
     if (backfillInFlightRef.current) return;
 
     autoBackfillLastAttemptAtRef.current = now;
@@ -929,7 +948,7 @@ export function ReplayToolPage() {
       .finally(() => {
         backfillInFlightRef.current = false;
       });
-  }, [events.length, loadedEventRange.minTsMs, range.minTsMs, serverId]);
+  }, [events.length, live, loadedEventRange.minTsMs, range.maxTsMs, range.minTsMs, serverId]);
 
   const snapshots = useMemo(() => {
     const out: Array<{ tsMs: number; players: any[] }> = [];
@@ -1005,6 +1024,79 @@ export function ReplayToolPage() {
     }
     return map;
   }, [snapshots]);
+
+  const findBestPlayerPosAt = useMemo(() => {
+    // Some snapshots report 0,*,0 briefly (especially join/respawn). Those points cause markers
+    // to snap back/forth. Prefer the nearest non-origin point and interpolate when we have
+    // bounding samples.
+    return (playerId: number, tsMs: number): { pos: { x: number; y: number; z: number }; tsMs: number; player: any } | null => {
+      const series = playerSeriesById.get(playerId);
+      if (!series || series.length === 0) return null;
+
+      // Last entry with ts <= tsMs.
+      let lo = 0;
+      let hi = series.length - 1;
+      let idx = -1;
+      while (lo <= hi) {
+        const mid = (lo + hi) >> 1;
+        const v = series[mid].tsMs;
+        if (v <= tsMs) {
+          idx = mid;
+          lo = mid + 1;
+        } else {
+          hi = mid - 1;
+        }
+      }
+      if (idx < 0) return null;
+
+      const ORIGIN_BOUND = 30;
+      const MAX_SCAN_POINTS = 25;
+      const MAX_SCAN_BACK_MS = 60_000;
+      const MAX_INTERP_GAP_MS = 2500;
+
+      const isGood = (p: any) => {
+        const pos = coerceVec3(p && (p as any).pos);
+        if (!pos) return null;
+        if (isNearOriginXZ(pos, ORIGIN_BOUND)) return null;
+        return pos;
+      };
+
+      // Prefer the most recent good point at/before t.
+      let prev: { pos: { x: number; y: number; z: number }; tsMs: number; player: any } | null = null;
+      for (let i = idx; i >= 0 && (idx - i) < MAX_SCAN_POINTS; i--) {
+        const rec = series[i];
+        if ((tsMs - rec.tsMs) > MAX_SCAN_BACK_MS) break;
+        const pos = isGood(rec.player);
+        if (!pos) continue;
+        prev = { pos, tsMs: rec.tsMs, player: rec.player };
+        break;
+      }
+
+      // Find the next good point after t (for interpolation).
+      let next: { pos: { x: number; y: number; z: number }; tsMs: number; player: any } | null = null;
+      for (let i = idx + 1; i < series.length && (i - idx) < MAX_SCAN_POINTS; i++) {
+        const rec = series[i];
+        if ((rec.tsMs - tsMs) > MAX_SCAN_BACK_MS) break;
+        const pos = isGood(rec.player);
+        if (!pos) continue;
+        next = { pos, tsMs: rec.tsMs, player: rec.player };
+        break;
+      }
+
+      if (!prev && next) return next;
+      if (!prev) return null;
+
+      if (next && next.tsMs > prev.tsMs && tsMs >= prev.tsMs && tsMs <= next.tsMs) {
+        const gap = next.tsMs - prev.tsMs;
+        if (gap > 0 && gap <= MAX_INTERP_GAP_MS) {
+          const alpha = (tsMs - prev.tsMs) / gap;
+          return { pos: lerpVec3(prev.pos, next.pos, alpha), tsMs: prev.tsMs, player: prev.player };
+        }
+      }
+
+      return prev;
+    };
+  }, [playerSeriesById]);
 
   const presenceSeriesById = useMemo(() => {
     const map = new Map<number, Array<{ tsMs: number; type: 'join' | 'disconnect' }>>();
@@ -1217,6 +1309,43 @@ export function ReplayToolPage() {
     return map;
   }, [events]);
 
+  const selectedEventHighlightsByPlayerId = useMemo(() => {
+    const map = new Map<number, 'killer' | 'victim'>();
+    if (!selectedEventKey) return map;
+
+    const parts = selectedEventKey.split('|');
+    if (parts.length < 2) return map;
+    const tsMs = Number(parts[0]);
+    const type = String(parts[1] || '');
+    if (!Number.isFinite(tsMs)) return map;
+    if (type !== 'kill' && type !== 'death') return map;
+
+    let ev: any = null;
+    for (const rec of events) {
+      const p: any = rec && (rec as any).payload;
+      if (!p || typeof p !== 'object') continue;
+      if (p.type !== type) continue;
+      if (typeof p.tsMs !== 'number') continue;
+      if (p.tsMs !== tsMs) continue;
+      ev = (p as any).event;
+      break;
+    }
+    if (!ev || typeof ev !== 'object') return map;
+
+    if (type === 'kill') {
+      const killerId = typeof ev.killerPlayerId === 'number' ? ev.killerPlayerId : null;
+      const victimId = typeof ev.victimPlayerId === 'number' ? ev.victimPlayerId : null;
+      if (killerId !== null) map.set(killerId, 'killer');
+      if (victimId !== null) map.set(victimId, 'victim');
+      return map;
+    }
+
+    // death
+    const victimId = typeof ev.victimPlayerId === 'number' ? ev.victimPlayerId : null;
+    if (victimId !== null) map.set(victimId, 'victim');
+    return map;
+  }, [events, selectedEventKey]);
+
   const nameTagOptions: NameTagOptions = useMemo(() => ({
     enabled: nameTagsEnabled,
     scale: Math.min(2, Math.max(0.5, nameTagScale)),
@@ -1243,10 +1372,12 @@ export function ReplayToolPage() {
       if (connected === false) continue;
       if (connected === null && (t - st.tsMs) > unknownPresenceMaxAgeMs) continue;
 
-      const pj = st.player;
+      // Use a robust position that ignores origin-space glitches.
+      const best = findBestPlayerPosAt(playerId, t);
+      if (!best) continue;
 
-      const pos = coerceVec3((pj as any).pos);
-      if (!pos) continue;
+      const pj = best.player;
+      const pos = best.pos;
 
       const inVehicle = !!(pj as any).inVehicle;
 
@@ -1278,27 +1409,45 @@ export function ReplayToolPage() {
         aimDir,
         inVehicle,
         isDead,
+        highlight: selectedEventHighlightsByPlayerId.get(playerId) || null,
       });
     }
     return out;
-  }, [currentTsMs, deadUntilByPlayerId, findPlayerStateAt, isConnectedAt, knownPlayers, playerSeriesById, showVehicleInTags, terrain]);
+  }, [currentTsMs, deadUntilByPlayerId, findBestPlayerPosAt, findPlayerStateAt, isConnectedAt, knownPlayers, playerSeriesById, selectedEventHighlightsByPlayerId, showVehicleInTags, terrain]);
 
   const focusedTrail = useMemo((): Trail | null => {
     if (!enableTrails) return null;
     if (selectedPlayerId === null) return null;
     if (typeof currentTsMs !== 'number') return null;
-    if (snapshots.length === 0) return null;
+    const series = playerSeriesById.get(selectedPlayerId);
+    if (!series || series.length === 0) return null;
 
     const windowMs = Math.max(5000, Math.min(60000, Math.floor(trailSeconds * 1000)));
     const startTs = currentTsMs - windowMs;
 
     const pts: Array<{ x: number; y: number; z: number }> = [];
     let lastEntityId: string | null = null;
-    for (const s of snapshots) {
-      if (s.tsMs < startTs) continue;
-      if (s.tsMs > currentTsMs) break;
-      const pj = s.players.find((p) => p && typeof p === 'object' && (p as any).playerId === selectedPlayerId);
-      if (!pj) continue;
+
+    // First entry with ts >= startTs.
+    let lo = 0;
+    let hi = series.length - 1;
+    let startIdx = series.length;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (series[mid].tsMs >= startTs) {
+        startIdx = mid;
+        hi = mid - 1;
+      } else {
+        lo = mid + 1;
+      }
+    }
+
+    for (let i = Math.max(0, startIdx - 1); i < series.length; i++) {
+      const rec = series[i];
+      if (rec.tsMs < startTs) continue;
+      if (rec.tsMs > currentTsMs) break;
+      const pj = rec.player;
+      if (!pj || typeof pj !== 'object') continue;
 
       const inVehicle = !!(pj as any).inVehicle;
 
@@ -1336,7 +1485,7 @@ export function ReplayToolPage() {
       return { points: down };
     }
     return { points: pts };
-  }, [currentTsMs, enableTrails, selectedPlayerId, snapshots, terrain, trailSeconds]);
+  }, [currentTsMs, enableTrails, playerSeriesById, selectedPlayerId, terrain, trailSeconds]);
 
   const visibleDeathMarkers = useMemo(() => {
     if (!showDeathMarkers) return [] as Array<{ x: number; y: number; z: number }>;

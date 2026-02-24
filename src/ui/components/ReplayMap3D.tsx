@@ -8,6 +8,7 @@ export type PlayerMarker = {
   aimDir?: { x: number; y: number; z: number } | null;
   isDead?: boolean;
   inVehicle?: boolean;
+  highlight?: 'killer' | 'victim' | null;
 };
 
 export type NameTagOptions = {
@@ -203,9 +204,16 @@ export function ReplayMap3D(props: ReplayMap3DProps) {
     const matVehicle = new THREE.MeshStandardMaterial({ color: 0xffb24a });
     const matDead = new THREE.MeshStandardMaterial({ color: 0x8a93a6 });
 
+    // Event highlight materials (brighter + a bit of emissive so they pop).
+    const matHighlightKiller = new THREE.MeshStandardMaterial({ color: 0x2aa7ff, emissive: 0x0b2b44, emissiveIntensity: 0.9 });
+    const matHighlightVictim = new THREE.MeshStandardMaterial({ color: 0xb455ff, emissive: 0x2a003f, emissiveIntensity: 0.9 });
+
     const lineMatNormal = new THREE.LineBasicMaterial({ color: 0xf9bc59, transparent: true, opacity: 0.8 });
     const lineMatVehicle = new THREE.LineBasicMaterial({ color: 0xffb24a, transparent: true, opacity: 0.8 });
     const lineMatDead = new THREE.LineBasicMaterial({ color: 0x8a93a6, transparent: true, opacity: 0.7 });
+
+    const lineMatHighlightKiller = new THREE.LineBasicMaterial({ color: 0x2aa7ff, transparent: true, opacity: 0.95 });
+    const lineMatHighlightVictim = new THREE.LineBasicMaterial({ color: 0xb455ff, transparent: true, opacity: 0.95 });
 
     const trailMat = new THREE.LineBasicMaterial({ color: 0xf9bc59, transparent: true, opacity: 0.35 });
     const deathMat = new THREE.LineBasicMaterial({ color: 0xff4a4a, transparent: true, opacity: 0.9 });
@@ -458,7 +466,12 @@ export function ReplayMap3D(props: ReplayMap3DProps) {
         // material based on state
         const isDead = !!p.isDead;
         const inVehicle = !!p.inVehicle;
-        const mat = isDead ? matDead : (inVehicle ? matVehicle : matNormal);
+        const hl = p.highlight || null;
+        const mat = hl === 'killer'
+          ? matHighlightKiller
+          : (hl === 'victim'
+            ? matHighlightVictim
+            : (isDead ? matDead : (inVehicle ? matVehicle : matNormal)));
         if (mesh.material !== mat) {
           mesh.material = mat;
         }
@@ -480,7 +493,11 @@ export function ReplayMap3D(props: ReplayMap3DProps) {
           line.visible = showAimLines;
           if (!showAimLines) continue;
 
-          const lm = isDead ? lineMatDead : (inVehicle ? lineMatVehicle : lineMatNormal);
+          const lm = hl === 'killer'
+            ? lineMatHighlightKiller
+            : (hl === 'victim'
+              ? lineMatHighlightVictim
+              : (isDead ? lineMatDead : (inVehicle ? lineMatVehicle : lineMatNormal)));
           if (line.material !== lm) {
             line.material = lm;
           }
@@ -1034,9 +1051,13 @@ export function ReplayMap3D(props: ReplayMap3DProps) {
       matNormal.dispose();
       matVehicle.dispose();
       matDead.dispose();
+      matHighlightKiller.dispose();
+      matHighlightVictim.dispose();
       lineMatNormal.dispose();
       lineMatVehicle.dispose();
       lineMatDead.dispose();
+      lineMatHighlightKiller.dispose();
+      lineMatHighlightVictim.dispose();
       trailMat.dispose();
       deathMat.dispose();
       pingMat.dispose();
