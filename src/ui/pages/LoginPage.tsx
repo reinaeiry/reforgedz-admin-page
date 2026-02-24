@@ -45,12 +45,21 @@ export function LoginPage() {
   }
 
   return (
-    <div className="container">
-      <div className="stack" style={{ maxWidth: 420 }}>
-        <h1 className="h1">ReforgedZ Admin</h1>
-        <div className="card">
+    <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24, boxSizing: 'border-box' }}>
+      <div className="stack" style={{ width: 'min(440px, 100%)', gap: 14 }}>
+        <div style={{ textAlign: 'center' }}>
+          <div className="label">Welcome</div>
+          <h1 className="h1" style={{ fontSize: 22, marginTop: 6 }}>
+            ReforgedZ Admin Menu
+          </h1>
+          <div className="muted" style={{ fontSize: 12, marginTop: 6 }}>
+            Sign in to continue.
+          </div>
+        </div>
+
+        <div className="card" style={{ padding: 18 }}>
           <form className="stack" onSubmit={onSubmit}>
-            <div className="stack">
+            <div className="stack" style={{ gap: 8 }}>
               <div className="label">Username</div>
               <input
                 className="input"
@@ -59,7 +68,7 @@ export function LoginPage() {
                 autoComplete="username"
               />
             </div>
-            <div className="stack">
+            <div className="stack" style={{ gap: 8 }}>
               <div className="label">Password</div>
               <input
                 className="input"
@@ -70,14 +79,14 @@ export function LoginPage() {
               />
             </div>
 
-            {error ? <div className="error">{error}</div> : null}
+            {error ? <div className="error" style={{ fontSize: 13 }}>{error}</div> : null}
 
-            <button className="button" type="submit" disabled={busy}>
+            <button className="button buttonPrimary" type="submit" disabled={busy}>
               {busy ? 'Signing in…' : 'Sign in'}
             </button>
 
             <div className="muted" style={{ fontSize: 12 }}>
-              API base uses <code>VITE_API_BASE_URL</code> if set; otherwise it uses the current site origin.
+              If you aren't meant to be here, say hi to eiry, I know where you live!.
             </div>
           </form>
         </div>

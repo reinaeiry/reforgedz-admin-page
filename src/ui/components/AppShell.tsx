@@ -6,14 +6,7 @@ function NavItem(props: { to: string; label: string }) {
   return (
     <NavLink
       to={props.to}
-      style={({ isActive }) => ({
-        display: 'block',
-        padding: '10px 12px',
-        borderRadius: 8,
-        textDecoration: 'none',
-        border: '1px solid rgba(255, 255, 255, 0.10)',
-        background: isActive ? 'rgba(255, 255, 255, 0.12)' : 'transparent',
-      })}
+      className={({ isActive }) => `navItem${isActive ? ' navItemActive' : ''}`}
     >
       {props.label}
     </NavLink>
@@ -50,7 +43,7 @@ export function AppShell() {
 
         <div style={{ flex: 1 }} />
 
-        <button className="button" onClick={onLogout}>
+        <button className="button buttonPrimary" onClick={onLogout}>
           Log out
         </button>
       </aside>

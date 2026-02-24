@@ -277,5 +277,6 @@
     }
   },
   "lastCompactionAt": 1771887430880,
-  "pendingCommands": {}
+  "pendingCommands": {},
+  "firstReceivedAt": 1771867737721
 }

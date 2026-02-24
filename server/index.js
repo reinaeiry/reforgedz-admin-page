@@ -31,7 +31,17 @@ const INGEST_KEYS = process.env.INGEST_KEYS || '';
 
 const DATA_DIR = process.env.DATA_DIR || 'data';
 
-const RETENTION_MS = 24 * 60 * 60 * 1000;
+// Rolling retention for events.ndjson.
+// - Set RETENTION_MS=0 to disable compaction entirely.
+// - Default is 7 days.
+const DEFAULT_RETENTION_MS = 24 * 60 * 60 * 1000;
+const RETENTION_MS = (() => {
+  const raw = process.env.RETENTION_MS;
+  if (raw === undefined || raw === null || String(raw).trim() === '') return DEFAULT_RETENTION_MS;
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return DEFAULT_RETENTION_MS;
+  return Math.max(0, Math.floor(n));
+})();
 
 function timingSafeEqualString(a, b) {
   const aBuf = Buffer.from(String(a));
@@ -380,6 +390,7 @@ async function readNdjsonWindow(filePath, opts) {
   const sinceTsMs = (opts && typeof opts.sinceTsMs === 'number') ? opts.sinceTsMs : null;
   const untilTsMs = (opts && typeof opts.untilTsMs === 'number') ? opts.untilTsMs : null;
   const limit = (opts && typeof opts.limit === 'number') ? opts.limit : 5000;
+  const tail = !!(opts && opts.tail);
 
   const out = [];
 
@@ -396,6 +407,36 @@ async function readNdjsonWindow(filePath, opts) {
     input: createReadStream(filePath, { encoding: 'utf8' }),
     crlfDelay: Infinity,
   });
+
+  if (!tail) {
+    for await (const line of rl) {
+      if (!line) continue;
+
+      let obj;
+      try {
+        obj = JSON.parse(line);
+      } catch {
+        continue;
+      }
+
+      const payload = obj && obj.payload;
+      const tsMs = payload && typeof payload.tsMs === 'number' ? payload.tsMs : null;
+      if (tsMs === null) continue;
+
+      if (sinceTsMs !== null && tsMs < sinceTsMs) continue;
+      if (untilTsMs !== null && tsMs > untilTsMs) continue;
+
+      out.push(obj);
+      if (out.length >= limit) break;
+    }
+
+    return out;
+  }
+
+  // Tail mode: return the last `limit` matching records in the window.
+  const ring = new Array(limit);
+  let count = 0;
+  let start = 0;
 
   for await (const line of rl) {
     if (!line) continue;
@@ -414,14 +455,114 @@ async function readNdjsonWindow(filePath, opts) {
     if (sinceTsMs !== null && tsMs < sinceTsMs) continue;
     if (untilTsMs !== null && tsMs > untilTsMs) continue;
 
-    out.push(obj);
-    if (out.length >= limit) break;
+    if (count < limit) {
+      ring[count] = obj;
+      count++;
+    } else {
+      ring[start] = obj;
+      start = (start + 1) % limit;
+    }
   }
 
-  return out;
+  if (count <= 0) return [];
+  if (count < limit) return ring.slice(0, count);
+  return ring.slice(start).concat(ring.slice(0, start));
 }
 
-async function compactNdjsonToRetention(filePath, cutoffTsMs) {
+async function readFirstNdjsonObject(filePath) {
+  let stat;
+  try {
+    stat = await fs.stat(filePath);
+  } catch {
+    return null;
+  }
+  if (!stat || stat.size <= 0) return null;
+
+  let handle;
+  try {
+    handle = await fs.open(filePath, 'r');
+    const maxBytes = Math.min(stat.size, 1024 * 1024);
+    const buf = Buffer.allocUnsafe(Math.min(maxBytes, 64 * 1024));
+    let offset = 0;
+    let text = '';
+
+    while (offset < maxBytes) {
+      const toRead = Math.min(buf.length, maxBytes - offset);
+      const { bytesRead } = await handle.read(buf, 0, toRead, offset);
+      if (!bytesRead) break;
+      text += buf.subarray(0, bytesRead).toString('utf8');
+      const nl = text.indexOf('\n');
+      if (nl !== -1) {
+        const line = text.slice(0, nl).trim();
+        if (!line) return null;
+        try {
+          return JSON.parse(line);
+        } catch {
+          return null;
+        }
+      }
+      offset += bytesRead;
+    }
+
+    // File had no newline within maxBytes.
+    const line = text.trim();
+    if (!line) return null;
+    try {
+      return JSON.parse(line);
+    } catch {
+      return null;
+    }
+  } catch {
+    return null;
+  } finally {
+    try {
+      if (handle) await handle.close();
+    } catch {
+      // ignore
+    }
+  }
+}
+
+async function ensureIndexHasFirstReceivedAt(serverDir, idxPath, idx) {
+  const existing = idx && typeof idx.firstReceivedAt === 'number' ? idx.firstReceivedAt : null;
+  if (existing !== null) return { idx, firstReceivedAt: existing };
+
+  // Prefer inferring from session metadata if available (fast and reliable).
+  const sessions = idx && idx.sessions && typeof idx.sessions === 'object' ? idx.sessions : null;
+  if (sessions) {
+    let minSessionReceivedAt = null;
+    for (const k of Object.keys(sessions)) {
+      const s = sessions[k];
+      const v = s && typeof s.firstReceivedAt === 'number' ? s.firstReceivedAt : null;
+      if (v === null) continue;
+      if (minSessionReceivedAt === null || v < minSessionReceivedAt) minSessionReceivedAt = v;
+    }
+    if (minSessionReceivedAt !== null) {
+      const nextIdx = { ...(idx && typeof idx === 'object' ? idx : {}), firstReceivedAt: minSessionReceivedAt };
+      try {
+        await writeJsonAtomic(idxPath, nextIdx);
+      } catch {
+        // ignore (best-effort)
+      }
+      return { idx: nextIdx, firstReceivedAt: minSessionReceivedAt };
+    }
+  }
+
+  const eventsPath = path.join(serverDir, 'events.ndjson');
+  const firstObj = await readFirstNdjsonObject(eventsPath);
+  const inferred = firstObj && typeof firstObj.receivedAt === 'number' ? firstObj.receivedAt : null;
+  if (inferred === null) return { idx, firstReceivedAt: null };
+
+  const nextIdx = { ...(idx && typeof idx === 'object' ? idx : {}), firstReceivedAt: inferred };
+  try {
+    await writeJsonAtomic(idxPath, nextIdx);
+  } catch {
+    // ignore (best-effort)
+  }
+  return { idx: nextIdx, firstReceivedAt: inferred };
+}
+
+async function compactNdjsonToRetention(filePath, cutoffReceivedAt) {
   let stat;
   try {
     stat = await fs.stat(filePath);
@@ -471,6 +612,8 @@ async function compactNdjsonToRetention(filePath, cutoffTsMs) {
   let kept = 0;
   let dropped = 0;
   let minTsMs = null;
+  let minReceivedAt = null;
+  let maxReceivedAt = null;
 
   try {
     for await (const line of rl) {
@@ -482,14 +625,20 @@ async function compactNdjsonToRetention(filePath, cutoffTsMs) {
         continue;
       }
 
-      const payload = obj && obj.payload;
-      const tsMs = payload && typeof payload.tsMs === 'number' ? payload.tsMs : null;
-      if (tsMs === null) continue;
-
-      if (typeof cutoffTsMs === 'number' && tsMs < cutoffTsMs) {
+      const receivedAt = obj && typeof obj.receivedAt === 'number' ? obj.receivedAt : null;
+      if (typeof cutoffReceivedAt === 'number' && receivedAt !== null && receivedAt < cutoffReceivedAt) {
         dropped++;
         continue;
       }
+
+      if (receivedAt !== null) {
+        if (minReceivedAt === null || receivedAt < minReceivedAt) minReceivedAt = receivedAt;
+        if (maxReceivedAt === null || receivedAt > maxReceivedAt) maxReceivedAt = receivedAt;
+      }
+
+      const payload = obj && obj.payload;
+      const tsMs = payload && typeof payload.tsMs === 'number' ? payload.tsMs : null;
+      if (tsMs === null) continue;
 
       if (minTsMs === null || tsMs < minTsMs) minTsMs = tsMs;
       kept++;
@@ -509,7 +658,7 @@ async function compactNdjsonToRetention(filePath, cutoffTsMs) {
   }
 
   await replaceFileWithRetries(tmp, filePath);
-  return { kept, dropped, minTsMs };
+  return { kept, dropped, minTsMs, minReceivedAt, maxReceivedAt };
 }
 
 async function maybeCompactServerEvents(serverDir, idx, nowTsMs) {
@@ -517,11 +666,13 @@ async function maybeCompactServerEvents(serverDir, idx, nowTsMs) {
   const last = idx && typeof idx.lastCompactionAt === 'number' ? idx.lastCompactionAt : 0;
   if (Date.now() - last < 60_000) return idx;
 
-  const cutoff = (typeof nowTsMs === 'number') ? (nowTsMs - RETENTION_MS) : null;
-  if (cutoff === null) return idx;
+  if (RETENTION_MS <= 0) return idx;
+
+  // Retention is based on wall-clock time (receivedAt), not the exporter timeline.
+  const cutoff = Date.now() - RETENTION_MS;
 
   const eventsPath = path.join(serverDir, 'events.ndjson');
-  const { kept, dropped, minTsMs } = await compactNdjsonToRetention(eventsPath, cutoff);
+  const { kept, dropped, minTsMs, minReceivedAt, maxReceivedAt } = await compactNdjsonToRetention(eventsPath, cutoff);
   if (dropped <= 0) {
     return { ...idx, lastCompactionAt: Date.now() };
   }
@@ -529,6 +680,9 @@ async function maybeCompactServerEvents(serverDir, idx, nowTsMs) {
   const next = {
     ...idx,
     minTsMs: minTsMs,
+    storedEvents: kept,
+    firstReceivedAt: (typeof minReceivedAt === 'number') ? minReceivedAt : (typeof idx.firstReceivedAt === 'number' ? idx.firstReceivedAt : undefined),
+    lastReceivedAt: (typeof maxReceivedAt === 'number') ? maxReceivedAt : (typeof idx.lastReceivedAt === 'number' ? idx.lastReceivedAt : undefined),
     lastCompactionAt: Date.now(),
     lastCompactionDropped: dropped,
     lastCompactionKept: kept,
@@ -643,10 +797,84 @@ app.get('/api/replay/status', requireAuth, requireTool('replay'), asyncRoute(asy
 
   const safeId = sanitizeServerId(serverId);
   const idxPath = path.join(DATA_DIR, 'servers', safeId, 'index.json');
-  const idx = await readJsonOrNull(idxPath);
+  let idx = await readJsonOrNull(idxPath);
+  const ensured = await ensureIndexHasFirstReceivedAt(path.join(DATA_DIR, 'servers', safeId), idxPath, idx);
+  idx = ensured.idx;
 
   const lastIngestTsMs = (idx && typeof idx.lastIngestTsMs === 'number') ? idx.lastIngestTsMs : null;
-  res.json({ serverId: safeId, lastIngestTsMs });
+  const minTsMs = (idx && typeof idx.minTsMs === 'number') ? idx.minTsMs : null;
+  const maxTsMs = (idx && typeof idx.maxTsMs === 'number') ? idx.maxTsMs : null;
+  const lastReceivedAt = (idx && typeof idx.lastReceivedAt === 'number') ? idx.lastReceivedAt : null;
+  const firstReceivedAt = (idx && typeof idx.firstReceivedAt === 'number') ? idx.firstReceivedAt : null;
+  const storedEvents = (idx && typeof idx.storedEvents === 'number')
+    ? idx.storedEvents
+    : ((idx && typeof idx.lastCompactionKept === 'number') ? idx.lastCompactionKept : ((idx && typeof idx.totalEvents === 'number') ? idx.totalEvents : null));
+  const totalEvents = (idx && typeof idx.totalEvents === 'number') ? idx.totalEvents : null;
+  const retentionMs = RETENTION_MS > 0 ? RETENTION_MS : 0;
+
+  res.json({
+    serverId: safeId,
+    name: (idx && typeof idx.name === 'string') ? idx.name : safeId,
+    lastIngestTsMs,
+    minTsMs,
+    maxTsMs,
+    firstReceivedAt,
+    lastReceivedAt,
+    storedEvents,
+    totalEvents,
+    retentionMs,
+    mapId: (idx && typeof idx.mapId === 'string') ? idx.mapId : null,
+  });
+}));
+
+app.get('/api/replay/statusAll', requireAuth, requireTool('replay'), asyncRoute(async (req, res) => {
+  const serversDir = path.join(DATA_DIR, 'servers');
+  await ensureDir(serversDir);
+
+  let entries = [];
+  try {
+    entries = await fs.readdir(serversDir, { withFileTypes: true });
+  } catch {
+    // ignore
+  }
+
+  const out = [];
+  for (const e of entries) {
+    if (!e.isDirectory()) continue;
+    const safeId = e.name;
+    const idxPath = path.join(serversDir, safeId, 'index.json');
+    let idx = await readJsonOrNull(idxPath);
+    const ensured = await ensureIndexHasFirstReceivedAt(path.join(serversDir, safeId), idxPath, idx);
+    idx = ensured.idx;
+
+    const lastIngestTsMs = (idx && typeof idx.lastIngestTsMs === 'number') ? idx.lastIngestTsMs : null;
+    const minTsMs = (idx && typeof idx.minTsMs === 'number') ? idx.minTsMs : null;
+    const maxTsMs = (idx && typeof idx.maxTsMs === 'number') ? idx.maxTsMs : null;
+    const lastReceivedAt = (idx && typeof idx.lastReceivedAt === 'number') ? idx.lastReceivedAt : null;
+    const firstReceivedAt = (idx && typeof idx.firstReceivedAt === 'number') ? idx.firstReceivedAt : null;
+    const storedEvents = (idx && typeof idx.storedEvents === 'number')
+      ? idx.storedEvents
+      : ((idx && typeof idx.lastCompactionKept === 'number') ? idx.lastCompactionKept : ((idx && typeof idx.totalEvents === 'number') ? idx.totalEvents : null));
+    const totalEvents = (idx && typeof idx.totalEvents === 'number') ? idx.totalEvents : null;
+    const retentionMs = RETENTION_MS > 0 ? RETENTION_MS : 0;
+
+    out.push({
+      serverId: safeId,
+      name: (idx && typeof idx.name === 'string') ? idx.name : safeId,
+      lastIngestTsMs,
+      minTsMs,
+      maxTsMs,
+      firstReceivedAt,
+      lastReceivedAt,
+      storedEvents,
+      totalEvents,
+      retentionMs,
+      mapId: (idx && typeof idx.mapId === 'string') ? idx.mapId : null,
+    });
+  }
+
+  out.sort((a, b) => String(a.serverId).localeCompare(String(b.serverId)));
+  res.json(out);
 }));
 
 app.get('/api/replay/mapTerrain', requireAuth, requireTool('replay'), asyncRoute(async (req, res) => {
@@ -786,11 +1014,13 @@ app.get('/api/replay/events', requireAuth, requireTool('replay'), asyncRoute(asy
   const sinceTsMs = req.query.sinceTsMs ? Number(req.query.sinceTsMs) : null;
   const untilTsMs = req.query.untilTsMs ? Number(req.query.untilTsMs) : null;
   const limit = req.query.limit ? Number(req.query.limit) : 5000;
+  const tail = String(req.query.tail || '') === '1' || String(req.query.tail || '') === 'true';
 
   const opts = {
     sinceTsMs: (sinceTsMs !== null && Number.isFinite(sinceTsMs)) ? sinceTsMs : null,
     untilTsMs: (untilTsMs !== null && Number.isFinite(untilTsMs)) ? untilTsMs : null,
     limit: (Number.isFinite(limit) && limit > 0) ? Math.min(limit, 20000) : 5000,
+    tail,
   };
 
   const eventsPath = path.join(DATA_DIR, 'servers', safeId, 'events.ndjson');
@@ -984,29 +1214,46 @@ app.post('/api/dev/servers/clear', requireAuth, requireTool('dev'), asyncRoute(a
   }
 
   const safeId = sanitizeServerId(serverId);
-  const serverDir = path.join(DATA_DIR, 'servers', safeId);
-  const eventsPath = path.join(serverDir, 'events.ndjson');
-  const snapPath = path.join(serverDir, 'latestSnapshot.json');
-  const idxPath = path.join(serverDir, 'index.json');
+  await withIngestLock(safeId, async () => {
+    const serverDir = path.join(DATA_DIR, 'servers', safeId);
+    const idxPath = path.join(serverDir, 'index.json');
 
-  // Preserve name/id if present.
-  const idx = (await readJsonOrNull(idxPath)) || {};
-  const keepName = typeof idx.name === 'string' ? idx.name : safeId;
-  const keepMapId = typeof idx.mapId === 'string' ? idx.mapId : '';
-  const keepMapWorldFile = typeof idx.mapWorldFile === 'string' ? idx.mapWorldFile : '';
+    await ensureDir(serverDir);
 
-  try { await fs.unlink(eventsPath); } catch { /* ignore */ }
-  try { await fs.unlink(snapPath); } catch { /* ignore */ }
+    // Preserve name/id if present.
+    const idx = (await readJsonOrNull(idxPath)) || {};
+    const keepName = typeof idx.name === 'string' ? idx.name : safeId;
+    const keepMapId = typeof idx.mapId === 'string' ? idx.mapId : '';
+    const keepMapWorldFile = typeof idx.mapWorldFile === 'string' ? idx.mapWorldFile : '';
 
-  const nextIdx = {
-    id: safeId,
-    name: keepName,
-    clearedAt: Date.now(),
-    // Keep map identity so map endpoints don't 404 after a clear.
-    ...(keepMapId ? { mapId: keepMapId } : {}),
-    ...(keepMapWorldFile ? { mapWorldFile: keepMapWorldFile } : {}),
-  };
-  await writeJsonAtomic(idxPath, nextIdx);
+    // Delete everything in the server folder EXCEPT map-related caches (if any ever live here).
+    // Map caches are normally stored in MAPS_DIR, not per-server.
+    const isMapCacheFileName = (name) => {
+      return name.endsWith('.terrain.json') || name.endsWith('.towns.json') || name.endsWith('.descriptors.json');
+    };
+
+    try {
+      const entries = await fs.readdir(serverDir, { withFileTypes: true });
+      for (const ent of entries) {
+        if (!ent || !ent.isFile()) continue;
+        if (ent.name === 'index.json') continue; // we'll rewrite it
+        if (isMapCacheFileName(ent.name)) continue;
+        try { await fs.unlink(path.join(serverDir, ent.name)); } catch { /* ignore */ }
+      }
+    } catch {
+      // ignore
+    }
+
+    const nextIdx = {
+      id: safeId,
+      name: keepName,
+      clearedAt: Date.now(),
+      // Keep map identity so map endpoints don't 404 after a clear.
+      ...(keepMapId ? { mapId: keepMapId } : {}),
+      ...(keepMapWorldFile ? { mapWorldFile: keepMapWorldFile } : {}),
+    };
+    await writeJsonAtomic(idxPath, nextIdx);
+  });
 
   res.json({ ok: true });
 }));
@@ -1085,6 +1332,7 @@ app.post('/api/replay/ingest', async (req, res) => {
       let tsMs = sessionTsMs;
       let sessions = (prev.sessions && typeof prev.sessions === 'object' && !Array.isArray(prev.sessions)) ? prev.sessions : {};
       let sessionOffsetMs = null;
+      let isNewSession = false;
 
       if (sessionId && sessionTsMs !== null) {
         // Ensure we don't mutate prev.sessions in-place.
@@ -1092,6 +1340,7 @@ app.post('/api/replay/ingest', async (req, res) => {
 
         const existing = sessions[sessionId] && typeof sessions[sessionId] === 'object' ? sessions[sessionId] : null;
         if (!existing) {
+          isNewSession = true;
           const prevMax = typeof prev.maxTsMs === 'number' ? prev.maxTsMs : null;
           const offsetMs = (prevMax !== null) ? ((prevMax + 1) - sessionTsMs) : (-sessionTsMs);
           sessions[sessionId] = {
@@ -1126,6 +1375,25 @@ app.post('/api/replay/ingest', async (req, res) => {
       };
 
       const eventsPath = path.join(serverDir, 'events.ndjson');
+
+      const appendedCount = 1 + (isNewSession && sessionId && sessionTsMs !== null && typeof tsMs === 'number' ? 1 : 0);
+
+      if (isNewSession && sessionId && sessionTsMs !== null && typeof tsMs === 'number') {
+        const restartRecord = {
+          receivedAt,
+          remoteAddr: req.ip,
+          payload: {
+            type: 'restart',
+            tsMs,
+            sessionId,
+            sessionTsMs,
+            sessionOffsetMs,
+            event: { reason: 'session_start' },
+          },
+        };
+        await fs.appendFile(eventsPath, `${JSON.stringify(restartRecord)}\n`, 'utf8');
+      }
+
       await fs.appendFile(eventsPath, `${JSON.stringify(record)}\n`, 'utf8');
 
       let minTsMs = (typeof prev.minTsMs === 'number') ? prev.minTsMs : null;
@@ -1139,12 +1407,15 @@ app.post('/api/replay/ingest', async (req, res) => {
         ...prev,
         id: safeId,
         name: typeof prev.name === 'string' ? prev.name : safeId,
+        firstReceivedAt: (typeof prev.firstReceivedAt === 'number') ? prev.firstReceivedAt : receivedAt,
         lastReceivedAt: receivedAt,
         lastIngestTsMs: tsMs,
         lastSessionId: sessionId || (typeof prev.lastSessionId === 'string' ? prev.lastSessionId : undefined),
         minTsMs,
         maxTsMs,
-        totalEvents: (typeof prev.totalEvents === 'number' ? prev.totalEvents : 0) + 1,
+        storedEvents: (typeof prev.storedEvents === 'number' ? prev.storedEvents : (typeof prev.lastCompactionKept === 'number' ? prev.lastCompactionKept : 0)) + appendedCount,
+        totalEvents: (typeof prev.totalEvents === 'number' ? prev.totalEvents : 0) + appendedCount,
+        retentionMs: RETENTION_MS > 0 ? RETENTION_MS : 0,
         sessions,
       };
 

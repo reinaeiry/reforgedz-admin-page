@@ -64,7 +64,7 @@ export function DevPage() {
 
             <div className="row" style={{ justifyContent: 'flex-end' }}>
               <button
-                className="button"
+                className="button buttonPrimary"
                 disabled={busy || serverId.trim().length === 0 || serverKey.trim().length < 6}
                 onClick={async () => {
                   setBusy(true);
@@ -93,11 +93,11 @@ export function DevPage() {
             <div>
               <div className="label">Servers</div>
               <div className="muted" style={{ fontSize: 12 }}>
-                Clear history resets the rolling 24h buffer for that server.
+                Clear history deletes stored replay history for that server (events + snapshots). Cached map data is kept.
               </div>
             </div>
 
-            <button className="button" disabled={busy} onClick={refresh}>
+            <button className="button buttonPrimary" disabled={busy} onClick={refresh}>
               Refresh
             </button>
           </div>

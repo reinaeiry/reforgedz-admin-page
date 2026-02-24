@@ -81,7 +81,7 @@ export function AdminPage() {
 
             <div className="row" style={{ justifyContent: 'flex-end' }}>
               <button
-                className="button"
+                className="button buttonPrimary"
                 disabled={!canCreate || busy}
                 onClick={async () => {
                   setBusy(true);
@@ -119,7 +119,7 @@ export function AdminPage() {
                 <div className="muted" style={{ fontSize: 12 }}>Manage tool access and reset passwords.</div>
               </div>
 
-              <button className="button" disabled={busy} onClick={refresh}>
+              <button className="button buttonPrimary" disabled={busy} onClick={refresh}>
                 Refresh
               </button>
             </div>

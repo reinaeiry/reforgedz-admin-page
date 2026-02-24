@@ -37,6 +37,7 @@ export type ReplayMap3DProps = {
   players: PlayerMarker[];
   focusTarget: { x: number; y: number; z: number } | null;
   focusNonce: number;
+  followPlayerId?: number | null;
   nameTags?: NameTagOptions;
   showAimLines?: boolean;
   trail?: Trail | null;
@@ -70,6 +71,7 @@ export function ReplayMap3D(props: ReplayMap3DProps) {
   const playersRef = useRef<PlayerMarker[]>([]);
   const focusTargetRef = useRef<{ x: number; y: number; z: number } | null>(null);
   const focusNonceRef = useRef<number>(0);
+  const followPlayerIdRef = useRef<number | null>(null);
 
   const nameTagsRef = useRef<NameTagOptions>({ enabled: true, scale: 1, background: true });
   const showAimLinesRef = useRef<boolean>(true);
@@ -89,6 +91,10 @@ export function ReplayMap3D(props: ReplayMap3DProps) {
   useEffect(() => {
     focusNonceRef.current = props.focusNonce;
   }, [props.focusNonce]);
+
+  useEffect(() => {
+    followPlayerIdRef.current = (typeof props.followPlayerId === 'number') ? props.followPlayerId : null;
+  }, [props.followPlayerId]);
 
   useEffect(() => {
     nameTagsRef.current = props.nameTags || { enabled: true, scale: 1, background: true };
@@ -176,15 +182,15 @@ export function ReplayMap3D(props: ReplayMap3DProps) {
     scene.add(terrainGroup);
 
     const markerGeom = new THREE.SphereGeometry(0.4, 16, 12);
-    const matNormal = new THREE.MeshStandardMaterial({ color: 0x4ea1ff });
+    const matNormal = new THREE.MeshStandardMaterial({ color: 0xf9bc59 });
     const matVehicle = new THREE.MeshStandardMaterial({ color: 0xffb24a });
     const matDead = new THREE.MeshStandardMaterial({ color: 0x8a93a6 });
 
-    const lineMatNormal = new THREE.LineBasicMaterial({ color: 0x4ea1ff, transparent: true, opacity: 0.8 });
+    const lineMatNormal = new THREE.LineBasicMaterial({ color: 0xf9bc59, transparent: true, opacity: 0.8 });
     const lineMatVehicle = new THREE.LineBasicMaterial({ color: 0xffb24a, transparent: true, opacity: 0.8 });
     const lineMatDead = new THREE.LineBasicMaterial({ color: 0x8a93a6, transparent: true, opacity: 0.7 });
 
-    const trailMat = new THREE.LineBasicMaterial({ color: 0x4ea1ff, transparent: true, opacity: 0.35 });
+    const trailMat = new THREE.LineBasicMaterial({ color: 0xf9bc59, transparent: true, opacity: 0.35 });
     const deathMat = new THREE.LineBasicMaterial({ color: 0xff4a4a, transparent: true, opacity: 0.9 });
 
     const terrainMat = new THREE.MeshStandardMaterial({
@@ -630,6 +636,18 @@ export function ReplayMap3D(props: ReplayMap3DProps) {
     }
 
     function onWheel(e: WheelEvent) {
+      const followId = followPlayerIdRef.current;
+      if (typeof followId === 'number') {
+        // Zoom while following: adjust follow offset distance.
+        const factor = e.deltaY < 0 ? 0.90 : 1.10;
+        const next = followOffset.clone().multiplyScalar(factor);
+        const len = next.length();
+        const clamped = clamp(len, 6, 800);
+        if (len > 0.0001) next.multiplyScalar(clamped / len);
+        followOffset.copy(next);
+        return;
+      }
+
       // Negative deltaY = scroll up
       const direction = e.deltaY < 0 ? 1 : -1;
       const next = controls.speed + direction * Math.max(1, controls.speed * 0.1);
@@ -811,6 +829,10 @@ export function ReplayMap3D(props: ReplayMap3DProps) {
     let last = performance.now();
     let raf = 0;
 
+    // Follow mode camera offset (relative to player position).
+    let lastFollowId: number | null = null;
+    const followOffset = new THREE.Vector3(0, 25, 60);
+
     function step(now: number) {
       const dt = Math.min((now - last) / 1000, 0.05);
       last = now;
@@ -821,10 +843,54 @@ export function ReplayMap3D(props: ReplayMap3DProps) {
       updateDeathMarkers();
       updateTerrain();
 
+      // Continuous follow (camera attachment): keep camera offset relative to the player,
+      // but still allow RMB movement (applied to the offset) so users can move closer/further.
+      const followId = followPlayerIdRef.current;
+      if (typeof followId === 'number') {
+        const players = playersRef.current;
+        const p = players.find((x) => x && x.playerId === followId);
+        if (p) {
+          const t = p.pos;
+
+          if (followId !== lastFollowId) {
+            // Preserve the user's current camera position as the starting follow offset.
+            followOffset.set(camera.position.x - t.x, camera.position.y - t.y, camera.position.z - t.z);
+            if (!Number.isFinite(followOffset.x) || !Number.isFinite(followOffset.y) || !Number.isFinite(followOffset.z) || followOffset.length() < 1) {
+              followOffset.set(0, 25, 60);
+            }
+            lastFollowId = followId;
+          }
+
+          // Apply current offset first so movement vectors are stable.
+          camera.position.set(t.x + followOffset.x, t.y + followOffset.y, t.z + followOffset.z);
+          camera.lookAt(t.x, t.y + 1.5, t.z);
+
+          const allowMove = controls.rmbDown || controls.pointerLocked;
+          if (allowMove) {
+            const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion);
+            const right = new THREE.Vector3(1, 0, 0).applyQuaternion(camera.quaternion);
+            const up = new THREE.Vector3(0, 1, 0);
+
+            if (controls.keys['KeyW']) followOffset.addScaledVector(forward, controls.speed * dt);
+            if (controls.keys['KeyS']) followOffset.addScaledVector(forward, -controls.speed * dt);
+            if (controls.keys['KeyA']) followOffset.addScaledVector(right, -controls.speed * dt);
+            if (controls.keys['KeyD']) followOffset.addScaledVector(right, controls.speed * dt);
+            if (controls.keys['KeyQ']) followOffset.addScaledVector(up, controls.speed * dt);
+            if (controls.keys['KeyZ']) followOffset.addScaledVector(up, -controls.speed * dt);
+          }
+
+          // Re-apply after movement.
+          camera.position.set(t.x + followOffset.x, t.y + followOffset.y, t.z + followOffset.z);
+          camera.lookAt(t.x, t.y + 1.5, t.z);
+        }
+      } else {
+        lastFollowId = null;
+      }
+
       // One-shot focus (move camera to the selected player and look at them).
       // This is NOT a continuous lock/follow.
       const focusNonce = focusNonceRef.current;
-      if (focusNonce !== lastAppliedFocusNonce) {
+      if (followId === null && focusNonce !== lastAppliedFocusNonce) {
         lastAppliedFocusNonce = focusNonce;
         const t = focusTargetRef.current;
         if (t) {
@@ -835,12 +901,12 @@ export function ReplayMap3D(props: ReplayMap3DProps) {
 
       // Only apply angle control while actively controlling the camera.
       // Otherwise keep the current camera orientation.
-      if (controls.pointerLocked) {
+      if (controls.pointerLocked && followId === null) {
         setCameraFromAngles();
       }
 
       const allowMove = controls.rmbDown || controls.pointerLocked;
-      if (allowMove) {
+      if (allowMove && followId === null) {
         const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion);
         const right = new THREE.Vector3(1, 0, 0).applyQuaternion(camera.quaternion);
         const up = new THREE.Vector3(0, 1, 0);

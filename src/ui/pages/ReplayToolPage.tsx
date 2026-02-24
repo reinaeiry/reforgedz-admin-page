@@ -5,11 +5,13 @@ import {
   getReplayMapTerrain,
   getReplayMapDescriptors,
   getReplayRange,
+  getReplayStatusAll,
   listReplayPlayers,
   listServers,
   type IngestRecord,
   type MapDescriptors,
   type MapTerrain,
+  type ReplayStatus,
   type ReplayPlayer,
   type ServerInfo,
 } from '../../util/api';
@@ -160,6 +162,25 @@ function formatElapsedMs(ms: number): string {
   return `${hh}:${mm}:${ss}`;
 }
 
+function formatClockTime(tsMs: number | null | undefined): string {
+  if (typeof tsMs !== 'number' || !Number.isFinite(tsMs)) return '—';
+  try {
+    return new Date(tsMs).toLocaleString();
+  } catch {
+    return '—';
+  }
+}
+
+function formatDurationMs(ms: number): string {
+  if (!Number.isFinite(ms) || ms <= 0) return '—';
+  const totalSeconds = Math.floor(ms / 1000);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  if (hours >= 48 && hours % 24 === 0) return `${Math.floor(hours / 24)}d`;
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  return `${minutes}m`;
+}
+
 function groupByName(items: any[] | null | undefined, getName: (it: any) => string): Array<{ name: string; count: number }> {
   if (!Array.isArray(items) || items.length === 0) return [];
   const map = new Map<string, number>();
@@ -173,11 +194,48 @@ function groupByName(items: any[] | null | undefined, getName: (it: any) => stri
   return out;
 }
 
+function getRecordTsMs(rec: IngestRecord): number | null {
+  const p: any = (rec as any).payload;
+  return p && typeof p.tsMs === 'number' ? p.tsMs : null;
+}
+
+function getRecordKey(rec: IngestRecord): string {
+  const p: any = (rec as any).payload;
+  return `${rec.receivedAt}|${p && p.tsMs}|${p && p.type}`;
+}
+
+function trimEventsToCap(list: IngestRecord[], cap: number, targetTsMs: number | null): IngestRecord[] {
+  if (!Number.isFinite(cap) || cap <= 0) return [];
+  if (list.length <= cap) return list;
+  if (typeof targetTsMs !== 'number' || !Number.isFinite(targetTsMs)) {
+    // Default: keep the newest data.
+    return list.slice(list.length - cap);
+  }
+
+  const firstTs = getRecordTsMs(list[0]);
+  const lastTs = getRecordTsMs(list[list.length - 1]);
+  if (typeof firstTs !== 'number' || typeof lastTs !== 'number') {
+    return list.slice(list.length - cap);
+  }
+
+  const distToFirst = Math.abs(targetTsMs - firstTs);
+  const distToLast = Math.abs(lastTs - targetTsMs);
+  const drop = list.length - cap;
+
+  // Keep the side closer to the target time.
+  if (distToFirst > distToLast) {
+    return list.slice(drop);
+  }
+  return list.slice(0, list.length - drop);
+}
+
 export function ReplayToolPage() {
   const serverIdFromQuery = useQueryParam('serverId');
 
   const [servers, setServers] = useState<ServerInfo[]>([]);
   const [selectedServerId, setSelectedServerId] = useState<string>('');
+  const [serverStatuses, setServerStatuses] = useState<ReplayStatus[] | null>(null);
+  const [serverStatusesError, setServerStatusesError] = useState<string | null>(null);
 
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -224,8 +282,22 @@ export function ReplayToolPage() {
   const [toasts, setToasts] = useState<Array<{ id: string; kind: 'kill' | 'event'; title: string; subtitle: string; visible: boolean }>>([]);
   const lastToastReceivedAtRef = useRef<number>(0);
 
+  const [eventClickOffsetSeconds, setEventClickOffsetSeconds] = useState<number>(() => {
+    try {
+      const raw = window.localStorage.getItem('replay.eventClickOffsetSeconds');
+      const n = raw !== null ? Number(raw) : 5;
+      if (!Number.isFinite(n)) return 5;
+      return Math.max(0, Math.min(60, Math.floor(n)));
+    } catch {
+      return 5;
+    }
+  });
+
+  const [attachedPlayerId, setAttachedPlayerId] = useState<number | null>(null);
+
   const [events, setEvents] = useState<IngestRecord[]>([]);
   const lastFetchedTsMsRef = useRef<number | null>(null);
+  const backfillInFlightRef = useRef(false);
   const terrainFetchInFlightRef = useRef(false);
   const townsFetchInFlightRef = useRef(false);
 
@@ -249,6 +321,25 @@ export function ReplayToolPage() {
   }, [currentTsMs]);
 
   useEffect(() => {
+    try {
+      window.localStorage.setItem('replay.eventClickOffsetSeconds', String(eventClickOffsetSeconds));
+    } catch {
+      // ignore
+    }
+  }, [eventClickOffsetSeconds]);
+
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.code !== 'KeyF') return;
+      if (attachedPlayerId === null) return;
+      setAttachedPlayerId(null);
+    }
+
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [attachedPlayerId]);
+
+  useEffect(() => {
     let cancelled = false;
 
     async function loadServers() {
@@ -266,6 +357,30 @@ export function ReplayToolPage() {
     loadServers();
     return () => {
       cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadStatuses() {
+      try {
+        const data = await getReplayStatusAll();
+        if (cancelled) return;
+        setServerStatuses(data);
+        setServerStatusesError(null);
+      } catch (err) {
+        if (cancelled) return;
+        const message = err instanceof Error ? err.message : 'Failed to load server status';
+        setServerStatusesError(message);
+      }
+    }
+
+    loadStatuses();
+    const t = window.setInterval(loadStatuses, 15_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(t);
     };
   }, []);
 
@@ -309,9 +424,28 @@ export function ReplayToolPage() {
 
         if (typeof r.maxTsMs === 'number') {
           setCurrentTsMs(r.maxTsMs);
-          // Seed event fetch a bit behind "now" so the Events tab and toast logic
-          // populate immediately rather than waiting for the next new event.
-          lastFetchedTsMsRef.current = Math.max(0, r.maxTsMs - 15000);
+
+          // Pull a recent tail window so the tool immediately has context and the
+          // user can scrub backwards (without waiting for live polling to catch up).
+          const initial = await getReplayEvents({
+            serverId: serverIdValue,
+            untilTsMs: r.maxTsMs,
+            limit: 5000,
+            tail: true,
+          }).catch(() => [] as IngestRecord[]);
+          if (!cancelled) {
+            setEvents(initial);
+
+            // Advance cursor to newest loaded event (fallback: a bit behind max)
+            let lastTs: number | null = null;
+            for (const e of initial) {
+              const p: any = (e as any).payload;
+              if (p && typeof p.tsMs === 'number') {
+                if (lastTs === null || p.tsMs > lastTs) lastTs = p.tsMs;
+              }
+            }
+            lastFetchedTsMsRef.current = (lastTs !== null) ? lastTs : Math.max(0, r.maxTsMs - 15000);
+          }
         }
 
         // Avoid showing a burst of historical popups on initial load.
@@ -554,43 +688,60 @@ export function ReplayToolPage() {
       const sinceTsMs = typeof since === 'number' ? (since + 1) : Math.max(0, maxTsMs - 15000);
 
       try {
-        const items = await getReplayEvents({
-          serverId: serverIdValue,
-          sinceTsMs,
-          untilTsMs: maxTsMs,
-          limit: 5000,
-        });
+        const LIMIT = 5000;
+        const MAX_BATCHES = 5;
+
+        let cursorSince = sinceTsMs;
+        const allItems: IngestRecord[] = [];
+
+        let lastTs: number | null = (typeof lastFetchedTsMsRef.current === 'number') ? lastFetchedTsMsRef.current : null;
+
+        for (let i = 0; i < MAX_BATCHES; i++) {
+          const batch = await getReplayEvents({
+            serverId: serverIdValue,
+            sinceTsMs: cursorSince,
+            untilTsMs: maxTsMs,
+            limit: LIMIT,
+          });
+
+          allItems.push(...batch);
+
+          let batchMaxTs: number | null = null;
+          for (const e of batch) {
+            const ts = getRecordTsMs(e);
+            if (ts === null) continue;
+            if (batchMaxTs === null || ts > batchMaxTs) batchMaxTs = ts;
+            if (lastTs === null || ts > lastTs) lastTs = ts;
+          }
+
+          // No more data, or we can't advance a cursor.
+          if (batch.length < LIMIT || batchMaxTs === null) break;
+          if (batchMaxTs >= maxTsMs) break;
+
+          cursorSince = batchMaxTs + 1;
+        }
 
         if (cancelled) return;
 
-        setEvents((prev) => {
-          const recent = prev.slice(-500);
-          const seen = new Set<string>();
-          for (const e of recent) {
-            const p = e.payload as any;
-            seen.add(`${e.receivedAt}|${p && p.tsMs}|${p && p.type}`);
-          }
+        if (allItems.length > 0) {
+          setEvents((prev) => {
+            const recent = prev.slice(-500);
+            const seen = new Set<string>();
+            for (const e of recent) {
+              seen.add(getRecordKey(e));
+            }
 
-          const next = prev.slice();
-          for (const e of items) {
-            const p = e.payload as any;
-            const k = `${e.receivedAt}|${p && p.tsMs}|${p && p.type}`;
-            if (seen.has(k)) continue;
-            next.push(e);
-          }
+            const next = prev.slice();
+            for (const e of allItems) {
+              const k = getRecordKey(e);
+              if (seen.has(k)) continue;
+              next.push(e);
+            }
 
-          if (next.length > 80000) return next.slice(next.length - 80000);
-          return next;
-        });
-
-        // Advance to the newest tsMs we have in the returned batch (prefer payload.tsMs)
-        let lastTs = lastFetchedTsMsRef.current;
-        for (const e of items) {
-          const p: any = (e as any).payload;
-          if (p && typeof p.tsMs === 'number') {
-            if (typeof lastTs !== 'number' || p.tsMs > lastTs) lastTs = p.tsMs;
-          }
+            return trimEventsToCap(next, 250000, currentTsMsRef.current);
+          });
         }
+
         if (typeof lastTs === 'number') lastFetchedTsMsRef.current = lastTs;
       } catch (err) {
         if (!cancelled) {
@@ -611,6 +762,76 @@ export function ReplayToolPage() {
       if (timer !== null) window.clearTimeout(timer);
     };
   }, [live, range.maxTsMs, serverId]);
+
+  const loadedEventRange = useMemo(() => {
+    let minTs: number | null = null;
+    let maxTs: number | null = null;
+    for (const e of events) {
+      const p: any = (e as any).payload;
+      const ts = p && typeof p.tsMs === 'number' ? p.tsMs : null;
+      if (ts === null) continue;
+      if (minTs === null || ts < minTs) minTs = ts;
+      if (maxTs === null || ts > maxTs) maxTs = ts;
+    }
+    return { minTsMs: minTs, maxTsMs: maxTs };
+  }, [events]);
+
+  // Backfill older history on demand when the user scrubs backwards.
+  useEffect(() => {
+    if (!serverId) return;
+    const serverIdValue = serverId;
+
+    const cur = currentTsMs;
+    const loadedMin = loadedEventRange.minTsMs;
+    const absoluteMin = range.minTsMs;
+
+    if (typeof cur !== 'number') return;
+    if (typeof loadedMin !== 'number') return;
+    if (typeof absoluteMin !== 'number') return;
+    if (loadedMin <= absoluteMin + 1) return;
+
+    // Only backfill when the user is near the earliest loaded timestamp.
+    const backfillThresholdMs = 2000;
+    if (cur > loadedMin + backfillThresholdMs) return;
+    if (backfillInFlightRef.current) return;
+
+    backfillInFlightRef.current = true;
+    const untilTsMs = Math.max(0, Math.floor(loadedMin) - 1);
+
+    getReplayEvents({
+      serverId: serverIdValue,
+      untilTsMs,
+      limit: 5000,
+      tail: true,
+    })
+      .then((items) => {
+        if (items.length === 0) return;
+
+        setEvents((prev) => {
+          const head = prev.slice(0, 800);
+          const seen = new Set<string>();
+          for (const e of head) {
+            seen.add(getRecordKey(e));
+          }
+
+          const nextItems: IngestRecord[] = [];
+          for (const e of items) {
+            const k = getRecordKey(e);
+            if (seen.has(k)) continue;
+            nextItems.push(e);
+          }
+
+          const next = nextItems.concat(prev);
+          return trimEventsToCap(next, 250000, currentTsMsRef.current);
+        });
+      })
+      .catch(() => {
+        // ignore
+      })
+      .finally(() => {
+        backfillInFlightRef.current = false;
+      });
+  }, [currentTsMs, loadedEventRange.minTsMs, range.minTsMs, serverId]);
 
   const snapshots = useMemo(() => {
     const out: Array<{ tsMs: number; players: any[] }> = [];
@@ -809,6 +1030,46 @@ export function ReplayToolPage() {
 
     return { min, max, value: Math.min(Math.max(cur, min), max), disabled: false };
   }, [currentTsMs, range.maxTsMs, range.minTsMs]);
+
+  const wallClockAnchor = useMemo(() => {
+    let bestTs = -Infinity;
+    let bestReceivedAt = 0;
+    for (const rec of events) {
+      if (!rec || typeof rec.receivedAt !== 'number') continue;
+      const ts = getRecordTsMs(rec);
+      if (ts === null) continue;
+      if (ts > bestTs) {
+        bestTs = ts;
+        bestReceivedAt = rec.receivedAt;
+      }
+    }
+    if (!Number.isFinite(bestTs) || bestTs < 0 || !Number.isFinite(bestReceivedAt) || bestReceivedAt <= 0) return null;
+    return { tsMs: bestTs, receivedAt: bestReceivedAt };
+  }, [events]);
+
+  const formatWallClock = useMemo(() => {
+    if (!wallClockAnchor) return null;
+    const anchor = wallClockAnchor;
+    return (tsMs: number) => {
+      const epochMs = anchor.receivedAt + (tsMs - anchor.tsMs);
+      if (!Number.isFinite(epochMs)) return '';
+      return new Date(epochMs).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    };
+  }, [wallClockAnchor]);
+
+  const attachedPlayerName = useMemo(() => {
+    if (attachedPlayerId === null) return null;
+    const p = players.find((x) => x.playerId === attachedPlayerId);
+    return p ? p.name : String(attachedPlayerId);
+  }, [attachedPlayerId, players]);
+
+  function jumpToEventTs(tsMs: number) {
+    const offsetMs = Math.max(0, Math.floor(eventClickOffsetSeconds * 1000));
+    const min = scrubber.disabled ? 0 : scrubber.min;
+    const max = scrubber.disabled ? tsMs : scrubber.max;
+    const next = Math.min(max, Math.max(min, tsMs - offsetMs));
+    setCurrentTsMs(next);
+  }
 
   const filteredPlayers = useMemo((): ReplayPlayer[] => {
     const q = playerSearch.trim().toLowerCase();
@@ -1123,11 +1384,15 @@ export function ReplayToolPage() {
           focusPlayerId: killerId,
         });
       } else if (p.type === 'restart') {
+        const reason = ev && typeof ev.reason === 'string' ? ev.reason : '';
+        const subtitle = reason === 'session_start'
+          ? 'server restart'
+          : (reason === 'server_restart_or_history_cleared' ? 'restart / history cleared' : (reason || 'restart'));
         out.push({
           tsMs: p.tsMs,
           type: 'restart',
           title: 'Server restarted',
-          subtitle: 'restart / history cleared',
+          subtitle,
           focusPos: null,
           focusPlayerId: null,
         });
@@ -1294,6 +1559,23 @@ export function ReplayToolPage() {
           ) : null}
         </div>
 
+        {serverId ? null : (
+          <button
+            className="button"
+            onClick={() => {
+              setServerStatusesError(null);
+              getReplayStatusAll()
+                .then((data) => setServerStatuses(data))
+                .catch((err) => {
+                  const message = err instanceof Error ? err.message : 'Failed to load server status';
+                  setServerStatusesError(message);
+                });
+            }}
+          >
+            Refresh overview
+          </button>
+        )}
+
         {busy ? <div className="muted" style={{ fontSize: 12 }}>Loading…</div> : null}
         {error ? <div className="error" style={{ flex: 1 }}>{error}</div> : null}
       </div>
@@ -1314,6 +1596,7 @@ export function ReplayToolPage() {
                 players={playerMarkers}
                 focusTarget={focusTarget}
                 focusNonce={focusNonce}
+                followPlayerId={attachedPlayerId}
                 nameTags={nameTagOptions}
                 showAimLines={showAimLines}
                 trail={focusedTrail}
@@ -1321,6 +1604,16 @@ export function ReplayToolPage() {
                 terrain={terrain}
                 towns={towns || undefined}
               />
+
+              {attachedPlayerId !== null && attachedPlayerName ? (
+                <div style={{ position: 'absolute', left: 12, right: 12, bottom: 132, display: 'flex', justifyContent: 'center', pointerEvents: 'none' }}>
+                  <div className="card" style={{ padding: '8px 12px', background: 'rgba(0,0,0,0.55)', border: '1px solid rgba(255,255,255,0.14)' }}>
+                    <div style={{ fontWeight: 800, fontSize: 12 }}>
+                      Attached to {attachedPlayerName}, press F to unattach
+                    </div>
+                  </div>
+                </div>
+              ) : null}
 
               {/* Top-right toast popups */}
               <div style={{ position: 'absolute', top: 12, right: 12, width: 340, display: 'flex', flexDirection: 'column', gap: 8, pointerEvents: 'none' }}>
@@ -1352,7 +1645,11 @@ export function ReplayToolPage() {
                       <button
                         type="button"
                         className="button"
-                        style={{ padding: '6px 10px', background: leftPanelTab === 'players' ? 'rgba(255,255,255,0.14)' : 'rgba(255,255,255,0.10)' }}
+                        style={{
+                          padding: '6px 10px',
+                          background: leftPanelTab === 'players' ? 'rgba(249,188,89,0.22)' : 'rgba(255,255,255,0.10)',
+                          borderColor: leftPanelTab === 'players' ? 'rgba(249,188,89,0.40)' : 'rgba(255,255,255,0.14)',
+                        }}
                         onClick={() => setLeftPanelTab('players')}
                       >
                         Players
@@ -1360,7 +1657,11 @@ export function ReplayToolPage() {
                       <button
                         type="button"
                         className="button"
-                        style={{ padding: '6px 10px', background: leftPanelTab === 'events' ? 'rgba(255,255,255,0.14)' : 'rgba(255,255,255,0.10)' }}
+                        style={{
+                          padding: '6px 10px',
+                          background: leftPanelTab === 'events' ? 'rgba(249,188,89,0.22)' : 'rgba(255,255,255,0.10)',
+                          borderColor: leftPanelTab === 'events' ? 'rgba(249,188,89,0.40)' : 'rgba(255,255,255,0.14)',
+                        }}
                         onClick={() => setLeftPanelTab('events')}
                       >
                         Events
@@ -1486,6 +1787,7 @@ export function ReplayToolPage() {
                                   onClick={() => {
                                     setLeftPanelTab('players');
                                     setSelectedPlayerId(p.playerId);
+                                    setAttachedPlayerId(p.playerId);
 
                                     const marker = playerMarkers.find((m) => m.playerId === p.playerId);
                                     if (marker) {
@@ -1512,52 +1814,72 @@ export function ReplayToolPage() {
                           )}
                         </div>
                       ) : (
-                        <div className="scroll" style={{ maxWidth: 340, overflowX: 'auto', overflowY: 'hidden', border: '1px solid rgba(255,255,255,0.10)', borderRadius: 10, padding: 10 }}>
-                          {timelineEvents.length === 0 ? (
-                            <div className="muted" style={{ fontSize: 12 }}>No events in buffer yet.</div>
-                          ) : (
-                            <div style={{ display: 'flex', gap: 10 }}>
-                              {timelineEvents.slice().reverse().map((ev, idx) => {
-                                const key = `${ev.tsMs}|${ev.type}|${ev.title}|${ev.subtitle || ''}`;
-                                const isSelected = selectedEventKey === key;
-                                return (
-                                  <button
-                                    key={`${ev.tsMs}-${idx}`}
-                                    ref={(el) => {
-                                      if (el) eventCardRefs.current.set(key, el);
-                                      else eventCardRefs.current.delete(key);
-                                    }}
-                                    type="button"
-                                    className="button"
-                                    style={{
-                                      minWidth: 220,
-                                      textAlign: 'left',
-                                      borderRadius: 10,
-                                      border: isSelected ? '1px solid rgba(255,255,255,0.35)' : '1px solid rgba(255,255,255,0.10)',
-                                      background: isSelected ? 'rgba(255,255,255,0.10)' : 'rgba(255,255,255,0.06)',
-                                      padding: '8px 10px',
-                                    }}
-                                    onClick={() => {
-                                      setSelectedEventKey(key);
-                                      setIsPlaying(false);
-                                      setLive(false);
-                                      setCurrentTsMs(ev.tsMs);
-                                      if (typeof ev.focusPlayerId === 'number') setSelectedPlayerId(ev.focusPlayerId);
-                                      if (ev.focusPos) {
-                                        setFocusTarget(ev.focusPos);
-                                        setFocusNonce((n) => n + 1);
-                                      }
-                                    }}
-                                  >
-                                    <div style={{ fontWeight: 800, fontSize: 12 }}>{ev.title}</div>
-                                    <div className="muted" style={{ fontSize: 11, marginTop: 2 }}>
-                                      +{formatElapsedMs(ev.tsMs - scrubber.min)}{ev.subtitle ? ` • ${ev.subtitle}` : ''}
-                                    </div>
-                                  </button>
-                                );
-                              })}
+                        <div className="stack" style={{ gap: 8 }}>
+                          <div className="row" style={{ justifyContent: 'space-between', gap: 10 }}>
+                            <div className="muted" style={{ fontSize: 12 }}>Event click offset</div>
+                            <div className="row" style={{ gap: 8 }}>
+                              <input
+                                className="input"
+                                style={{ width: 90, padding: '6px 10px' }}
+                                type="number"
+                                min={0}
+                                max={60}
+                                step={1}
+                                value={eventClickOffsetSeconds}
+                                onChange={(e) => setEventClickOffsetSeconds(Math.max(0, Math.min(60, Math.floor(Number(e.target.value) || 0))))}
+                                title="Jump this many seconds before an event"
+                              />
+                              <div className="muted" style={{ fontSize: 12 }}>sec</div>
                             </div>
-                          )}
+                          </div>
+
+                          <div className="scroll" style={{ maxWidth: 340, overflowX: 'auto', overflowY: 'hidden', border: '1px solid rgba(255,255,255,0.10)', borderRadius: 10, padding: 10 }}>
+                            {timelineEvents.length === 0 ? (
+                              <div className="muted" style={{ fontSize: 12 }}>No events in buffer yet.</div>
+                            ) : (
+                              <div style={{ display: 'flex', gap: 10 }}>
+                                {timelineEvents.slice().reverse().map((ev, idx) => {
+                                  const key = `${ev.tsMs}|${ev.type}|${ev.title}|${ev.subtitle || ''}`;
+                                  const isSelected = selectedEventKey === key;
+                                  return (
+                                    <button
+                                      key={`${ev.tsMs}-${idx}`}
+                                      ref={(el) => {
+                                        if (el) eventCardRefs.current.set(key, el);
+                                        else eventCardRefs.current.delete(key);
+                                      }}
+                                      type="button"
+                                      className="button"
+                                      style={{
+                                        minWidth: 220,
+                                        textAlign: 'left',
+                                        borderRadius: 10,
+                                        border: isSelected ? '1px solid rgba(255,255,255,0.35)' : '1px solid rgba(255,255,255,0.10)',
+                                        background: isSelected ? 'rgba(255,255,255,0.10)' : 'rgba(255,255,255,0.06)',
+                                        padding: '8px 10px',
+                                      }}
+                                      onClick={() => {
+                                        setSelectedEventKey(key);
+                                        setIsPlaying(false);
+                                        setLive(false);
+                                        jumpToEventTs(ev.tsMs);
+                                        if (typeof ev.focusPlayerId === 'number') setSelectedPlayerId(ev.focusPlayerId);
+                                        if (ev.focusPos) {
+                                          setFocusTarget(ev.focusPos);
+                                          setFocusNonce((n) => n + 1);
+                                        }
+                                      }}
+                                    >
+                                      <div style={{ fontWeight: 800, fontSize: 12 }}>{ev.title}</div>
+                                      <div className="muted" style={{ fontSize: 11, marginTop: 2 }}>
+                                        +{formatElapsedMs(ev.tsMs - scrubber.min)}{formatWallClock ? ` • ${formatWallClock(ev.tsMs)}` : ''}{ev.subtitle ? ` • ${ev.subtitle}` : ''}
+                                      </div>
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                            )}
+                          </div>
                         </div>
                       )}
 
@@ -1638,7 +1960,7 @@ export function ReplayToolPage() {
                     <div>
                       <div className="label">Replay time</div>
                       <div className="muted" style={{ fontSize: 12 }}>
-                        +{formatElapsedMs(scrubber.value - scrubber.min)} of +{formatElapsedMs(scrubber.max - scrubber.min)}
+                        +{formatElapsedMs(scrubber.value - scrubber.min)} of +{formatElapsedMs(scrubber.max - scrubber.min)}{formatWallClock ? ` • ${formatWallClock(scrubber.value)}` : ''}
                       </div>
                     </div>
 
@@ -1734,7 +2056,7 @@ export function ReplayToolPage() {
                               ? 'rgba(255,217,102,0.95)'
                               : 'rgba(183,247,200,0.95)';
                           const filter = ev.type === 'disconnect' ? 'brightness(0.65) saturate(1.1)' : undefined;
-                          const tooltipSubtitle = `+${formatElapsedMs(ev.tsMs - min)}${ev.subtitle ? ` • ${ev.subtitle}` : ''}`;
+                          const tooltipSubtitle = `+${formatElapsedMs(ev.tsMs - min)}${formatWallClock ? ` • ${formatWallClock(ev.tsMs)}` : ''}${ev.subtitle ? ` • ${ev.subtitle}` : ''}`;
                           const key = `${ev.tsMs}|${ev.type}|${ev.title}|${ev.subtitle || ''}`;
                           return (
                             <button
@@ -1766,7 +2088,7 @@ export function ReplayToolPage() {
                               onClick={() => {
                                 setIsPlaying(false);
                                 setLive(false);
-                                setCurrentTsMs(ev.tsMs);
+                                jumpToEventTs(ev.tsMs);
                                 if (typeof ev.focusPlayerId === 'number') setSelectedPlayerId(ev.focusPlayerId);
                                 if (ev.focusPos) {
                                   setFocusTarget(ev.focusPos);
@@ -1803,6 +2125,99 @@ export function ReplayToolPage() {
               </div>
             </div>
           </div>
+        </div>
+      ) : null}
+
+      {!serverId ? (
+        <div style={{ padding: 12, height: 'calc(100vh - 72px)', boxSizing: 'border-box', overflow: 'auto' }}>
+          <div className="card" style={{ marginBottom: 12 }}>
+            <div style={{ fontWeight: 900, letterSpacing: 0.2 }}>Server overview</div>
+            <div style={{ marginTop: 4, fontSize: 13 }}>
+              Pick a server to open the replay viewer. Times are shown in your local clock.
+            </div>
+            {serverStatusesError ? (
+              <div className="error" style={{ marginTop: 10 }}>{serverStatusesError}</div>
+            ) : null}
+          </div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 12 }}>
+            {(serverStatuses && serverStatuses.length > 0 ? serverStatuses : servers.map((s) => ({
+              serverId: s.id,
+              name: s.name,
+              lastIngestTsMs: null,
+              minTsMs: null,
+              maxTsMs: null,
+              firstReceivedAt: null,
+              lastReceivedAt: null,
+              storedEvents: null,
+              totalEvents: null,
+              retentionMs: 0,
+              mapId: null,
+            } as ReplayStatus))).map((st) => {
+              const retentionMs = typeof st.retentionMs === 'number' ? st.retentionMs : 0;
+              const bufferEnd = typeof st.lastReceivedAt === 'number' ? st.lastReceivedAt : null;
+              const computedStart = (retentionMs > 0 && bufferEnd !== null) ? (bufferEnd - retentionMs) : null;
+              const bufferStart = (typeof st.firstReceivedAt === 'number')
+                ? (computedStart !== null ? Math.max(st.firstReceivedAt, computedStart) : st.firstReceivedAt)
+                : computedStart;
+
+              return (
+                <button
+                  key={st.serverId}
+                  className="card"
+                  style={{ textAlign: 'left', cursor: 'pointer', border: 'none' }}
+                  onClick={() => {
+                    setSelectedServerId(st.serverId);
+
+                    setPlayers([]);
+                    setSelectedPlayerId(null);
+                    setFocusTarget(null);
+                    setEvents([]);
+                    setRange({ minTsMs: null, maxTsMs: null });
+                    setCurrentTsMs(null);
+                    lastFetchedTsMsRef.current = null;
+                    lastToastReceivedAtRef.current = 0;
+                    setToasts([]);
+                  }}
+                >
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 12 }}>
+                    <div style={{ fontWeight: 900 }}>{st.name}</div>
+                    <div className="muted" style={{ fontSize: 12 }}>{st.serverId}</div>
+                  </div>
+
+                  <div style={{ marginTop: 10, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                    <div>
+                      <div className="muted" style={{ fontSize: 12 }}>Events</div>
+                      <div style={{ fontWeight: 800 }}>{typeof st.storedEvents === 'number' ? `${st.storedEvents} events` : '—'}</div>
+                      {typeof st.totalEvents === 'number' && typeof st.storedEvents === 'number' && st.totalEvents !== st.storedEvents ? (
+                        <div className="muted" style={{ fontSize: 12, marginTop: 2 }}>All-time: {st.totalEvents} events</div>
+                      ) : null}
+                    </div>
+                    <div>
+                      <div className="muted" style={{ fontSize: 12 }}>Retention</div>
+                      <div style={{ fontWeight: 800 }}>{retentionMs > 0 ? formatDurationMs(retentionMs) : '∞'}</div>
+                    </div>
+                    <div style={{ gridColumn: '1 / span 2' }}>
+                      <div className="muted" style={{ fontSize: 12 }}>Buffer window</div>
+                      <div style={{ fontWeight: 800, fontSize: 13 }}>
+                        {formatClockTime(bufferStart)} → {formatClockTime(bufferEnd)}
+                      </div>
+                    </div>
+                    <div style={{ gridColumn: '1 / span 2' }}>
+                      <div className="muted" style={{ fontSize: 12 }}>Last ingest</div>
+                      <div style={{ fontWeight: 800, fontSize: 13 }}>{formatClockTime(st.lastIngestTsMs)}</div>
+                    </div>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+
+          {(!serverStatuses || serverStatuses.length === 0) && servers.length === 0 ? (
+            <div style={{ marginTop: 12 }}>
+              No servers yet — add one in the Dev page, then come back here.
+            </div>
+          ) : null}
         </div>
       ) : null}
     </div>

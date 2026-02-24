@@ -58,6 +58,15 @@ export async function listServers(): Promise<ServerInfo[]> {
 export type ReplayStatus = {
   serverId: string;
   lastIngestTsMs: number | null;
+  name: string;
+  minTsMs: number | null;
+  maxTsMs: number | null;
+  firstReceivedAt: number | null;
+  lastReceivedAt: number | null;
+  storedEvents: number | null;
+  totalEvents: number | null;
+  retentionMs: number;
+  mapId: string | null;
 };
 
 export async function getReplayStatus(serverId: string): Promise<ReplayStatus> {
@@ -81,6 +90,26 @@ export async function getReplayStatus(serverId: string): Promise<ReplayStatus> {
   return (await res.json()) as ReplayStatus;
 }
 
+export async function getReplayStatusAll(): Promise<ReplayStatus[]> {
+  const base = requireApiBaseUrl();
+  const session = getSession();
+  if (!session) {
+    throw new Error('Not authenticated');
+  }
+
+  const res = await fetch(`${base}/api/replay/statusAll`, {
+    headers: {
+      Authorization: `Bearer ${session.token}`,
+    },
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || `Failed to get replay status for all servers (${res.status})`);
+  }
+
+  return (await res.json()) as ReplayStatus[];
+}
 export type ReplayRange = {
   serverId: string;
   minTsMs: number | null;
@@ -145,6 +174,7 @@ export async function getReplayEvents(params: {
   sinceTsMs?: number;
   untilTsMs?: number;
   limit?: number;
+  tail?: boolean;
 }): Promise<IngestRecord[]> {
   const base = requireApiBaseUrl();
   const session = getSession();
@@ -157,6 +187,7 @@ export async function getReplayEvents(params: {
   if (typeof params.sinceTsMs === 'number') qs.set('sinceTsMs', String(params.sinceTsMs));
   if (typeof params.untilTsMs === 'number') qs.set('untilTsMs', String(params.untilTsMs));
   if (typeof params.limit === 'number') qs.set('limit', String(params.limit));
+  if (params.tail) qs.set('tail', '1');
 
   const res = await fetch(`${base}/api/replay/events?${qs.toString()}`, {
     headers: {
