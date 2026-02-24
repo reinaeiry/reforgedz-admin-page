@@ -1452,12 +1452,22 @@ export function ReplayToolPage() {
     const map = new Map<number, 'killer' | 'victim'>();
     if (!selectedEventKey) return map;
 
+    const t = currentTsMs;
+    if (typeof t !== 'number' || !Number.isFinite(t)) return map;
+
     const parts = selectedEventKey.split('|');
     if (parts.length < 2) return map;
     const tsMs = Number(parts[0]);
     const type = String(parts[1] || '');
     if (!Number.isFinite(tsMs)) return map;
     if (type !== 'kill' && type !== 'death') return map;
+
+    // Only highlight briefly around the event time.
+    // - Replay mode: 5s before to 5s after (so you can see it coming)
+    // - Live mode: 5s after only (can't predict kills)
+    const windowBeforeMs = live ? 0 : 5000;
+    const windowAfterMs = 5000;
+    if (t < tsMs - windowBeforeMs || t > tsMs + windowAfterMs) return map;
 
     let ev: any = null;
     for (const rec of events) {
@@ -1483,7 +1493,7 @@ export function ReplayToolPage() {
     const victimId = typeof ev.victimPlayerId === 'number' ? ev.victimPlayerId : null;
     if (victimId !== null) map.set(victimId, 'victim');
     return map;
-  }, [events, selectedEventKey]);
+  }, [currentTsMs, events, live, selectedEventKey]);
 
   const nameTagOptions: NameTagOptions = useMemo(() => ({
     enabled: nameTagsEnabled,
