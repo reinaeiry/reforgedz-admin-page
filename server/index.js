@@ -1029,7 +1029,7 @@ app.get('/api/replay/events', requireAuth, requireTool('replay'), asyncRoute(asy
 }));
 
 app.post('/api/replay/gmPing', requireAuth, requireTool('replay'), asyncRoute(async (req, res) => {
-  const { serverId, tsMs, pos, title } = (req.body && typeof req.body === 'object') ? req.body : {};
+  const { serverId, tsMs, pos, title, reporterPlayerId } = (req.body && typeof req.body === 'object') ? req.body : {};
   if (typeof serverId !== 'string' || !serverId) {
     res.status(400).send('Missing serverId');
     return;
@@ -1053,6 +1053,9 @@ app.post('/api/replay/gmPing', requireAuth, requireTool('replay'), asyncRoute(as
 
   const by = req.user && typeof req.user.sub === 'string' ? req.user.sub : '';
   const cleanTitle = typeof title === 'string' ? title.trim().slice(0, 140) : '';
+  const reporterId = (typeof reporterPlayerId === 'number' && Number.isFinite(reporterPlayerId) && reporterPlayerId >= 0)
+    ? Math.floor(reporterPlayerId)
+    : null;
 
   await withIngestLock(safeId, async () => {
     const receivedAt = Date.now();
@@ -1068,7 +1071,7 @@ app.post('/api/replay/gmPing', requireAuth, requireTool('replay'), asyncRoute(as
       : {};
     const prevPings = Array.isArray(prevPending.gmPing) ? prevPending.gmPing : [];
     const nextPings = prevPings.slice(-49);
-    nextPings.push({ tsMs: t, pos: { x, y, z }, by, title: cleanTitle, receivedAt });
+    nextPings.push({ tsMs: t, pos: { x, y, z }, by, title: cleanTitle, reporterPlayerId: reporterId, receivedAt });
     const nextIdx = {
       ...idx,
       id: safeId,
@@ -1090,6 +1093,7 @@ app.post('/api/replay/gmPing', requireAuth, requireTool('replay'), asyncRoute(as
           pos: { x, y, z },
           by,
           title: cleanTitle,
+          reporterPlayerId: reporterId,
         },
       },
     };

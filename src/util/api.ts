@@ -208,6 +208,7 @@ export async function sendReplayGmPing(params: {
   tsMs: number;
   pos: { x: number; y: number; z: number };
   title?: string;
+  reporterPlayerId?: number | null;
 }): Promise<{ ok: true }> {
   const base = requireApiBaseUrl();
   const session = getSession();

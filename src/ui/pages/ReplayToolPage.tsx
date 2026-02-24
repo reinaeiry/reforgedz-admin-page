@@ -2031,11 +2031,16 @@ export function ReplayToolPage() {
                                           if (!serverId) return;
                                           if (!ev.focusPos) return;
 
+                                          const reporterPlayerId = (typeof ev.focusPlayerId === 'number')
+                                            ? ev.focusPlayerId
+                                            : (Array.isArray(ev.playerIds) && ev.playerIds.length > 0 ? ev.playerIds[0] : null);
+
                                           void sendReplayGmPing({
                                             serverId,
                                             tsMs: ev.tsMs,
                                             pos: ev.focusPos,
                                             title: pingTitle,
+                                            reporterPlayerId,
                                           });
                                         }}
                                       >
