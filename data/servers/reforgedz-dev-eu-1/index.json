@@ -4,12 +4,12 @@
   "clearedAt": 1771867704713,
   "mapId": "9346ef4366c58979",
   "mapWorldFile": "$eirysreplays:Worlds/EdenTest.ent",
-  "lastReceivedAt": 1771903730698,
-  "lastIngestTsMs": 5639058,
-  "lastSessionId": "5b0ac19d-a73d-423e-ac2e-333f3077b9e9",
+  "lastReceivedAt": 1771936236295,
+  "lastIngestTsMs": 5690712,
+  "lastSessionId": "2536e394-bcd6-46e1-aaf2-812ec8a6d10c",
   "minTsMs": 0,
-  "maxTsMs": 5639058,
-  "totalEvents": 31020,
+  "maxTsMs": 5690712,
+  "totalEvents": 31314,
   "sessions": {
     "2b8934bf-6a2d-47de-a844-f777861e517b": {
       "offsetMs": 0,
@@ -426,11 +426,50 @@
       "lastReceivedAt": 1771903730698,
       "lastSessionTsMs": 0,
       "lastTsMs": 5639058
+    },
+    "d1eefb7f-f400-4360-bccc-aaec2745a668": {
+      "offsetMs": 5639059,
+      "firstReceivedAt": 1771936139439,
+      "firstSessionTsMs": 0,
+      "lastReceivedAt": 1771936139439,
+      "lastSessionTsMs": 0,
+      "lastTsMs": 5639059
+    },
+    "a4f6d449-a24e-4ec7-896b-66c7878c667a": {
+      "offsetMs": 5639060,
+      "firstReceivedAt": 1771936162988,
+      "firstSessionTsMs": 0,
+      "lastReceivedAt": 1771936225444,
+      "lastSessionTsMs": 51651,
+      "lastTsMs": 5690711
+    },
+    "2536e394-bcd6-46e1-aaf2-812ec8a6d10c": {
+      "offsetMs": 5690712,
+      "firstReceivedAt": 1771936236295,
+      "firstSessionTsMs": 0,
+      "lastReceivedAt": 1771936236295,
+      "lastSessionTsMs": 0,
+      "lastTsMs": 5690712
     }
   },
-  "lastCompactionAt": 1771903693448,
-  "pendingCommands": {},
+  "lastCompactionAt": 1771936205414,
+  "pendingCommands": {
+    "gmPing": [
+      {
+        "tsMs": 5639060,
+        "pos": {
+          "x": 7463.43310546875,
+          "y": 164.5625,
+          "z": 4302.3955078125
+        },
+        "by": "admin",
+        "title": "Join: eiry",
+        "reporterPlayerId": 1,
+        "receivedAt": 1771937385040
+      }
+    ]
+  },
   "firstReceivedAt": 1771867737721,
-  "storedEvents": 9583,
+  "storedEvents": 9877,
   "retentionMs": 86400000
 }
