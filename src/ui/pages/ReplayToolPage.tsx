@@ -1098,7 +1098,7 @@ export function ReplayToolPage() {
       if (!p || typeof p !== 'object') continue;
       if (p.type !== 'kill' && p.type !== 'death') continue;
       if (typeof p.tsMs !== 'number') continue;
-      if (t < p.tsMs || t > p.tsMs + 5000) continue;
+      if (t < p.tsMs || t > p.tsMs + 3000) continue;
 
       const ev: any = (p as any).event;
       const victimPos = ev ? coerceVec3(ev.victimPos) : null;

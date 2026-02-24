@@ -82,8 +82,18 @@ export function ReplayMap3D(props: ReplayMap3DProps) {
   const terrainRef = useRef<TerrainGrid | null>(null);
   const townsRef = useRef<TownLabel[]>([]);
 
+  const dirtyRef = useRef({
+    markers: true,
+    trail: true,
+    death: true,
+    ping: true,
+    terrain: true,
+    towns: true,
+  });
+
   useEffect(() => {
     playersRef.current = props.players;
+    dirtyRef.current.markers = true;
   }, [props.players]);
 
   useEffect(() => {
@@ -100,30 +110,37 @@ export function ReplayMap3D(props: ReplayMap3DProps) {
 
   useEffect(() => {
     nameTagsRef.current = props.nameTags || { enabled: true, scale: 1, background: true };
+    dirtyRef.current.markers = true;
   }, [props.nameTags]);
 
   useEffect(() => {
     showAimLinesRef.current = props.showAimLines !== false;
+    dirtyRef.current.markers = true;
   }, [props.showAimLines]);
 
   useEffect(() => {
     trailRef.current = props.trail || null;
+    dirtyRef.current.trail = true;
   }, [props.trail]);
 
   useEffect(() => {
     deathMarkersRef.current = Array.isArray(props.deathMarkers) ? props.deathMarkers : [];
+    dirtyRef.current.death = true;
   }, [props.deathMarkers]);
 
   useEffect(() => {
     pingMarkersRef.current = Array.isArray(props.pingMarkers) ? props.pingMarkers : [];
+    dirtyRef.current.ping = true;
   }, [props.pingMarkers]);
 
   useEffect(() => {
     terrainRef.current = props.terrain || null;
+    dirtyRef.current.terrain = true;
   }, [props.terrain]);
 
   useEffect(() => {
     townsRef.current = Array.isArray(props.towns) ? props.towns : [];
+    dirtyRef.current.towns = true;
   }, [props.towns]);
 
   useEffect(() => {
@@ -131,10 +148,10 @@ export function ReplayMap3D(props: ReplayMap3DProps) {
     if (!canvasRefValue) return;
     const canvasEl: HTMLCanvasElement = canvasRefValue;
 
-    const renderer = new THREE.WebGLRenderer({ canvas: canvasEl, antialias: true });
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
-    renderer.shadowMap.enabled = true;
-    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    const renderer = new THREE.WebGLRenderer({ canvas: canvasEl, antialias: true, powerPreference: 'high-performance' });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
+    // Shadows are expensive and not critical for this tool; keep controls responsive.
+    renderer.shadowMap.enabled = false;
 
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(0x0b0f19);
@@ -150,16 +167,7 @@ export function ReplayMap3D(props: ReplayMap3DProps) {
 
     const dir = new THREE.DirectionalLight(0xffffff, 1.15);
     dir.position.set(150, 260, 130);
-    dir.castShadow = true;
-    dir.shadow.mapSize.width = 2048;
-    dir.shadow.mapSize.height = 2048;
-    dir.shadow.camera.near = 10;
-    dir.shadow.camera.far = 1200;
-    dir.shadow.camera.left = -420;
-    dir.shadow.camera.right = 420;
-    dir.shadow.camera.top = 420;
-    dir.shadow.camera.bottom = -420;
-    dir.shadow.bias = -0.00015;
+    dir.castShadow = false;
     scene.add(dir);
 
     const dir2 = new THREE.DirectionalLight(0xffffff, 0.35);
@@ -427,7 +435,7 @@ export function ReplayMap3D(props: ReplayMap3DProps) {
         let mesh = markerMeshes.get(p.playerId);
         if (!mesh) {
           mesh = new THREE.Mesh(markerGeom, matNormal);
-          mesh.castShadow = true;
+          mesh.castShadow = false;
           mesh.receiveShadow = false;
           mesh.userData = { playerId: p.playerId };
           markerMeshes.set(p.playerId, mesh);
@@ -829,7 +837,7 @@ export function ReplayMap3D(props: ReplayMap3DProps) {
       geom.computeVertexNormals();
 
       terrainMesh = new THREE.Mesh(geom, terrainMat);
-      terrainMesh.receiveShadow = true;
+      terrainMesh.receiveShadow = false;
       terrainMesh.castShadow = false;
       const centerX = (t.bbMin.x + t.bbMax.x) / 2;
       const centerZ = (t.bbMin.z + t.bbMax.z) / 2;
@@ -857,7 +865,7 @@ export function ReplayMap3D(props: ReplayMap3DProps) {
       }
 
       // Wire/edges overlay to read slopes at a glance.
-      const edgesGeom = new THREE.EdgesGeometry(geom, 18);
+      const edgesGeom = new THREE.EdgesGeometry(geom, 35);
       terrainEdges = new THREE.LineSegments(edgesGeom, terrainEdgeMat);
       terrainEdges.position.copy(terrainMesh.position);
       terrainGroup.add(terrainEdges);
@@ -875,6 +883,9 @@ export function ReplayMap3D(props: ReplayMap3DProps) {
     let last = performance.now();
     let raf = 0;
 
+    let lastMarkersUpdateAt = 0;
+    let lastTrailUpdateAt = 0;
+
     // Follow mode camera offset (relative to player position).
     let lastFollowId: number | null = null;
     const followOffset = new THREE.Vector3(0, 25, 60);
@@ -883,12 +894,41 @@ export function ReplayMap3D(props: ReplayMap3DProps) {
       const dt = Math.min((now - last) / 1000, 0.05);
       last = now;
 
-      updateTowns();
-      updateMarkers();
-      updateTrail();
-      updateDeathMarkers();
-      updatePingMarkers();
-      updateTerrain();
+      const dirty = dirtyRef.current;
+
+      // Only rebuild expensive scene objects when inputs change.
+      if (dirty.towns) {
+        updateTowns();
+        dirty.towns = false;
+      }
+
+      // Marker updates can be frequent during playback; cap to ~20Hz.
+      if (dirty.markers && now - lastMarkersUpdateAt >= 50) {
+        updateMarkers();
+        dirty.markers = false;
+        lastMarkersUpdateAt = now;
+      }
+
+      if (dirty.trail && now - lastTrailUpdateAt >= 75) {
+        updateTrail();
+        dirty.trail = false;
+        lastTrailUpdateAt = now;
+      }
+
+      if (dirty.death) {
+        updateDeathMarkers();
+        dirty.death = false;
+      }
+
+      if (dirty.ping) {
+        updatePingMarkers();
+        dirty.ping = false;
+      }
+
+      if (dirty.terrain) {
+        updateTerrain();
+        dirty.terrain = false;
+      }
 
       // Continuous follow (camera attachment): keep camera offset relative to the player,
       // but still allow RMB movement (applied to the offset) so users can move closer/further.

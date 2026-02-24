@@ -243,6 +243,16 @@ function projectPointPerspective(p, cam, basis, f, cx, cy) {
   return { x, y, z: camZ };
 }
 
+function formatReplayClock(ms) {
+  const safe = Number.isFinite(ms) ? Math.max(0, Math.floor(ms)) : 0;
+  const totalSeconds = Math.floor(safe / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  const m = String(minutes).padStart(2, '0');
+  const s = String(seconds).padStart(2, '0');
+  return `${m}:${s}`;
+}
+
 function drawReplay3DFrame(ctx, opts) {
   const {
     w,
@@ -253,6 +263,10 @@ function drawReplay3DFrame(ctx, opts) {
     absTsMs,
     fromTsMs,
     toTsMs,
+    wallClockAbsMs,
+    wallClockFromMs,
+    wallClockToMs,
+    gridCenter,
     camera,
     basis,
     f,
@@ -270,20 +284,21 @@ function drawReplay3DFrame(ctx, opts) {
   const cx = w / 2;
   const cy = h / 2 + 8;
 
-  // GridHelper(2000, 200, 0x32405e, 0x1d2638) on XZ plane at y=0.
-  const gridSize = 2000;
-  const gridDiv = 200;
-  const gridHalf = gridSize / 2;
-  const gridStep = gridSize / gridDiv;
-  const gridCenterColor = '#32405e';
-  const gridColor = '#1d2638';
+  // Distance grid on XZ plane at y=0, centered around the current action.
+  const gx = gridCenter && typeof gridCenter.x === 'number' ? gridCenter.x : 0;
+  const gz = gridCenter && typeof gridCenter.z === 'number' ? gridCenter.z : 0;
+  const gridHalf = 350;
+  const gridStep = 25;
+  const majorEvery = 100;
+  const gridMajor = 'rgba(50,64,94,0.9)';
+  const gridMinor = 'rgba(29,38,56,0.9)';
   ctx.lineWidth = 1;
 
   for (let i = -gridHalf; i <= gridHalf + 1e-6; i += gridStep) {
-    const isCenter = Math.abs(i) < 1e-6;
-    ctx.strokeStyle = isCenter ? gridCenterColor : gridColor;
-    const a = { x: i, y: 0, z: -gridHalf };
-    const b = { x: i, y: 0, z: gridHalf };
+    const isMajor = Math.abs(i) < 1e-6 || (Math.abs(i) % majorEvery) < 1e-6;
+    ctx.strokeStyle = isMajor ? gridMajor : gridMinor;
+    const a = { x: gx + i, y: 0, z: gz - gridHalf };
+    const b = { x: gx + i, y: 0, z: gz + gridHalf };
     const pa = projectPointPerspective(a, camera, basis, f, cx, cy);
     const pb = projectPointPerspective(b, camera, basis, f, cx, cy);
     if (!pa || !pb) continue;
@@ -294,10 +309,10 @@ function drawReplay3DFrame(ctx, opts) {
   }
 
   for (let j = -gridHalf; j <= gridHalf + 1e-6; j += gridStep) {
-    const isCenter = Math.abs(j) < 1e-6;
-    ctx.strokeStyle = isCenter ? gridCenterColor : gridColor;
-    const a = { x: -gridHalf, y: 0, z: j };
-    const b = { x: gridHalf, y: 0, z: j };
+    const isMajor = Math.abs(j) < 1e-6 || (Math.abs(j) % majorEvery) < 1e-6;
+    ctx.strokeStyle = isMajor ? gridMajor : gridMinor;
+    const a = { x: gx - gridHalf, y: 0, z: gz + j };
+    const b = { x: gx + gridHalf, y: 0, z: gz + j };
     const pa = projectPointPerspective(a, camera, basis, f, cx, cy);
     const pb = projectPointPerspective(b, camera, basis, f, cx, cy);
     if (!pa || !pb) continue;
@@ -307,14 +322,14 @@ function drawReplay3DFrame(ctx, opts) {
     ctx.stroke();
   }
 
-  // AxesHelper(10) at origin.
+  // AxesHelper(10) near the grid center.
   const axesLen = 10;
   ctx.lineWidth = 2;
   // X axis (red)
   ctx.strokeStyle = '#ff0000';
   {
-    const a = { x: 0, y: 0, z: 0 };
-    const b = { x: axesLen, y: 0, z: 0 };
+    const a = { x: gx, y: 0, z: gz };
+    const b = { x: gx + axesLen, y: 0, z: gz };
     const pa = projectPointPerspective(a, camera, basis, f, cx, cy);
     const pb = projectPointPerspective(b, camera, basis, f, cx, cy);
     if (pa && pb) {
@@ -327,8 +342,8 @@ function drawReplay3DFrame(ctx, opts) {
   // Y axis (green)
   ctx.strokeStyle = '#00ff00';
   {
-    const a = { x: 0, y: 0, z: 0 };
-    const b = { x: 0, y: axesLen, z: 0 };
+    const a = { x: gx, y: 0, z: gz };
+    const b = { x: gx, y: axesLen, z: gz };
     const pa = projectPointPerspective(a, camera, basis, f, cx, cy);
     const pb = projectPointPerspective(b, camera, basis, f, cx, cy);
     if (pa && pb) {
@@ -341,8 +356,8 @@ function drawReplay3DFrame(ctx, opts) {
   // Z axis (blue)
   ctx.strokeStyle = '#0000ff';
   {
-    const a = { x: 0, y: 0, z: 0 };
-    const b = { x: 0, y: 0, z: axesLen };
+    const a = { x: gx, y: 0, z: gz };
+    const b = { x: gx, y: 0, z: gz + axesLen };
     const pa = projectPointPerspective(a, camera, basis, f, cx, cy);
     const pb = projectPointPerspective(b, camera, basis, f, cx, cy);
     if (pa && pb) {
@@ -440,9 +455,15 @@ function drawReplay3DFrame(ctx, opts) {
 
   // Overlays
   const relS = (relMs / 1000).toFixed(1);
-  const absIso = new Date(absTsMs).toISOString().replace('T', ' ').replace('Z', 'Z');
-  const fromIso = new Date(fromTsMs).toISOString().replace('T', ' ').replace('Z', 'Z');
-  const toIso = new Date(toTsMs).toISOString().replace('T', ' ').replace('Z', 'Z');
+  const absText = (typeof wallClockAbsMs === 'number' && Number.isFinite(wallClockAbsMs) && wallClockAbsMs > 0)
+    ? new Date(wallClockAbsMs).toISOString().replace('T', ' ').replace('Z', 'Z')
+    : `replay ${formatReplayClock(absTsMs)}`;
+  const fromText = (typeof wallClockFromMs === 'number' && Number.isFinite(wallClockFromMs) && wallClockFromMs > 0)
+    ? new Date(wallClockFromMs).toISOString().replace('T', ' ').replace('Z', 'Z')
+    : `replay ${formatReplayClock(fromTsMs)}`;
+  const toText = (typeof wallClockToMs === 'number' && Number.isFinite(wallClockToMs) && wallClockToMs > 0)
+    ? new Date(wallClockToMs).toISOString().replace('T', ' ').replace('Z', 'Z')
+    : `replay ${formatReplayClock(toTsMs)}`;
 
   ctx.fillStyle = 'rgba(0,0,0,0.45)';
   ctx.fillRect(0, 0, w, 54);
@@ -459,11 +480,11 @@ function drawReplay3DFrame(ctx, opts) {
   ctx.font = 'bold 14px sans-serif';
   ctx.fillText(`t${relMs >= 0 ? '+' : ''}${relS}s`, w - 10, 18);
   ctx.font = '12px sans-serif';
-  ctx.fillText(absIso, w - 10, 36);
+  ctx.fillText(absText, w - 10, 36);
 
   ctx.textAlign = 'left';
   ctx.font = '11px sans-serif';
-  ctx.fillText(`window: ${fromIso} → ${toIso}`, 10, h - 14);
+  ctx.fillText(`window: ${fromText} → ${toText}`, 10, h - 14);
 }
 
 function drawReplayMapFrame(ctx, opts) {
@@ -580,7 +601,7 @@ function drawReplayMapFrame(ctx, opts) {
   ctx.fillText(`window: ${fromIso} → ${toIso}`, 10, h - 14);
 }
 
-async function buildReplayEventGif({ safeId, serverId, tsMs, title, pos, focusPlayerId, playerIds }) {
+async function buildReplayEventGif({ safeId, serverId, tsMs, title, pos, focusPlayerId, playerIds, wallClockAtMs }) {
   const fromTsMs = tsMs - 5_000;
   const toTsMs = tsMs + 5_000;
 
@@ -686,16 +707,17 @@ async function buildReplayEventGif({ safeId, serverId, tsMs, title, pos, focusPl
     const fov = (fovDeg * Math.PI) / 180;
     const f = (0.5 * h) / Math.tan(fov / 2);
 
-    // Death X markers visible at this frame (5s after death).
+    // Death X markers visible at this frame (for 3s after death).
     const deathXs = [];
     for (const d of deathEvents) {
       if (t < d.tsMs) continue;
-      if (t > d.tsMs + 5_000) continue;
+      if (t > d.tsMs + 3_000) continue;
       deathXs.push(d);
     }
 
     const baseFollowOffset = { x: 0, y: 25, z: 60 };
-    const zoomIn = Math.pow(0.90, 3);
+    // Baseline zoom: 200% closer than the prior view, but will still zoom OUT to fit both players.
+    const zoomIn = Math.pow(0.90, 3) * 0.5;
 
     // Ensure both tracked players fit; only zooms OUT from the baseline.
     const safePad = 18;
@@ -752,6 +774,16 @@ async function buildReplayEventGif({ safeId, serverId, tsMs, title, pos, focusPl
       });
     }
 
+    const absWallClockMs = (typeof wallClockAtMs === 'number' && Number.isFinite(wallClockAtMs) && wallClockAtMs > 0)
+      ? (wallClockAtMs + relMs)
+      : null;
+    const fromWallClockMs = (typeof wallClockAtMs === 'number' && Number.isFinite(wallClockAtMs) && wallClockAtMs > 0)
+      ? (wallClockAtMs - 5_000)
+      : null;
+    const toWallClockMs = (typeof wallClockAtMs === 'number' && Number.isFinite(wallClockAtMs) && wallClockAtMs > 0)
+      ? (wallClockAtMs + 5_000)
+      : null;
+
     drawReplay3DFrame(ctx, {
       w,
       h,
@@ -761,6 +793,10 @@ async function buildReplayEventGif({ safeId, serverId, tsMs, title, pos, focusPl
       absTsMs,
       fromTsMs,
       toTsMs,
+      wallClockAbsMs: absWallClockMs,
+      wallClockFromMs: fromWallClockMs,
+      wallClockToMs: toWallClockMs,
+      gridCenter: { x: target.x, z: target.z },
       camera,
       basis,
       f,
@@ -1922,6 +1958,18 @@ app.post('/api/replay/exportDiscord', requireAuth, requireTool('replay'), asyncR
     ? Math.floor(focusPlayerId)
     : undefined;
 
+  // `tsMs` is replay-relative time. Discord <t:...> expects UNIX epoch seconds.
+  // Best-effort mapping: use the latest ingest anchors from index.json.
+  const idxPath = path.join(DATA_DIR, 'servers', safeId, 'index.json');
+  const idx = await readJsonOrNull(idxPath);
+  const lastIngestTsMs = (idx && typeof idx.lastIngestTsMs === 'number') ? idx.lastIngestTsMs : null;
+  const lastReceivedAt = (idx && typeof idx.lastReceivedAt === 'number') ? idx.lastReceivedAt : null;
+
+  const wallClockAtMs = (typeof lastIngestTsMs === 'number' && Number.isFinite(lastIngestTsMs)
+    && typeof lastReceivedAt === 'number' && Number.isFinite(lastReceivedAt) && lastReceivedAt > 0)
+    ? (lastReceivedAt - (lastIngestTsMs - tsMs))
+    : null;
+
   const gifBuf = await buildReplayEventGif({
     safeId,
     serverId: id,
@@ -1930,16 +1978,34 @@ app.post('/api/replay/exportDiscord', requireAuth, requireTool('replay'), asyncR
     pos: eventPos,
     focusPlayerId: fp,
     playerIds: Array.isArray(playerIds) ? playerIds : null,
+    wallClockAtMs,
   });
 
-  const fromUnix = Math.floor((tsMs - 5_000) / 1000);
-  const toUnix = Math.floor((tsMs + 5_000) / 1000);
-  const whenUnix = Math.floor(tsMs / 1000);
+  const wallClockFromMs = (wallClockAtMs !== null) ? (wallClockAtMs - 5_000) : null;
+  const wallClockToMs = (wallClockAtMs !== null) ? (wallClockAtMs + 5_000) : null;
+
+  const whenUnix = (typeof wallClockAtMs === 'number' && Number.isFinite(wallClockAtMs) && wallClockAtMs > 0)
+    ? Math.floor(wallClockAtMs / 1000)
+    : null;
+  const fromUnix = (typeof wallClockFromMs === 'number' && Number.isFinite(wallClockFromMs) && wallClockFromMs > 0)
+    ? Math.floor(wallClockFromMs / 1000)
+    : null;
+  const toUnix = (typeof wallClockToMs === 'number' && Number.isFinite(wallClockToMs) && wallClockToMs > 0)
+    ? Math.floor(wallClockToMs / 1000)
+    : null;
+
+  const atLine = whenUnix !== null
+    ? `At: <t:${whenUnix}:f>`
+    : `At (replay): ${(tsMs / 1000).toFixed(1)}s`;
+  const windowLine = (fromUnix !== null && toUnix !== null)
+    ? `Window: <t:${fromUnix}:f> → <t:${toUnix}:f>`
+    : `Window (replay): ${((tsMs - 5_000) / 1000).toFixed(1)}s → ${((tsMs + 5_000) / 1000).toFixed(1)}s`;
+
   const content = [
     `Server: **${id}**`,
     `Event: **${title.trim().slice(0, 140)}**`,
-    `At: <t:${whenUnix}:f>`,
-    `Window: <t:${fromUnix}:f> → <t:${toUnix}:f>`,
+    atLine,
+    windowLine,
   ].join('\n');
 
   const form = new FormData();
