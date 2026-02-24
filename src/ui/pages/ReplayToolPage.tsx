@@ -859,6 +859,181 @@ export function ReplayToolPage() {
     return out;
   }, [events]);
 
+  const knownPlayers = useMemo((): ReplayPlayer[] => {
+    const map = new Map<number, string>();
+
+    // Seed from server-reported (latest) players.
+    for (const p of players) {
+      if (!p || typeof p.playerId !== 'number') continue;
+      const name = typeof p.name === 'string' && p.name.trim().length > 0 ? p.name.trim() : String(p.playerId);
+      map.set(p.playerId, name);
+    }
+
+    // Add names from join/disconnect events.
+    for (const e of events) {
+      const p: any = e.payload;
+      if (!p || typeof p !== 'object') continue;
+      if (p.type !== 'join' && p.type !== 'disconnect') continue;
+      const ev: any = (p as any).event;
+      const id = ev && typeof ev.playerId === 'number' ? ev.playerId : null;
+      if (id === null) continue;
+      const nm = ev && typeof ev.name === 'string' && ev.name.trim().length > 0 ? ev.name.trim() : '';
+      if (nm) map.set(id, nm);
+      else if (!map.has(id)) map.set(id, String(id));
+    }
+
+    // Add names from snapshots (historical timeline truth).
+    for (const s of snapshots) {
+      for (const pj of s.players) {
+        if (!pj || typeof pj !== 'object') continue;
+        const id = (pj as any).playerId;
+        if (typeof id !== 'number') continue;
+        const nm = typeof (pj as any).name === 'string' && (pj as any).name.trim().length > 0 ? (pj as any).name.trim() : '';
+        if (nm) map.set(id, nm);
+        else if (!map.has(id)) map.set(id, String(id));
+      }
+    }
+
+    const out = Array.from(map.entries()).map(([playerId, name]) => ({ playerId, name }));
+    out.sort((a, b) => a.name.localeCompare(b.name) || a.playerId - b.playerId);
+    return out;
+  }, [events, players, snapshots]);
+
+  const playerSeriesById = useMemo(() => {
+    // Some snapshots are partial (often only one player). Build a per-player series
+    // so we can reconstruct state at time t.
+    const map = new Map<number, Array<{ tsMs: number; player: any }>>();
+    for (const s of snapshots) {
+      const ts = s.tsMs;
+      for (const pj of s.players) {
+        if (!pj || typeof pj !== 'object') continue;
+        const id = (pj as any).playerId;
+        if (typeof id !== 'number') continue;
+        let arr = map.get(id);
+        if (!arr) {
+          arr = [];
+          map.set(id, arr);
+        }
+        arr.push({ tsMs: ts, player: pj });
+      }
+    }
+    return map;
+  }, [snapshots]);
+
+  const presenceSeriesById = useMemo(() => {
+    const map = new Map<number, Array<{ tsMs: number; type: 'join' | 'disconnect' }>>();
+    for (const e of events) {
+      const p: any = e.payload;
+      if (!p || typeof p !== 'object') continue;
+      if (p.type !== 'join' && p.type !== 'disconnect') continue;
+      if (typeof p.tsMs !== 'number') continue;
+      const ev: any = (p as any).event;
+      const id = ev && typeof ev.playerId === 'number' ? ev.playerId : null;
+      if (id === null) continue;
+      let arr = map.get(id);
+      if (!arr) {
+        arr = [];
+        map.set(id, arr);
+      }
+      arr.push({ tsMs: p.tsMs, type: p.type });
+    }
+    for (const arr of map.values()) arr.sort((a, b) => a.tsMs - b.tsMs);
+    return map;
+  }, [events]);
+
+  const findPlayerStateAt = useMemo(() => {
+    return (playerId: number, tsMs: number): { tsMs: number; player: any } | null => {
+      const series = playerSeriesById.get(playerId);
+      if (!series || series.length === 0) return null;
+
+      // Last entry with ts <= tsMs.
+      let lo = 0;
+      let hi = series.length - 1;
+      let idx = -1;
+      while (lo <= hi) {
+        const mid = (lo + hi) >> 1;
+        const v = series[mid].tsMs;
+        if (v <= tsMs) {
+          idx = mid;
+          lo = mid + 1;
+        } else {
+          hi = mid - 1;
+        }
+      }
+      if (idx < 0) return null;
+      return series[idx];
+    };
+  }, [playerSeriesById]);
+
+  const findPlayerEquipSampleAtOrBefore = useMemo(() => {
+    return (playerId: number, tsMs: number, maxAgeMs: number): { tsMs: number; inventory?: any[]; attachments?: any[]; weapon?: any } | null => {
+      const series = playerSeriesById.get(playerId);
+      if (!series || series.length === 0) return null;
+
+      // Start from the last entry <= tsMs.
+      let lo = 0;
+      let hi = series.length - 1;
+      let idx = -1;
+      while (lo <= hi) {
+        const mid = (lo + hi) >> 1;
+        const v = series[mid].tsMs;
+        if (v <= tsMs) {
+          idx = mid;
+          lo = mid + 1;
+        } else {
+          hi = mid - 1;
+        }
+      }
+      if (idx < 0) return null;
+
+      for (let i = idx; i >= 0; i--) {
+        const rec = series[i];
+        const age = tsMs - rec.tsMs;
+        if (age < 0) continue;
+        if (age > maxAgeMs) break;
+        const pj: any = rec.player;
+        if (!pj || typeof pj !== 'object') continue;
+
+        const inv = pj.inventory;
+        const att = pj.attachments;
+        const w = pj.weapon;
+
+        const out: any = { tsMs: rec.tsMs };
+        if (Array.isArray(inv)) out.inventory = inv;
+        if (Array.isArray(att)) out.attachments = att;
+        if (w && typeof w === 'object' && typeof w.name === 'string' && w.name.length > 0) out.weapon = w;
+
+        if ('inventory' in out || 'attachments' in out || 'weapon' in out) return out;
+      }
+
+      return null;
+    };
+  }, [playerSeriesById]);
+
+  const isConnectedAt = useMemo(() => {
+    return (playerId: number, tsMs: number): boolean | null => {
+      const series = presenceSeriesById.get(playerId);
+      if (!series || series.length === 0) return null;
+
+      // Last presence event <= tsMs.
+      let lo = 0;
+      let hi = series.length - 1;
+      let idx = -1;
+      while (lo <= hi) {
+        const mid = (lo + hi) >> 1;
+        const v = series[mid].tsMs;
+        if (v <= tsMs) {
+          idx = mid;
+          lo = mid + 1;
+        } else {
+          hi = mid - 1;
+        }
+      }
+      if (idx < 0) return null;
+      return series[idx].type === 'join';
+    };
+  }, [presenceSeriesById]);
+
   const findFirstNonOriginPosAfter = useMemo(() => {
     // Best-effort: join/login snapshots can report 0,*,0 briefly. Find the first position after `tsMs`
     // that is not within the origin XZ box.
@@ -965,34 +1140,24 @@ export function ReplayToolPage() {
   const playerMarkers = useMemo((): PlayerMarker[] => {
     const t = currentTsMs;
     if (typeof t !== 'number') return [];
-    if (snapshots.length === 0) return [];
-
-    // Find latest snapshot <= t
-    let lo = 0;
-    let hi = snapshots.length - 1;
-    let idx = -1;
-    while (lo <= hi) {
-      const mid = (lo + hi) >> 1;
-      const v = snapshots[mid].tsMs;
-      if (v <= t) {
-        idx = mid;
-        lo = mid + 1;
-      } else {
-        hi = mid - 1;
-      }
-    }
-
-    if (idx < 0) idx = 0;
-    const snap = snapshots[idx];
+    if (playerSeriesById.size === 0) return [];
 
     const nameById = new Map<number, string>();
-    for (const p of players) nameById.set(p.playerId, p.name);
+    for (const p of knownPlayers) nameById.set(p.playerId, p.name);
+
+    const unknownPresenceMaxAgeMs = 30_000;
 
     const out: PlayerMarker[] = [];
-    for (const pj of snap.players) {
-      if (!pj || typeof pj !== 'object') continue;
-      const playerId = (pj as any).playerId;
-      if (typeof playerId !== 'number') continue;
+    for (const p of knownPlayers) {
+      const playerId = p.playerId;
+      const st = findPlayerStateAt(playerId, t);
+      if (!st) continue;
+
+      const connected = isConnectedAt(playerId, t);
+      if (connected === false) continue;
+      if (connected === null && (t - st.tsMs) > unknownPresenceMaxAgeMs) continue;
+
+      const pj = st.player;
 
       const pos = coerceVec3((pj as any).pos);
       if (!pos) continue;
@@ -1013,7 +1178,7 @@ export function ReplayToolPage() {
       const aimDir = coerceVec3((pj as any).aimDir);
       const vehicleName = (pj as any).vehicle && typeof (pj as any).vehicle.name === 'string' ? String((pj as any).vehicle.name) : '';
 
-      const snapTsMs = snap.tsMs;
+      const snapTsMs = st.tsMs;
       const deadUntil = deadUntilByPlayerId.get(playerId) || 0;
       const isDead = typeof snapTsMs === 'number' ? deadUntil > snapTsMs : false;
 
@@ -1030,7 +1195,7 @@ export function ReplayToolPage() {
       });
     }
     return out;
-  }, [currentTsMs, deadUntilByPlayerId, players, showVehicleInTags, snapshots, terrain]);
+  }, [currentTsMs, deadUntilByPlayerId, findPlayerStateAt, isConnectedAt, knownPlayers, playerSeriesById, showVehicleInTags, terrain]);
 
   const focusedTrail = useMemo((): Trail | null => {
     if (!enableTrails) return null;
@@ -1151,9 +1316,9 @@ export function ReplayToolPage() {
 
   const attachedPlayerName = useMemo(() => {
     if (attachedPlayerId === null) return null;
-    const p = players.find((x) => x.playerId === attachedPlayerId);
+    const p = knownPlayers.find((x) => x.playerId === attachedPlayerId);
     return p ? p.name : String(attachedPlayerId);
-  }, [attachedPlayerId, players]);
+  }, [attachedPlayerId, knownPlayers]);
 
   function jumpToEventTs(tsMs: number) {
     const offsetMs = Math.max(0, Math.floor(eventClickOffsetSeconds * 1000));
@@ -1165,52 +1330,37 @@ export function ReplayToolPage() {
 
   const filteredPlayers = useMemo((): ReplayPlayer[] => {
     const q = playerSearch.trim().toLowerCase();
-    const base = Array.isArray(players) ? players : [];
+    const base = Array.isArray(knownPlayers) ? knownPlayers : [];
     if (!q) return base;
     return base.filter((p) => {
       const name = (p.name || '').toLowerCase();
       return name.includes(q) || String(p.playerId).includes(q);
     });
-  }, [playerSearch, players]);
+  }, [knownPlayers, playerSearch]);
 
-  const selectedPlayerState = useMemo(() => {
+  const selectedPlayerState = useMemo((): { snapTsMs: number; player: any } | null => {
     if (selectedPlayerId === null) return null;
     const t = currentTsMs;
     if (typeof t !== 'number') return null;
-    if (snapshots.length === 0) return null;
-
-    // Find latest snapshot <= t
-    let lo = 0;
-    let hi = snapshots.length - 1;
-    let idx = -1;
-    while (lo <= hi) {
-      const mid = (lo + hi) >> 1;
-      const v = snapshots[mid].tsMs;
-      if (v <= t) {
-        idx = mid;
-        lo = mid + 1;
-      } else {
-        hi = mid - 1;
-      }
-    }
-
-    if (idx < 0) idx = 0;
-    const snap = snapshots[idx];
-    const pj = snap.players.find((p) => p && typeof p === 'object' && (p as any).playerId === selectedPlayerId);
-    return pj || null;
-  }, [currentTsMs, selectedPlayerId, snapshots]);
+    const st = findPlayerStateAt(selectedPlayerId, t);
+    if (!st) return null;
+    return { snapTsMs: st.tsMs, player: st.player };
+  }, [currentTsMs, findPlayerStateAt, selectedPlayerId]);
 
   const selectedPlayerStateWithEquipmentCache = useMemo(() => {
-    const raw: any = selectedPlayerState as any;
     const t = currentTsMs;
-    if (!raw || typeof raw !== 'object') return raw;
-    if (typeof t !== 'number') return raw;
-    const pid = typeof raw.playerId === 'number' ? raw.playerId : null;
-    if (pid === null) return raw;
+    if (typeof t !== 'number') return selectedPlayerState;
+    const st = selectedPlayerState;
+    if (!st || !st.player || typeof st.player !== 'object') return st;
 
-    // Exporter samples inventory/hotbar on a 10s cadence. Keep a small grace window
-    // so minor jitter/scrub offsets don't cause flicker.
-    const ttlMs = 12_000;
+    const raw: any = st.player as any;
+    const snapTs = st.snapTsMs;
+    const pid = typeof raw.playerId === 'number' ? raw.playerId : null;
+    if (pid === null) return st;
+
+    // Exporter samples inventory/hotbar on a cadence; snapshots between samples omit fields.
+    // Prefer the most recent sample at-or-before the selected time; never use future samples.
+    const maxAgeMs = 5 * 60_000;
     const cache = equipmentCacheRef.current.get(pid) || {
       invTsMs: -1,
       hotbarTsMs: -1,
@@ -1222,19 +1372,19 @@ export function ReplayToolPage() {
     // Only use the cache when the field is missing from the snapshot.
     if (Array.isArray(rawInv)) {
       cache.inventory = rawInv;
-      cache.invTsMs = t;
+      cache.invTsMs = snapTs;
     }
 
     const rawHotbar = raw.attachments;
     if (Array.isArray(rawHotbar)) {
       cache.attachments = rawHotbar;
-      cache.hotbarTsMs = t;
+      cache.hotbarTsMs = snapTs;
     }
 
     const rawWeapon = raw.weapon;
     if (rawWeapon && typeof rawWeapon === 'object' && typeof rawWeapon.name === 'string' && rawWeapon.name.length > 0) {
       cache.weapon = rawWeapon;
-      cache.weaponTsMs = t;
+      cache.weaponTsMs = snapTs;
     }
 
     equipmentCacheRef.current.set(pid, cache);
@@ -1243,17 +1393,52 @@ export function ReplayToolPage() {
     const hotbarIsMissingSignal = !Array.isArray(rawHotbar);
     const weaponIsEmptySignal = !rawWeapon || !rawWeapon.name;
 
-    const useCachedInv = ('inventory' in cache) && (t - cache.invTsMs) <= ttlMs && invIsMissingSignal;
-    const useCachedHotbar = ('attachments' in cache) && (t - cache.hotbarTsMs) <= ttlMs && hotbarIsMissingSignal;
-    const useCachedWeapon = !!cache.weapon && (t - cache.weaponTsMs) <= ttlMs && weaponIsEmptySignal;
+    const needsBackfill = invIsMissingSignal || hotbarIsMissingSignal || weaponIsEmptySignal;
+    const sample = needsBackfill ? findPlayerEquipSampleAtOrBefore(pid, t, maxAgeMs) : null;
+
+    if (sample && sample.inventory && (!('inventory' in cache) || cache.invTsMs > t || (t - cache.invTsMs) > maxAgeMs)) {
+      cache.inventory = sample.inventory;
+      cache.invTsMs = sample.tsMs;
+    }
+    if (sample && sample.attachments && (!('attachments' in cache) || cache.hotbarTsMs > t || (t - cache.hotbarTsMs) > maxAgeMs)) {
+      cache.attachments = sample.attachments;
+      cache.hotbarTsMs = sample.tsMs;
+    }
+    if (sample && sample.weapon && (!cache.weapon || cache.weaponTsMs > t || (t - cache.weaponTsMs) > maxAgeMs)) {
+      cache.weapon = sample.weapon;
+      cache.weaponTsMs = sample.tsMs;
+    }
+
+    const invAge = t - cache.invTsMs;
+    const hotbarAge = t - cache.hotbarTsMs;
+    const weaponAge = t - cache.weaponTsMs;
+
+    const useCachedInv = ('inventory' in cache)
+      && cache.invTsMs <= t
+      && invAge >= 0
+      && invAge <= maxAgeMs
+      && invIsMissingSignal;
+
+    const useCachedHotbar = ('attachments' in cache)
+      && cache.hotbarTsMs <= t
+      && hotbarAge >= 0
+      && hotbarAge <= maxAgeMs
+      && hotbarIsMissingSignal;
+
+    const useCachedWeapon = !!cache.weapon
+      && cache.weaponTsMs <= t
+      && weaponAge >= 0
+      && weaponAge <= maxAgeMs
+      && weaponIsEmptySignal;
 
     return {
       ...raw,
       inventory: useCachedInv ? cache.inventory : rawInv,
       attachments: useCachedHotbar ? cache.attachments : rawHotbar,
       weapon: useCachedWeapon ? cache.weapon : rawWeapon,
+      __snapTsMs: snapTs,
     };
-  }, [currentTsMs, selectedPlayerState]);
+  }, [currentTsMs, findPlayerEquipSampleAtOrBefore, selectedPlayerState]);
 
   const timelineEvents = useMemo(() => {
     const out: Array<{
@@ -2226,7 +2411,7 @@ export function ReplayToolPage() {
                                 title="Filter events by player"
                               >
                                 <option value="">All players</option>
-                                {players.map((p) => (
+                                {knownPlayers.map((p) => (
                                   <option key={p.playerId} value={String(p.playerId)}>
                                     {p.name} (#{p.playerId})
                                   </option>

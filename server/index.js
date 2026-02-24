@@ -404,54 +404,6 @@ function drawReplay3DFrame(ctx, opts) {
     strokeWorldPolyline(pts);
   }
 
-  // AxesHelper(10) near the grid center.
-  const axesLen = 10;
-  ctx.lineWidth = 2;
-  const gy = terrainYAt(gx, gz) + 0.08;
-  // X axis (red)
-  ctx.strokeStyle = '#ff0000';
-  {
-    const a = { x: gx, y: gy, z: gz };
-    const b = { x: gx + axesLen, y: terrainYAt(gx + axesLen, gz) + 0.08, z: gz };
-    const pa = projectPointPerspective(a, camera, basis, f, cx, cy);
-    const pb = projectPointPerspective(b, camera, basis, f, cx, cy);
-    if (pa && pb) {
-      ctx.beginPath();
-      ctx.moveTo(pa.x, pa.y);
-      ctx.lineTo(pb.x, pb.y);
-      ctx.stroke();
-    }
-  }
-  // Y axis (green)
-  ctx.strokeStyle = '#00ff00';
-  {
-    const a = { x: gx, y: gy, z: gz };
-    const b = { x: gx, y: gy + axesLen, z: gz };
-    const pa = projectPointPerspective(a, camera, basis, f, cx, cy);
-    const pb = projectPointPerspective(b, camera, basis, f, cx, cy);
-    if (pa && pb) {
-      ctx.beginPath();
-      ctx.moveTo(pa.x, pa.y);
-      ctx.lineTo(pb.x, pb.y);
-      ctx.stroke();
-    }
-  }
-  // Z axis (blue)
-  ctx.strokeStyle = '#0000ff';
-  {
-    const a = { x: gx, y: gy, z: gz };
-    const b = { x: gx, y: terrainYAt(gx, gz + axesLen) + 0.08, z: gz + axesLen };
-    const pa = projectPointPerspective(a, camera, basis, f, cx, cy);
-    const pb = projectPointPerspective(b, camera, basis, f, cx, cy);
-    if (pa && pb) {
-      ctx.beginPath();
-      ctx.moveTo(pa.x, pa.y);
-      ctx.lineTo(pb.x, pb.y);
-      ctx.stroke();
-    }
-  }
-  ctx.lineWidth = 1;
-
   // Trails
   for (const t of trails) {
     const { id, points, color, alpha } = t;
