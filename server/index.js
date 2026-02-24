@@ -253,6 +253,73 @@ function formatReplayClock(ms) {
   return `${m}:${s}`;
 }
 
+function coerceTerrainGrid(t) {
+  if (!t || typeof t !== 'object') return null;
+  const bbMin = coerceVec3(t.bbMin);
+  const bbMax = coerceVec3(t.bbMax);
+  const gridW = Number(t.gridW);
+  const gridH = Number(t.gridH);
+  const heights = Array.isArray(t.heights)
+    ? t.heights.filter((x) => typeof x === 'number' && Number.isFinite(x))
+    : [];
+
+  if (!bbMin || !bbMax) return null;
+  if (!Number.isFinite(gridW) || !Number.isFinite(gridH)) return null;
+  if (gridW < 2 || gridH < 2) return null;
+  if (heights.length < gridW * gridH) return null;
+
+  return {
+    bbMin,
+    bbMax,
+    gridW: Math.floor(gridW),
+    gridH: Math.floor(gridH),
+    heights,
+  };
+}
+
+function sampleTerrainY(t, x, z) {
+  if (!t) return null;
+  const w = t.gridW;
+  const h = t.gridH;
+  if (!Array.isArray(t.heights) || t.heights.length < w * h) return null;
+
+  const minX = t.bbMin.x;
+  const maxX = t.bbMax.x;
+  const minZ = t.bbMin.z;
+  const maxZ = t.bbMax.z;
+  const dx = maxX - minX;
+  const dz = maxZ - minZ;
+  if (!Number.isFinite(dx) || !Number.isFinite(dz) || Math.abs(dx) < 1e-6 || Math.abs(dz) < 1e-6) return null;
+
+  const nx = (x - minX) / dx;
+  const nz = (z - minZ) / dz;
+  if (!Number.isFinite(nx) || !Number.isFinite(nz)) return null;
+  if (nx < 0 || nx > 1 || nz < 0 || nz > 1) return null;
+
+  const gx = nx * (w - 1);
+  const gz = nz * (h - 1);
+  const x0 = Math.floor(gx);
+  const z0 = Math.floor(gz);
+  const x1 = Math.min(w - 1, x0 + 1);
+  const z1 = Math.min(h - 1, z0 + 1);
+  const tx = gx - x0;
+  const tz = gz - z0;
+
+  const idx00 = z0 * w + x0;
+  const idx10 = z0 * w + x1;
+  const idx01 = z1 * w + x0;
+  const idx11 = z1 * w + x1;
+  const y00 = t.heights[idx00];
+  const y10 = t.heights[idx10];
+  const y01 = t.heights[idx01];
+  const y11 = t.heights[idx11];
+  if (![y00, y10, y01, y11].every((n) => typeof n === 'number' && Number.isFinite(n))) return null;
+
+  const y0 = y00 * (1 - tx) + y10 * tx;
+  const y1 = y01 * (1 - tx) + y11 * tx;
+  return y0 * (1 - tz) + y1 * tz;
+}
+
 function drawReplay3DFrame(ctx, opts) {
   const {
     w,
@@ -261,12 +328,10 @@ function drawReplay3DFrame(ctx, opts) {
     serverId,
     relMs,
     absTsMs,
-    fromTsMs,
-    toTsMs,
     wallClockAbsMs,
-    wallClockFromMs,
-    wallClockToMs,
+    requester,
     gridCenter,
+    terrain,
     camera,
     basis,
     f,
@@ -284,7 +349,28 @@ function drawReplay3DFrame(ctx, opts) {
   const cx = w / 2;
   const cy = h / 2 + 8;
 
-  // Distance grid on XZ plane at y=0, centered around the current action.
+  function terrainYAt(x, z) {
+    const y = sampleTerrainY(terrain, x, z);
+    return (typeof y === 'number' && Number.isFinite(y)) ? y : 0;
+  }
+
+  function strokeWorldPolyline(points) {
+    ctx.beginPath();
+    let moved = false;
+    for (let i = 0; i < points.length; i++) {
+      const pp = projectPointPerspective(points[i], camera, basis, f, cx, cy);
+      if (!pp) continue;
+      if (!moved) {
+        ctx.moveTo(pp.x, pp.y);
+        moved = true;
+      } else {
+        ctx.lineTo(pp.x, pp.y);
+      }
+    }
+    if (moved) ctx.stroke();
+  }
+
+  // Distance grid following terrain surface (fallback: y=0), centered around the current action.
   const gx = gridCenter && typeof gridCenter.x === 'number' ? gridCenter.x : 0;
   const gz = gridCenter && typeof gridCenter.z === 'number' ? gridCenter.z : 0;
   const gridHalf = 350;
@@ -297,39 +383,36 @@ function drawReplay3DFrame(ctx, opts) {
   for (let i = -gridHalf; i <= gridHalf + 1e-6; i += gridStep) {
     const isMajor = Math.abs(i) < 1e-6 || (Math.abs(i) % majorEvery) < 1e-6;
     ctx.strokeStyle = isMajor ? gridMajor : gridMinor;
-    const a = { x: gx + i, y: 0, z: gz - gridHalf };
-    const b = { x: gx + i, y: 0, z: gz + gridHalf };
-    const pa = projectPointPerspective(a, camera, basis, f, cx, cy);
-    const pb = projectPointPerspective(b, camera, basis, f, cx, cy);
-    if (!pa || !pb) continue;
-    ctx.beginPath();
-    ctx.moveTo(pa.x, pa.y);
-    ctx.lineTo(pb.x, pb.y);
-    ctx.stroke();
+    const pts = [];
+    const x = gx + i;
+    for (let z = gz - gridHalf; z <= gz + gridHalf + 1e-6; z += gridStep) {
+      const y = terrainYAt(x, z) + 0.06;
+      pts.push({ x, y, z });
+    }
+    strokeWorldPolyline(pts);
   }
 
   for (let j = -gridHalf; j <= gridHalf + 1e-6; j += gridStep) {
     const isMajor = Math.abs(j) < 1e-6 || (Math.abs(j) % majorEvery) < 1e-6;
     ctx.strokeStyle = isMajor ? gridMajor : gridMinor;
-    const a = { x: gx - gridHalf, y: 0, z: gz + j };
-    const b = { x: gx + gridHalf, y: 0, z: gz + j };
-    const pa = projectPointPerspective(a, camera, basis, f, cx, cy);
-    const pb = projectPointPerspective(b, camera, basis, f, cx, cy);
-    if (!pa || !pb) continue;
-    ctx.beginPath();
-    ctx.moveTo(pa.x, pa.y);
-    ctx.lineTo(pb.x, pb.y);
-    ctx.stroke();
+    const pts = [];
+    const z = gz + j;
+    for (let x = gx - gridHalf; x <= gx + gridHalf + 1e-6; x += gridStep) {
+      const y = terrainYAt(x, z) + 0.06;
+      pts.push({ x, y, z });
+    }
+    strokeWorldPolyline(pts);
   }
 
   // AxesHelper(10) near the grid center.
   const axesLen = 10;
   ctx.lineWidth = 2;
+  const gy = terrainYAt(gx, gz) + 0.08;
   // X axis (red)
   ctx.strokeStyle = '#ff0000';
   {
-    const a = { x: gx, y: 0, z: gz };
-    const b = { x: gx + axesLen, y: 0, z: gz };
+    const a = { x: gx, y: gy, z: gz };
+    const b = { x: gx + axesLen, y: terrainYAt(gx + axesLen, gz) + 0.08, z: gz };
     const pa = projectPointPerspective(a, camera, basis, f, cx, cy);
     const pb = projectPointPerspective(b, camera, basis, f, cx, cy);
     if (pa && pb) {
@@ -342,8 +425,8 @@ function drawReplay3DFrame(ctx, opts) {
   // Y axis (green)
   ctx.strokeStyle = '#00ff00';
   {
-    const a = { x: gx, y: 0, z: gz };
-    const b = { x: gx, y: axesLen, z: gz };
+    const a = { x: gx, y: gy, z: gz };
+    const b = { x: gx, y: gy + axesLen, z: gz };
     const pa = projectPointPerspective(a, camera, basis, f, cx, cy);
     const pb = projectPointPerspective(b, camera, basis, f, cx, cy);
     if (pa && pb) {
@@ -356,8 +439,8 @@ function drawReplay3DFrame(ctx, opts) {
   // Z axis (blue)
   ctx.strokeStyle = '#0000ff';
   {
-    const a = { x: gx, y: 0, z: gz };
-    const b = { x: gx, y: 0, z: gz + axesLen };
+    const a = { x: gx, y: gy, z: gz };
+    const b = { x: gx, y: terrainYAt(gx, gz + axesLen) + 0.08, z: gz + axesLen };
     const pa = projectPointPerspective(a, camera, basis, f, cx, cy);
     const pb = projectPointPerspective(b, camera, basis, f, cx, cy);
     if (pa && pb) {
@@ -397,7 +480,7 @@ function drawReplay3DFrame(ctx, opts) {
   for (const p of playerNow) {
     const pp = projectPointPerspective(p.pos, camera, basis, f, cx, cy);
     if (!pp) continue;
-    sprites.push({ ...pp, id: p.id });
+    sprites.push({ ...pp, id: p.id, name: typeof p.name === 'string' ? p.name : '' });
   }
   sprites.sort((a, b) => b.z - a.z);
   for (const s of sprites) {
@@ -405,6 +488,8 @@ function drawReplay3DFrame(ctx, opts) {
     const worldR = isFocus ? 0.55 : 0.45;
     const pxRRaw = (Number.isFinite(s.z) && s.z > 0.01) ? (worldR * (f / s.z)) : (isFocus ? 5 : 4);
     const pxR = Math.max(2.5, Math.min(10, pxRRaw));
+    s._pxR = pxR;
+    s._isFocus = isFocus;
     ctx.fillStyle = isFocus ? '#f9bc59' : 'rgba(255,255,255,0.85)';
     ctx.beginPath();
     ctx.arc(s.x, s.y, pxR, 0, Math.PI * 2);
@@ -412,6 +497,25 @@ function drawReplay3DFrame(ctx, opts) {
     ctx.strokeStyle = 'rgba(0,0,0,0.35)';
     ctx.lineWidth = 2;
     ctx.stroke();
+  }
+
+  // Name labels
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+  for (const s of sprites) {
+    const name = typeof s.name === 'string' ? s.name.trim() : '';
+    if (!name) continue;
+    const label = name.length > 18 ? `${name.slice(0, 17)}…` : name;
+    const pxR = typeof s._pxR === 'number' ? s._pxR : 4;
+    const isFocus = !!s._isFocus;
+    const tx = s.x + pxR + 6;
+    const ty = s.y;
+    ctx.font = isFocus ? 'bold 12px sans-serif' : '11px sans-serif';
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = 'rgba(0,0,0,0.82)';
+    ctx.strokeText(label, tx, ty);
+    ctx.fillStyle = 'rgba(255,255,255,0.92)';
+    ctx.fillText(label, tx, ty);
   }
 
   // Death markers: match ReplayMap3D "X" line segments (size 1.8, y+0.15).
@@ -458,12 +562,6 @@ function drawReplay3DFrame(ctx, opts) {
   const absText = (typeof wallClockAbsMs === 'number' && Number.isFinite(wallClockAbsMs) && wallClockAbsMs > 0)
     ? new Date(wallClockAbsMs).toISOString().replace('T', ' ').replace('Z', 'Z')
     : `replay ${formatReplayClock(absTsMs)}`;
-  const fromText = (typeof wallClockFromMs === 'number' && Number.isFinite(wallClockFromMs) && wallClockFromMs > 0)
-    ? new Date(wallClockFromMs).toISOString().replace('T', ' ').replace('Z', 'Z')
-    : `replay ${formatReplayClock(fromTsMs)}`;
-  const toText = (typeof wallClockToMs === 'number' && Number.isFinite(wallClockToMs) && wallClockToMs > 0)
-    ? new Date(wallClockToMs).toISOString().replace('T', ' ').replace('Z', 'Z')
-    : `replay ${formatReplayClock(toTsMs)}`;
 
   ctx.fillStyle = 'rgba(0,0,0,0.45)';
   ctx.fillRect(0, 0, w, 54);
@@ -484,7 +582,8 @@ function drawReplay3DFrame(ctx, opts) {
 
   ctx.textAlign = 'left';
   ctx.font = '11px sans-serif';
-  ctx.fillText(`window: ${fromText} → ${toText}`, 10, h - 14);
+  const who = (typeof requester === 'string' && requester.trim().length > 0) ? requester.trim() : 'unknown';
+  ctx.fillText(`requested by: ${who}`, 10, h - 14);
 }
 
 function drawReplayMapFrame(ctx, opts) {
@@ -601,9 +700,21 @@ function drawReplayMapFrame(ctx, opts) {
   ctx.fillText(`window: ${fromIso} → ${toIso}`, 10, h - 14);
 }
 
-async function buildReplayEventGif({ safeId, serverId, tsMs, title, pos, focusPlayerId, playerIds, wallClockAtMs }) {
+async function buildReplayEventGif({ safeId, serverId, tsMs, title, pos, focusPlayerId, playerIds, wallClockAtMs, requester }) {
   const fromTsMs = tsMs - 5_000;
   const toTsMs = tsMs + 5_000;
+
+  // Best-effort terrain grid for the server's current map.
+  let terrain = null;
+  try {
+    const { mapId } = await getOrInferServerMapId(safeId);
+    if (mapId) {
+      const terrainPath = path.join(MAPS_DIR, `${mapId}.terrain.json`);
+      terrain = coerceTerrainGrid(await readJsonOrNull(terrainPath));
+    }
+  } catch {
+    // ignore
+  }
 
   const eventsPath = path.join(DATA_DIR, 'servers', safeId, 'events.ndjson');
   const windowItems = await readNdjsonWindow(eventsPath, {
@@ -631,7 +742,8 @@ async function buildReplayEventGif({ safeId, serverId, tsMs, title, pos, focusPl
     if (!p || typeof p !== 'object') continue;
     if (p.type !== 'kill' && p.type !== 'death') continue;
     if (typeof p.tsMs !== 'number') continue;
-    const vp = coerceVec3(p.victimPos);
+    const ev = (p.event && typeof p.event === 'object') ? p.event : null;
+    const vp = coerceVec3(ev ? ev.victimPos : null) || coerceVec3(p.victimPos);
     if (!vp) continue;
     deathEvents.push({ tsMs: p.tsMs, pos: vp });
   }
@@ -655,6 +767,9 @@ async function buildReplayEventGif({ safeId, serverId, tsMs, title, pos, focusPl
   const eventPoint = coerceVec3(pos);
   const lastById = new Map();
   for (const id of trackedIds) lastById.set(id, eventPoint);
+
+  /** @type {Map<number, string>} */
+  const lastNameById = new Map();
 
   const fps = 2;
   const stepMs = 1000 / fps;
@@ -684,15 +799,20 @@ async function buildReplayEventGif({ safeId, serverId, tsMs, title, pos, focusPl
     const playerNow = [];
     for (const id of trackedIds) {
       let pt = null;
+      let name = lastNameById.get(id) || '';
       if (snap) {
         const pl = snap.players.find((x) => x && typeof x === 'object' && x.playerId === id);
         pt = pl ? coerceVec3(pl.pos) : null;
+        if (pl && typeof pl === 'object' && typeof pl.name === 'string' && pl.name.trim().length > 0) {
+          name = pl.name.trim();
+          lastNameById.set(id, name);
+        }
       }
       if (!pt) pt = lastById.get(id) || null;
       if (!pt) pt = eventPoint;
       if (pt) {
         lastById.set(id, pt);
-        playerNow.push({ id, pos: pt });
+        playerNow.push({ id, pos: pt, name });
         const tr = trailsById.get(id);
         if (tr) tr.push(pt);
       }
@@ -777,12 +897,6 @@ async function buildReplayEventGif({ safeId, serverId, tsMs, title, pos, focusPl
     const absWallClockMs = (typeof wallClockAtMs === 'number' && Number.isFinite(wallClockAtMs) && wallClockAtMs > 0)
       ? (wallClockAtMs + relMs)
       : null;
-    const fromWallClockMs = (typeof wallClockAtMs === 'number' && Number.isFinite(wallClockAtMs) && wallClockAtMs > 0)
-      ? (wallClockAtMs - 5_000)
-      : null;
-    const toWallClockMs = (typeof wallClockAtMs === 'number' && Number.isFinite(wallClockAtMs) && wallClockAtMs > 0)
-      ? (wallClockAtMs + 5_000)
-      : null;
 
     drawReplay3DFrame(ctx, {
       w,
@@ -791,12 +905,10 @@ async function buildReplayEventGif({ safeId, serverId, tsMs, title, pos, focusPl
       serverId,
       relMs,
       absTsMs,
-      fromTsMs,
-      toTsMs,
       wallClockAbsMs: absWallClockMs,
-      wallClockFromMs: fromWallClockMs,
-      wallClockToMs: toWallClockMs,
+      requester,
       gridCenter: { x: target.x, z: target.z },
+      terrain,
       camera,
       basis,
       f,
@@ -1970,6 +2082,10 @@ app.post('/api/replay/exportDiscord', requireAuth, requireTool('replay'), asyncR
     ? (lastReceivedAt - (lastIngestTsMs - tsMs))
     : null;
 
+  const requester = (req.user && typeof req.user.sub === 'string' && req.user.sub.trim().length > 0)
+    ? req.user.sub.trim()
+    : '';
+
   const gifBuf = await buildReplayEventGif({
     safeId,
     serverId: id,
@@ -1979,6 +2095,7 @@ app.post('/api/replay/exportDiscord', requireAuth, requireTool('replay'), asyncR
     focusPlayerId: fp,
     playerIds: Array.isArray(playerIds) ? playerIds : null,
     wallClockAtMs,
+    requester,
   });
 
   const wallClockFromMs = (wallClockAtMs !== null) ? (wallClockAtMs - 5_000) : null;
@@ -1987,25 +2104,19 @@ app.post('/api/replay/exportDiscord', requireAuth, requireTool('replay'), asyncR
   const whenUnix = (typeof wallClockAtMs === 'number' && Number.isFinite(wallClockAtMs) && wallClockAtMs > 0)
     ? Math.floor(wallClockAtMs / 1000)
     : null;
-  const fromUnix = (typeof wallClockFromMs === 'number' && Number.isFinite(wallClockFromMs) && wallClockFromMs > 0)
-    ? Math.floor(wallClockFromMs / 1000)
-    : null;
-  const toUnix = (typeof wallClockToMs === 'number' && Number.isFinite(wallClockToMs) && wallClockToMs > 0)
-    ? Math.floor(wallClockToMs / 1000)
-    : null;
 
   const atLine = whenUnix !== null
     ? `At: <t:${whenUnix}:f>`
     : `At (replay): ${(tsMs / 1000).toFixed(1)}s`;
-  const windowLine = (fromUnix !== null && toUnix !== null)
-    ? `Window: <t:${fromUnix}:f> → <t:${toUnix}:f>`
-    : `Window (replay): ${((tsMs - 5_000) / 1000).toFixed(1)}s → ${((tsMs + 5_000) / 1000).toFixed(1)}s`;
+  const requesterLine = requester
+    ? `Requester: **${requester}**`
+    : 'Requester: **unknown**';
 
   const content = [
     `Server: **${id}**`,
     `Event: **${title.trim().slice(0, 140)}**`,
     atLine,
-    windowLine,
+    requesterLine,
   ].join('\n');
 
   const form = new FormData();
