@@ -6,6 +6,6 @@
 # credentials-file: C:\Users\<you>\.cloudflared\<TUNNEL-UUID>.json
 
 ingress:
-  - hostname: admin.reforgedz.xyz
+  - hostname: admin.reforgedz.net
     service: http://localhost:3001
   - service: http_status:404

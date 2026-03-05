@@ -3,7 +3,7 @@ param(
   [string]$TunnelName = 'reforgedz-admin',
 
   [Parameter(Mandatory = $false)]
-  [string]$Hostname = 'admin.reforgedz.xyz',
+  [string]$Hostname = 'admin.reforgedz.net',
 
   [Parameter(Mandatory = $false)]
   [string]$OriginUrl = 'http://localhost:3001'

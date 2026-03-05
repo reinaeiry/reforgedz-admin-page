@@ -6,7 +6,7 @@ function requireApiBaseUrl(): string {
     return base.replace(/\/$/, '');
   }
 
-  // If the client is hosted at https://admin.reforgedz.xyz, this automatically targets that.
+  // If the client is hosted at https://admin.reforgedz.net, this automatically targets that.
   return window.location.origin;
 }
 
