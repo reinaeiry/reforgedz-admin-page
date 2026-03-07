@@ -46,7 +46,7 @@ export function AppShell() {
                 <NavItem to="/player" label="Player Lookup" />
               </>
             ) : null}
-            {hasToolAccess('admin') ? <NavItem to="/admin" label="Admin" /> : null}
+            {hasToolAccess('admin') ? <NavItem to="/admin" label="Admin Management" /> : null}
             {hasToolAccess('dev') ? <NavItem to="/dev" label="Dev" /> : null}
           </div>
         </div>

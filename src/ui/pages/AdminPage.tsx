@@ -37,7 +37,7 @@ export function AdminPage() {
   return (
     <div className="container">
       <div className="stack">
-        <h1 className="h1">Admin</h1>
+        <h1 className="h1">Admin Management</h1>
 
         {error ? <div className="error">{error}</div> : null}
 
