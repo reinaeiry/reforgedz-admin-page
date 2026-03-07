@@ -502,3 +502,258 @@ export async function exportReplayEventToDiscord(params: {
   if (!res.ok) throw new Error((await res.text()) || `Failed to export to Discord (${res.status})`);
   return (await res.json()) as { ok: true };
 }
+
+// ─── Admin Bridge API ──────────────────────────────────────────────
+
+export type ServerHealth = {
+  serverId: string;
+  fps: number;
+  playerCount: number;
+  tsMs: number;
+};
+
+export async function getServerHealth(serverId: string): Promise<ServerHealth> {
+  const base = requireApiBaseUrl();
+  const session = getSession();
+  if (!session) throw new Error('Not authenticated');
+
+  const res = await fetch(`${base}/api/admin/health?serverId=${encodeURIComponent(serverId)}`, {
+    headers: { Authorization: `Bearer ${session.token}` },
+  });
+  if (!res.ok) throw new Error((await res.text()) || `Failed to get server health (${res.status})`);
+  return (await res.json()) as ServerHealth;
+}
+
+export type BanEntry = {
+  playerUID: string;
+  playerName: string;
+  reason: string;
+  timestamp: number;
+  duration: number;
+  bannedBy: string;
+};
+
+export async function getBans(serverId: string): Promise<BanEntry[]> {
+  const base = requireApiBaseUrl();
+  const session = getSession();
+  if (!session) throw new Error('Not authenticated');
+
+  const res = await fetch(`${base}/api/admin/bans?serverId=${encodeURIComponent(serverId)}`, {
+    headers: { Authorization: `Bearer ${session.token}` },
+  });
+  if (!res.ok) throw new Error((await res.text()) || `Failed to get bans (${res.status})`);
+  return (await res.json()) as BanEntry[];
+}
+
+export async function addBan(params: {
+  serverId: string;
+  playerUID: string;
+  playerName: string;
+  reason: string;
+  duration: number;
+  bannedBy: string;
+}): Promise<{ ok: true }> {
+  const base = requireApiBaseUrl();
+  const session = getSession();
+  if (!session) throw new Error('Not authenticated');
+
+  const res = await fetch(`${base}/api/admin/bans`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${session.token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(params),
+  });
+  if (!res.ok) throw new Error((await res.text()) || `Failed to add ban (${res.status})`);
+  return (await res.json()) as { ok: true };
+}
+
+export async function removeBan(serverId: string, playerUID: string): Promise<{ ok: true }> {
+  const base = requireApiBaseUrl();
+  const session = getSession();
+  if (!session) throw new Error('Not authenticated');
+
+  const res = await fetch(`${base}/api/admin/bans/${encodeURIComponent(playerUID)}?serverId=${encodeURIComponent(serverId)}`, {
+    method: 'DELETE',
+    headers: { Authorization: `Bearer ${session.token}` },
+  });
+  if (!res.ok) throw new Error((await res.text()) || `Failed to remove ban (${res.status})`);
+  return (await res.json()) as { ok: true };
+}
+
+export type MuteEntry = {
+  playerUID: string;
+  playerName: string;
+  reason: string;
+  timestamp: number;
+  duration: number;
+  mutedBy: string;
+};
+
+export async function getMutes(serverId: string): Promise<MuteEntry[]> {
+  const base = requireApiBaseUrl();
+  const session = getSession();
+  if (!session) throw new Error('Not authenticated');
+
+  const res = await fetch(`${base}/api/admin/mutes?serverId=${encodeURIComponent(serverId)}`, {
+    headers: { Authorization: `Bearer ${session.token}` },
+  });
+  if (!res.ok) throw new Error((await res.text()) || `Failed to get mutes (${res.status})`);
+  return (await res.json()) as MuteEntry[];
+}
+
+export async function addMute(params: {
+  serverId: string;
+  playerUID: string;
+  playerName: string;
+  reason: string;
+  duration: number;
+  mutedBy: string;
+}): Promise<{ ok: true }> {
+  const base = requireApiBaseUrl();
+  const session = getSession();
+  if (!session) throw new Error('Not authenticated');
+
+  const res = await fetch(`${base}/api/admin/mutes`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${session.token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(params),
+  });
+  if (!res.ok) throw new Error((await res.text()) || `Failed to add mute (${res.status})`);
+  return (await res.json()) as { ok: true };
+}
+
+export async function removeMute(serverId: string, playerUID: string): Promise<{ ok: true }> {
+  const base = requireApiBaseUrl();
+  const session = getSession();
+  if (!session) throw new Error('Not authenticated');
+
+  const res = await fetch(`${base}/api/admin/mutes/${encodeURIComponent(playerUID)}?serverId=${encodeURIComponent(serverId)}`, {
+    method: 'DELETE',
+    headers: { Authorization: `Bearer ${session.token}` },
+  });
+  if (!res.ok) throw new Error((await res.text()) || `Failed to remove mute (${res.status})`);
+  return (await res.json()) as { ok: true };
+}
+
+export async function kickPlayer(params: {
+  serverId: string;
+  playerUID: string;
+  reason: string;
+}): Promise<{ ok: true }> {
+  const base = requireApiBaseUrl();
+  const session = getSession();
+  if (!session) throw new Error('Not authenticated');
+
+  const res = await fetch(`${base}/api/admin/kick`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${session.token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(params),
+  });
+  if (!res.ok) throw new Error((await res.text()) || `Failed to kick player (${res.status})`);
+  return (await res.json()) as { ok: true };
+}
+
+export async function sendGlobalMessage(params: {
+  serverId: string;
+  message: string;
+}): Promise<{ ok: true }> {
+  const base = requireApiBaseUrl();
+  const session = getSession();
+  if (!session) throw new Error('Not authenticated');
+
+  const res = await fetch(`${base}/api/admin/globalMessage`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${session.token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(params),
+  });
+  if (!res.ok) throw new Error((await res.text()) || `Failed to send global message (${res.status})`);
+  return (await res.json()) as { ok: true };
+}
+
+export type LivePlayer = {
+  playerId: number;
+  name: string;
+  identityId: string;
+  pos: { x: number; y: number; z: number } | null;
+  inVehicle: boolean;
+  vehicle: { name: string; prefab: string } | null;
+  weapon: { name: string; prefab: string } | null;
+};
+
+export async function getLivePlayers(serverId: string): Promise<LivePlayer[]> {
+  const base = requireApiBaseUrl();
+  const session = getSession();
+  if (!session) throw new Error('Not authenticated');
+
+  const res = await fetch(`${base}/api/admin/players?serverId=${encodeURIComponent(serverId)}`, {
+    headers: { Authorization: `Bearer ${session.token}` },
+  });
+  if (!res.ok) throw new Error((await res.text()) || `Failed to get live players (${res.status})`);
+  return (await res.json()) as LivePlayer[];
+}
+
+export type EventLogEntry = {
+  type: string;
+  tsMs: number;
+  receivedAt: number;
+  event: Record<string, unknown>;
+};
+
+export async function getEventLog(params: {
+  serverId: string;
+  types?: string;
+  sinceTsMs?: number;
+  untilTsMs?: number;
+  limit?: number;
+}): Promise<EventLogEntry[]> {
+  const base = requireApiBaseUrl();
+  const session = getSession();
+  if (!session) throw new Error('Not authenticated');
+
+  const qs = new URLSearchParams();
+  qs.set('serverId', params.serverId);
+  if (params.types) qs.set('types', params.types);
+  if (typeof params.sinceTsMs === 'number') qs.set('sinceTsMs', String(params.sinceTsMs));
+  if (typeof params.untilTsMs === 'number') qs.set('untilTsMs', String(params.untilTsMs));
+  if (typeof params.limit === 'number') qs.set('limit', String(params.limit));
+
+  const res = await fetch(`${base}/api/admin/events?${qs.toString()}`, {
+    headers: { Authorization: `Bearer ${session.token}` },
+  });
+  if (!res.ok) throw new Error((await res.text()) || `Failed to get event log (${res.status})`);
+  return (await res.json()) as EventLogEntry[];
+}
+
+export type PlayerProfile = {
+  playerUID: string;
+  playerName: string;
+  lastSeen: number | null;
+  totalKills: number;
+  totalDeaths: number;
+  bans: BanEntry[];
+  mutes: MuteEntry[];
+};
+
+export async function getPlayerProfile(serverId: string, playerUID: string): Promise<PlayerProfile> {
+  const base = requireApiBaseUrl();
+  const session = getSession();
+  if (!session) throw new Error('Not authenticated');
+
+  const res = await fetch(
+    `${base}/api/admin/player/${encodeURIComponent(playerUID)}?serverId=${encodeURIComponent(serverId)}`,
+    { headers: { Authorization: `Bearer ${session.token}` } }
+  );
+  if (!res.ok) throw new Error((await res.text()) || `Failed to get player profile (${res.status})`);
+  return (await res.json()) as PlayerProfile;
+}

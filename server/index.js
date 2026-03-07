@@ -2449,6 +2449,325 @@ app.post('/api/dev/servers/regenerateTerrain', requireAuth, requireTool('dev'), 
   res.json({ ok: true });
 }));
 
+// ─── Admin Bridge Endpoints ─────────────────────────────────────────────────
+
+app.get('/api/admin/health', requireAuth, requireTool('admin'), asyncRoute(async (req, res) => {
+  const serverId = String(req.query.serverId || '');
+  if (!serverId) { res.status(400).send('Missing serverId'); return; }
+
+  const safeId = sanitizeServerId(serverId);
+  const serverDir = path.join(DATA_DIR, 'servers', safeId);
+  const healthPath = path.join(serverDir, 'latestHealth.json');
+  const data = await readJsonOrNull(healthPath);
+  if (!data) { res.json({ serverId, fps: 0, playerCount: 0, tsMs: 0 }); return; }
+  res.json(data);
+}));
+
+app.get('/api/admin/players', requireAuth, requireTool('admin'), asyncRoute(async (req, res) => {
+  const serverId = String(req.query.serverId || '');
+  if (!serverId) { res.status(400).send('Missing serverId'); return; }
+
+  const safeId = sanitizeServerId(serverId);
+  const serverDir = path.join(DATA_DIR, 'servers', safeId);
+  const snapPath = path.join(serverDir, 'latestSnapshot.json');
+  const snap = await readJsonOrNull(snapPath);
+  if (!snap || !Array.isArray(snap.players)) { res.json([]); return; }
+
+  const players = snap.players.map((p) => ({
+    playerId: p.playerId,
+    name: p.name || '',
+    identityId: p.identityId || '',
+    pos: p.pos ? coerceVec3(p.pos) : null,
+    inVehicle: !!p.inVehicle,
+    vehicle: p.vehicle ? { name: p.vehicle.name || '', prefab: p.vehicle.prefab || '' } : null,
+    weapon: p.weapon ? { name: p.weapon.name || '', prefab: p.weapon.prefab || '' } : null,
+  }));
+  res.json(players);
+}));
+
+app.get('/api/admin/bans', requireAuth, requireTool('admin'), asyncRoute(async (req, res) => {
+  const serverId = String(req.query.serverId || '');
+  if (!serverId) { res.status(400).send('Missing serverId'); return; }
+
+  const safeId = sanitizeServerId(serverId);
+  const serverDir = path.join(DATA_DIR, 'servers', safeId);
+  const bansPath = path.join(serverDir, 'latestBans.json');
+  const data = await readJsonOrNull(bansPath);
+  if (!data || !Array.isArray(data.bans)) { res.json([]); return; }
+  res.json(data.bans);
+}));
+
+app.post('/api/admin/bans', requireAuth, requireTool('admin'), asyncRoute(async (req, res) => {
+  const body = (req.body && typeof req.body === 'object') ? req.body : {};
+  const { serverId, playerUID, playerName, reason, duration, bannedBy } = body;
+  if (typeof serverId !== 'string' || !serverId) { res.status(400).send('Missing serverId'); return; }
+  if (typeof playerUID !== 'string' || !playerUID) { res.status(400).send('Missing playerUID'); return; }
+
+  const safeId = sanitizeServerId(serverId);
+  await withIngestLock(safeId, async () => {
+    const serverDir = path.join(DATA_DIR, 'servers', safeId);
+    await ensureDir(serverDir);
+    const idxPath = path.join(serverDir, 'index.json');
+    const idx = (await readJsonOrNull(idxPath)) || {};
+    const prevPending = (idx.pendingCommands && typeof idx.pendingCommands === 'object' && !Array.isArray(idx.pendingCommands))
+      ? idx.pendingCommands : {};
+    const prevBans = Array.isArray(prevPending.ban) ? prevPending.ban : [];
+    const nextBans = [...prevBans, {
+      playerUID: String(playerUID),
+      playerName: String(playerName || ''),
+      reason: String(reason || 'Web Admin'),
+      duration: typeof duration === 'number' ? duration : 0,
+      bannedBy: String(bannedBy || req.user?.sub || 'WebAdmin'),
+    }];
+    await writeJsonAtomic(idxPath, { ...idx, pendingCommands: { ...prevPending, ban: nextBans } });
+  });
+  res.json({ ok: true });
+}));
+
+app.delete('/api/admin/bans/:uid', requireAuth, requireTool('admin'), asyncRoute(async (req, res) => {
+  const serverId = String(req.query.serverId || '');
+  const uid = String(req.params.uid || '');
+  if (!serverId || !uid) { res.status(400).send('Missing serverId or uid'); return; }
+
+  const safeId = sanitizeServerId(serverId);
+  await withIngestLock(safeId, async () => {
+    const serverDir = path.join(DATA_DIR, 'servers', safeId);
+    await ensureDir(serverDir);
+    const idxPath = path.join(serverDir, 'index.json');
+    const idx = (await readJsonOrNull(idxPath)) || {};
+    const prevPending = (idx.pendingCommands && typeof idx.pendingCommands === 'object' && !Array.isArray(idx.pendingCommands))
+      ? idx.pendingCommands : {};
+    const prevUnbans = Array.isArray(prevPending.unban) ? prevPending.unban : [];
+    await writeJsonAtomic(idxPath, {
+      ...idx,
+      pendingCommands: { ...prevPending, unban: [...prevUnbans, { playerUID: uid }] },
+    });
+  });
+  res.json({ ok: true });
+}));
+
+app.get('/api/admin/mutes', requireAuth, requireTool('admin'), asyncRoute(async (req, res) => {
+  const serverId = String(req.query.serverId || '');
+  if (!serverId) { res.status(400).send('Missing serverId'); return; }
+
+  const safeId = sanitizeServerId(serverId);
+  const serverDir = path.join(DATA_DIR, 'servers', safeId);
+  const mutesPath = path.join(serverDir, 'latestMutes.json');
+  const data = await readJsonOrNull(mutesPath);
+  if (!data || !Array.isArray(data.mutes)) { res.json([]); return; }
+  res.json(data.mutes);
+}));
+
+app.post('/api/admin/mutes', requireAuth, requireTool('admin'), asyncRoute(async (req, res) => {
+  const body = (req.body && typeof req.body === 'object') ? req.body : {};
+  const { serverId, playerUID, playerName, reason, duration, mutedBy } = body;
+  if (typeof serverId !== 'string' || !serverId) { res.status(400).send('Missing serverId'); return; }
+  if (typeof playerUID !== 'string' || !playerUID) { res.status(400).send('Missing playerUID'); return; }
+
+  const safeId = sanitizeServerId(serverId);
+  await withIngestLock(safeId, async () => {
+    const serverDir = path.join(DATA_DIR, 'servers', safeId);
+    await ensureDir(serverDir);
+    const idxPath = path.join(serverDir, 'index.json');
+    const idx = (await readJsonOrNull(idxPath)) || {};
+    const prevPending = (idx.pendingCommands && typeof idx.pendingCommands === 'object' && !Array.isArray(idx.pendingCommands))
+      ? idx.pendingCommands : {};
+    const prevMutes = Array.isArray(prevPending.mute) ? prevPending.mute : [];
+    await writeJsonAtomic(idxPath, {
+      ...idx,
+      pendingCommands: {
+        ...prevPending,
+        mute: [...prevMutes, {
+          playerUID: String(playerUID),
+          playerName: String(playerName || ''),
+          reason: String(reason || 'Web Admin'),
+          duration: typeof duration === 'number' ? duration : 0,
+          mutedBy: String(mutedBy || req.user?.sub || 'WebAdmin'),
+        }],
+      },
+    });
+  });
+  res.json({ ok: true });
+}));
+
+app.delete('/api/admin/mutes/:uid', requireAuth, requireTool('admin'), asyncRoute(async (req, res) => {
+  const serverId = String(req.query.serverId || '');
+  const uid = String(req.params.uid || '');
+  if (!serverId || !uid) { res.status(400).send('Missing serverId or uid'); return; }
+
+  const safeId = sanitizeServerId(serverId);
+  await withIngestLock(safeId, async () => {
+    const serverDir = path.join(DATA_DIR, 'servers', safeId);
+    await ensureDir(serverDir);
+    const idxPath = path.join(serverDir, 'index.json');
+    const idx = (await readJsonOrNull(idxPath)) || {};
+    const prevPending = (idx.pendingCommands && typeof idx.pendingCommands === 'object' && !Array.isArray(idx.pendingCommands))
+      ? idx.pendingCommands : {};
+    const prevUnmutes = Array.isArray(prevPending.unmute) ? prevPending.unmute : [];
+    await writeJsonAtomic(idxPath, {
+      ...idx,
+      pendingCommands: { ...prevPending, unmute: [...prevUnmutes, { playerUID: uid }] },
+    });
+  });
+  res.json({ ok: true });
+}));
+
+app.post('/api/admin/kick', requireAuth, requireTool('admin'), asyncRoute(async (req, res) => {
+  const body = (req.body && typeof req.body === 'object') ? req.body : {};
+  const { serverId, playerUID, reason } = body;
+  if (typeof serverId !== 'string' || !serverId) { res.status(400).send('Missing serverId'); return; }
+  if (typeof playerUID !== 'string' || !playerUID) { res.status(400).send('Missing playerUID'); return; }
+
+  const safeId = sanitizeServerId(serverId);
+  await withIngestLock(safeId, async () => {
+    const serverDir = path.join(DATA_DIR, 'servers', safeId);
+    await ensureDir(serverDir);
+    const idxPath = path.join(serverDir, 'index.json');
+    const idx = (await readJsonOrNull(idxPath)) || {};
+    const prevPending = (idx.pendingCommands && typeof idx.pendingCommands === 'object' && !Array.isArray(idx.pendingCommands))
+      ? idx.pendingCommands : {};
+    const prevKicks = Array.isArray(prevPending.kick) ? prevPending.kick : [];
+    await writeJsonAtomic(idxPath, {
+      ...idx,
+      pendingCommands: {
+        ...prevPending,
+        kick: [...prevKicks, { playerUID: String(playerUID), reason: String(reason || 'Kicked by web admin') }],
+      },
+    });
+  });
+  res.json({ ok: true });
+}));
+
+app.post('/api/admin/globalMessage', requireAuth, requireTool('admin'), asyncRoute(async (req, res) => {
+  const body = (req.body && typeof req.body === 'object') ? req.body : {};
+  const { serverId, message } = body;
+  if (typeof serverId !== 'string' || !serverId) { res.status(400).send('Missing serverId'); return; }
+  if (typeof message !== 'string' || !message.trim()) { res.status(400).send('Missing message'); return; }
+
+  const safeId = sanitizeServerId(serverId);
+  await withIngestLock(safeId, async () => {
+    const serverDir = path.join(DATA_DIR, 'servers', safeId);
+    await ensureDir(serverDir);
+    const idxPath = path.join(serverDir, 'index.json');
+    const idx = (await readJsonOrNull(idxPath)) || {};
+    const prevPending = (idx.pendingCommands && typeof idx.pendingCommands === 'object' && !Array.isArray(idx.pendingCommands))
+      ? idx.pendingCommands : {};
+    const prevMsgs = Array.isArray(prevPending.globalMessage) ? prevPending.globalMessage : [];
+    await writeJsonAtomic(idxPath, {
+      ...idx,
+      pendingCommands: {
+        ...prevPending,
+        globalMessage: [...prevMsgs, { message: String(message).trim().slice(0, 500) }],
+      },
+    });
+  });
+  res.json({ ok: true });
+}));
+
+app.get('/api/admin/events', requireAuth, requireTool('admin'), asyncRoute(async (req, res) => {
+  const serverId = String(req.query.serverId || '');
+  if (!serverId) { res.status(400).send('Missing serverId'); return; }
+
+  const safeId = sanitizeServerId(serverId);
+  const types = typeof req.query.types === 'string' ? req.query.types.split(',').map((t) => t.trim()).filter(Boolean) : null;
+  const limit = Math.min(Math.max(parseInt(req.query.limit || '200', 10) || 200, 1), 1000);
+
+  // Try in-memory cache first, fall back to disk.
+  const cached = tryReadReplayEventsFromCache(safeId, { tail: true, limit: limit * 2 });
+  let records = cached || [];
+
+  if (!cached) {
+    const serverDir = path.join(DATA_DIR, 'servers', safeId);
+    const eventsPath = path.join(serverDir, 'events.ndjson');
+    try {
+      const text = await fs.readFile(eventsPath, 'utf8');
+      const lines = text.trim().split('\n').filter(Boolean);
+      records = lines.slice(-limit * 2).map((line) => {
+        try { return JSON.parse(line); } catch { return null; }
+      }).filter(Boolean);
+    } catch { /* no events file yet */ }
+  }
+
+  const eventTypes = new Set(['kill', 'death', 'aiKill', 'join', 'disconnect']);
+  let filtered = records.filter((r) => {
+    const t = r.payload && typeof r.payload.type === 'string' ? r.payload.type : '';
+    if (!eventTypes.has(t)) return false;
+    if (types && types.length > 0 && !types.includes(t)) return false;
+    return true;
+  });
+
+  filtered = filtered.slice(-limit);
+
+  const result = filtered.map((r) => ({
+    type: r.payload.type,
+    tsMs: typeof r.payload.tsMs === 'number' ? r.payload.tsMs : 0,
+    receivedAt: r.receivedAt,
+    event: r.payload.event || {},
+  }));
+
+  res.json(result);
+}));
+
+app.get('/api/admin/player/:uid', requireAuth, requireTool('admin'), asyncRoute(async (req, res) => {
+  const serverId = String(req.query.serverId || '');
+  const uid = String(req.params.uid || '');
+  if (!serverId || !uid) { res.status(400).send('Missing serverId or uid'); return; }
+
+  const safeId = sanitizeServerId(serverId);
+  const serverDir = path.join(DATA_DIR, 'servers', safeId);
+
+  // Get player name from latest snapshot
+  let playerName = uid;
+  let lastSeen = null;
+  const snapPath = path.join(serverDir, 'latestSnapshot.json');
+  const snap = await readJsonOrNull(snapPath);
+  if (snap && Array.isArray(snap.players)) {
+    const found = snap.players.find((p) => p.identityId === uid);
+    if (found) {
+      playerName = found.name || uid;
+      lastSeen = snap.tsMs || null;
+    }
+  }
+
+  // Count kills and deaths from event log
+  let totalKills = 0;
+  let totalDeaths = 0;
+  const eventsPath = path.join(serverDir, 'events.ndjson');
+  try {
+    const text = await fs.readFile(eventsPath, 'utf8');
+    const lines = text.trim().split('\n').filter(Boolean);
+    for (const line of lines) {
+      try {
+        const r = JSON.parse(line);
+        const p = r.payload;
+        if (!p || typeof p.type !== 'string') continue;
+        const ev = p.event;
+        if (!ev) continue;
+        if (p.type === 'kill') {
+          if (ev.killerIdentityId === uid) totalKills++;
+          if (ev.victimIdentityId === uid) totalDeaths++;
+        } else if (p.type === 'death') {
+          if (ev.victimIdentityId === uid) totalDeaths++;
+        }
+      } catch { /* skip bad line */ }
+    }
+  } catch { /* no events file */ }
+
+  // Get bans and mutes
+  const bansData = await readJsonOrNull(path.join(serverDir, 'latestBans.json'));
+  const mutesData = await readJsonOrNull(path.join(serverDir, 'latestMutes.json'));
+  const bans = (bansData && Array.isArray(bansData.bans))
+    ? bansData.bans.filter((b) => b.playerUID === uid)
+    : [];
+  const mutes = (mutesData && Array.isArray(mutesData.mutes))
+    ? mutesData.mutes.filter((m) => m.playerUID === uid)
+    : [];
+
+  res.json({ playerUID: uid, playerName, lastSeen, totalKills, totalDeaths, bans, mutes });
+}));
+
+// ─── End Admin Bridge ───────────────────────────────────────────────────────
+
 app.post('/api/replay/ingest', async (req, res) => {
   try {
     const payload = req.body;
@@ -2746,6 +3065,33 @@ app.post('/api/replay/ingest', async (req, res) => {
             });
           }
         }
+      }
+
+      // Admin bridge: persist latest health/ban/mute data.
+      if (normalizedPayload && normalizedPayload.type === 'serverHealth') {
+        const ev = normalizedPayload.event && typeof normalizedPayload.event === 'object' ? normalizedPayload.event : {};
+        await writeJsonAtomic(path.join(serverDir, 'latestHealth.json'), {
+          serverId: safeId,
+          fps: typeof ev.fps === 'number' ? ev.fps : 0,
+          playerCount: typeof ev.playerCount === 'number' ? ev.playerCount : 0,
+          tsMs: receivedAt,
+        });
+      }
+
+      if (normalizedPayload && normalizedPayload.type === 'banSync') {
+        const ev = normalizedPayload.event && typeof normalizedPayload.event === 'object' ? normalizedPayload.event : {};
+        await writeJsonAtomic(path.join(serverDir, 'latestBans.json'), {
+          bans: Array.isArray(ev.bans) ? ev.bans : [],
+          updatedAt: receivedAt,
+        });
+      }
+
+      if (normalizedPayload && normalizedPayload.type === 'muteSync') {
+        const ev = normalizedPayload.event && typeof normalizedPayload.event === 'object' ? normalizedPayload.event : {};
+        await writeJsonAtomic(path.join(serverDir, 'latestMutes.json'), {
+          mutes: Array.isArray(ev.mutes) ? ev.mutes : [],
+          updatedAt: receivedAt,
+        });
       }
 
       // Enforce 24h rolling buffer.

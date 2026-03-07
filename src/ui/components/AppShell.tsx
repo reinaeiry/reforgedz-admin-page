@@ -36,6 +36,16 @@ export function AppShell() {
           <div className="stack" style={{ gap: 8 }}>
             <NavItem to="/" label="Home" />
             {hasToolAccess('replay') ? <NavItem to="/replay" label="Replay Tool" /> : null}
+            {hasToolAccess('admin') ? (
+              <>
+                <NavItem to="/players" label="Live Players" />
+                <NavItem to="/bans" label="Bans" />
+                <NavItem to="/mutes" label="Mutes" />
+                <NavItem to="/events" label="Event Log" />
+                <NavItem to="/health" label="Server Health" />
+                <NavItem to="/player" label="Player Lookup" />
+              </>
+            ) : null}
             {hasToolAccess('admin') ? <NavItem to="/admin" label="Admin" /> : null}
             {hasToolAccess('dev') ? <NavItem to="/dev" label="Dev" /> : null}
           </div>
