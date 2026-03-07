@@ -238,8 +238,37 @@ code {
 }
 
 .main {
+  flex: 1;
   overflow-y: auto;
   max-height: 100vh;
+}
+
+.tabBar {
+  display: flex;
+  gap: 2px;
+  border-bottom: 1px solid rgba(255,255,255,0.08);
+  margin-bottom: 16px;
+}
+
+.tab {
+  padding: 8px 16px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--rz-muted);
+  cursor: pointer;
+  border: none;
+  background: none;
+  border-bottom: 2px solid transparent;
+  transition: color 120ms ease, border-color 120ms ease;
+}
+
+.tab:hover {
+  color: var(--rz-text);
+}
+
+.tabActive {
+  color: var(--rz-accent);
+  border-bottom-color: var(--rz-accent);
 }
 
 .appShell {

@@ -32,7 +32,10 @@ export function AppShell() {
     nav('/login', { replace: true });
   }
 
-  const showAdmin = hasToolAccess('players') || hasToolAccess('bans') || hasToolAccess('mutes') || hasToolAccess('events') || hasToolAccess('health') || hasToolAccess('playerLookup');
+  const showPlayers = hasToolAccess('players') || hasToolAccess('playerLookup');
+  const showModeration = hasToolAccess('bans') || hasToolAccess('mutes');
+  const showServer = hasToolAccess('events') || hasToolAccess('health');
+  const showAdmin = showPlayers || showModeration || showServer;
 
   return (
     <div className="appShell">
@@ -53,12 +56,9 @@ export function AppShell() {
 
           {showAdmin ? (
             <SidebarSection label="Admin">
-              {hasToolAccess('players') ? <NavItem to="/players" label="Live Players" /> : null}
-              {hasToolAccess('bans') ? <NavItem to="/bans" label="Bans" /> : null}
-              {hasToolAccess('mutes') ? <NavItem to="/mutes" label="Mutes" /> : null}
-              {hasToolAccess('events') ? <NavItem to="/events" label="Event Log" /> : null}
-              {hasToolAccess('health') ? <NavItem to="/health" label="Server Health" /> : null}
-              {hasToolAccess('playerLookup') ? <NavItem to="/player" label="Player Lookup" /> : null}
+              {showPlayers ? <NavItem to="/players" label="Players" /> : null}
+              {showModeration ? <NavItem to="/moderation" label="Moderation" /> : null}
+              {showServer ? <NavItem to="/server" label="Server" /> : null}
             </SidebarSection>
           ) : null}
 

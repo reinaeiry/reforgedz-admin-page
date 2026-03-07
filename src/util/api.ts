@@ -669,6 +669,7 @@ export async function kickPlayer(params: {
 
 export async function sendGlobalMessage(params: {
   serverId: string;
+  title?: string;
   message: string;
 }): Promise<{ ok: true }> {
   const base = requireApiBaseUrl();

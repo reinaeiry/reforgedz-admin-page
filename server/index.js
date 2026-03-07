@@ -2656,9 +2656,11 @@ app.post('/api/admin/kick', requireAuth, requireTool('players'), asyncRoute(asyn
 
 app.post('/api/admin/globalMessage', requireAuth, requireTool('health'), asyncRoute(async (req, res) => {
   const body = (req.body && typeof req.body === 'object') ? req.body : {};
-  const { serverId, message } = body;
+  const { serverId, title, message } = body;
   if (typeof serverId !== 'string' || !serverId) { res.status(400).send('Missing serverId'); return; }
-  if (typeof message !== 'string' || !message.trim()) { res.status(400).send('Missing message'); return; }
+  const titleStr = typeof title === 'string' ? title.trim().slice(0, 200) : '';
+  const msgStr = typeof message === 'string' ? message.trim().slice(0, 500) : '';
+  if (!titleStr && !msgStr) { res.status(400).send('Missing title or message'); return; }
 
   const safeId = sanitizeServerId(serverId);
   await withIngestLock(safeId, async () => {
@@ -2673,7 +2675,7 @@ app.post('/api/admin/globalMessage', requireAuth, requireTool('health'), asyncRo
       ...idx,
       pendingCommands: {
         ...prevPending,
-        globalMessage: [...prevMsgs, { message: String(message).trim().slice(0, 500) }],
+        globalMessage: [...prevMsgs, { title: titleStr, message: msgStr }],
       },
     });
   });
