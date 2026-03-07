@@ -24,13 +24,15 @@ function formatEventSummary(entry: EventLogEntry): string {
     case 'death': {
       const victim = (e.victimName as string) ?? '?';
       const killer = (e.killerName as string) ?? '';
-      if (killer) return `${victim} killed by ${killer}`;
+      const weapon = (e.weaponName as string) ?? '';
+      if (killer) return `${victim} killed by ${killer}${weapon ? ` with ${weapon}` : ''}`;
       return `${victim} died`;
     }
     case 'aiKill': {
       const killer = (e.killerName as string) ?? '?';
       const ai = (e.victimName as string) ?? 'AI';
-      return `${killer} killed ${ai} (AI)`;
+      const weapon = (e.weaponName as string) ?? '';
+      return `${killer} killed ${ai} (AI)${weapon ? ` with ${weapon}` : ''}`;
     }
     case 'join': {
       const name = (e.name as string) ?? '?';
@@ -52,8 +54,8 @@ function typeColor(type: string): string {
     case 'death': return '#ffd4b4';
     case 'aiKill': return '#d4b4ff';
     case 'join': return '#b7f7c8';
-    case 'disconnect': return 'rgba(230,237,243,0.6)';
-    default: return 'rgba(230,237,243,0.75)';
+    case 'disconnect': return 'rgba(230,237,243,0.5)';
+    default: return 'rgba(230,237,243,0.6)';
   }
 }
 
@@ -79,12 +81,7 @@ export function EventLogPage() {
     setBusy(true);
     setError(null);
     try {
-      const data = await getEventLog({
-        serverId,
-        types: typeFilter || undefined,
-        limit: 200,
-      });
-      setEvents(data);
+      setEvents(await getEventLog({ serverId, types: typeFilter || undefined, limit: 200 }));
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to load events');
     } finally {
@@ -103,25 +100,20 @@ export function EventLogPage() {
   const filtered = useMemo(() => {
     if (!search.trim()) return events;
     const q = search.toLowerCase();
-    return events.filter((e) => {
-      const summary = formatEventSummary(e).toLowerCase();
-      return summary.includes(q);
-    });
+    return events.filter((e) => formatEventSummary(e).toLowerCase().includes(q));
   }, [events, search]);
 
   return (
     <div className="container">
       <div className="stack">
-        <div className="row" style={{ justifyContent: 'space-between' }}>
+        <div className="pageHeader">
           <h1 className="h1">Event Log</h1>
           <div className="row" style={{ gap: 8 }}>
             <label className="row" style={{ gap: 6 }}>
               <input type="checkbox" checked={autoRefresh} onChange={(e) => setAutoRefresh(e.target.checked)} />
               <span className="muted" style={{ fontSize: 12 }}>Auto-refresh</span>
             </label>
-            <button className="button" onClick={refresh} disabled={busy || !serverId}>
-              Refresh
-            </button>
+            <button className="button" onClick={refresh} disabled={busy || !serverId}>Refresh</button>
           </div>
         </div>
 
@@ -131,17 +123,13 @@ export function EventLogPage() {
               <div className="label">Server</div>
               <select className="input" value={serverId} onChange={(e) => setServerId(e.target.value)}>
                 <option value="">Select server...</option>
-                {servers.map((s) => (
-                  <option key={s.id} value={s.id}>{s.name}</option>
-                ))}
+                {servers.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
               </select>
             </div>
             <div style={{ flex: 1 }}>
               <div className="label">Type</div>
               <select className="input" value={typeFilter} onChange={(e) => setTypeFilter(e.target.value)}>
-                {EVENT_TYPES.map((t) => (
-                  <option key={t.value} value={t.value}>{t.label}</option>
-                ))}
+                {EVENT_TYPES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
               </select>
             </div>
             <div style={{ flex: 1 }}>
@@ -158,41 +146,30 @@ export function EventLogPage() {
             {filtered.length} event{filtered.length !== 1 ? 's' : ''}
           </div>
 
-          <div className="scroll" style={{ maxHeight: 600, overflow: 'auto', border: '1px solid rgba(255,255,255,0.10)', borderRadius: 10 }}>
-            {filtered.length === 0 ? (
-              <div className="muted" style={{ padding: 10, fontSize: 12 }}>
-                {serverId ? 'No events found.' : 'Select a server.'}
-              </div>
-            ) : (
-              filtered.map((e, i) => (
-                <div key={`${e.tsMs}-${i}`} style={{ padding: '8px 10px', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
-                  <div className="row" style={{ justifyContent: 'space-between' }}>
-                    <div>
-                      <span
-                        style={{
-                          display: 'inline-block',
-                          padding: '2px 8px',
-                          borderRadius: 6,
-                          fontSize: 11,
-                          fontWeight: 800,
-                          background: 'rgba(0,0,0,0.3)',
-                          color: typeColor(e.type),
-                          marginRight: 8,
-                          minWidth: 60,
-                          textAlign: 'center',
-                        }}
-                      >
-                        {e.type}
-                      </span>
-                      <span style={{ fontSize: 13 }}>{formatEventSummary(e)}</span>
-                    </div>
-                    <div className="muted" style={{ fontSize: 11, whiteSpace: 'nowrap' }}>
-                      {new Date(e.receivedAt).toLocaleTimeString()}
+          <div className="listContainer">
+            <div className="scroll" style={{ maxHeight: 600, overflow: 'auto' }}>
+              {filtered.length === 0 ? (
+                <div className="muted" style={{ padding: 20, fontSize: 12, textAlign: 'center' }}>
+                  {serverId ? 'No events found.' : 'Select a server.'}
+                </div>
+              ) : (
+                filtered.map((e, i) => (
+                  <div key={`${e.tsMs}-${i}`} className="listRow">
+                    <div className="row" style={{ justifyContent: 'space-between' }}>
+                      <div className="row" style={{ gap: 8 }}>
+                        <span className="tag" style={{ color: typeColor(e.type), minWidth: 60, textAlign: 'center' }}>
+                          {e.type}
+                        </span>
+                        <span style={{ fontSize: 13 }}>{formatEventSummary(e)}</span>
+                      </div>
+                      <div className="muted" style={{ fontSize: 11, whiteSpace: 'nowrap' }}>
+                        {new Date(e.receivedAt).toLocaleTimeString()}
+                      </div>
                     </div>
                   </div>
-                </div>
-              ))
-            )}
+                ))
+              )}
+            </div>
           </div>
         </div>
       </div>

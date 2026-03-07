@@ -67,10 +67,7 @@ export function BansPage() {
     if (!search.trim()) return bans;
     const q = search.toLowerCase();
     return bans.filter(
-      (b) =>
-        b.playerName.toLowerCase().includes(q) ||
-        b.playerUID.toLowerCase().includes(q) ||
-        b.reason.toLowerCase().includes(q)
+      (b) => b.playerName.toLowerCase().includes(q) || b.playerUID.toLowerCase().includes(q) || b.reason.toLowerCase().includes(q)
     );
   }, [bans, search]);
 
@@ -81,17 +78,11 @@ export function BansPage() {
     try {
       const claims = getSessionClaims();
       await addBan({
-        serverId,
-        playerUID: banUID.trim(),
-        playerName: banName.trim(),
-        reason: banReason.trim() || 'No reason',
-        duration: banDuration,
+        serverId, playerUID: banUID.trim(), playerName: banName.trim(),
+        reason: banReason.trim() || 'No reason', duration: banDuration,
         bannedBy: claims?.sub ?? 'WebAdmin',
       });
-      setBanUID('');
-      setBanName('');
-      setBanReason('');
-      setBanDuration(0);
+      setBanUID(''); setBanName(''); setBanReason(''); setBanDuration(0);
       await refresh();
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to ban player');
@@ -125,9 +116,7 @@ export function BansPage() {
               <div className="label">Server</div>
               <select className="input" value={serverId} onChange={(e) => setServerId(e.target.value)}>
                 <option value="">Select server...</option>
-                {servers.map((s) => (
-                  <option key={s.id} value={s.id}>{s.name}</option>
-                ))}
+                {servers.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
               </select>
             </div>
             <div style={{ flex: 1 }}>
@@ -142,7 +131,7 @@ export function BansPage() {
         <div className="card">
           <div className="stack">
             <div className="label">Add ban</div>
-            <div className="row">
+            <div className="row" style={{ gap: 12 }}>
               <div style={{ flex: 1 }}>
                 <div className="label">Player UID</div>
                 <input className="input" value={banUID} onChange={(e) => setBanUID(e.target.value)} placeholder="BI Identity ID" />
@@ -152,7 +141,7 @@ export function BansPage() {
                 <input className="input" value={banName} onChange={(e) => setBanName(e.target.value)} placeholder="Name" />
               </div>
             </div>
-            <div className="row">
+            <div className="row" style={{ gap: 12 }}>
               <div style={{ flex: 2 }}>
                 <div className="label">Reason</div>
                 <input className="input" value={banReason} onChange={(e) => setBanReason(e.target.value)} placeholder="Ban reason" />
@@ -160,59 +149,47 @@ export function BansPage() {
               <div style={{ flex: 1 }}>
                 <div className="label">Duration</div>
                 <select className="input" value={banDuration} onChange={(e) => setBanDuration(Number(e.target.value))}>
-                  {DURATION_OPTIONS.map((o) => (
-                    <option key={o.value} value={o.value}>{o.label}</option>
-                  ))}
+                  {DURATION_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
                 </select>
               </div>
             </div>
             <div className="row" style={{ justifyContent: 'flex-end' }}>
-              <button className="button buttonPrimary" disabled={busy || !serverId || !banUID.trim()} onClick={onBan}>
-                Ban player
-              </button>
+              <button className="button buttonPrimary" disabled={busy || !serverId || !banUID.trim()} onClick={onBan}>Ban player</button>
             </div>
           </div>
         </div>
 
         <div className="card">
-          <div className="row" style={{ justifyContent: 'space-between', marginBottom: 8 }}>
+          <div className="pageHeader" style={{ marginBottom: 8 }}>
             <div className="label">{filtered.length} ban{filtered.length !== 1 ? 's' : ''}</div>
             <button className="button" onClick={refresh} disabled={busy || !serverId}>Refresh</button>
           </div>
 
-          <div className="scroll" style={{ maxHeight: 520, overflow: 'auto', border: '1px solid rgba(255,255,255,0.10)', borderRadius: 10 }}>
-            {filtered.length === 0 ? (
-              <div className="muted" style={{ padding: 10, fontSize: 12 }}>
-                {serverId ? 'No bans found.' : 'Select a server.'}
-              </div>
-            ) : (
-              filtered.map((b) => (
-                <div key={b.playerUID} style={{ padding: 10, borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
-                  <div className="row" style={{ justifyContent: 'space-between' }}>
-                    <div>
-                      <div style={{ fontWeight: 800 }}>{b.playerName || b.playerUID}</div>
-                      <div className="muted" style={{ fontSize: 12 }}>
-                        UID: {b.playerUID}
-                      </div>
-                      <div className="muted" style={{ fontSize: 12 }}>
-                        Reason: {b.reason} | By: {b.bannedBy} | {formatExpiry(b)}
-                      </div>
-                      <div className="muted" style={{ fontSize: 11 }}>
-                        Banned: {new Date(b.timestamp * 1000).toLocaleString()}
-                      </div>
-                    </div>
-                    <button
-                      className="button"
-                      style={{ borderColor: 'rgba(183,247,200,0.35)' }}
-                      disabled={busy}
-                      onClick={() => onUnban(b.playerUID, b.playerName)}
-                    >
-                      Unban
-                    </button>
-                  </div>
+          <div className="listContainer">
+            <div className="scroll" style={{ maxHeight: 520, overflow: 'auto' }}>
+              {filtered.length === 0 ? (
+                <div className="muted" style={{ padding: 20, fontSize: 12, textAlign: 'center' }}>
+                  {serverId ? 'No bans found.' : 'Select a server.'}
                 </div>
-              ))
-            )}
+              ) : (
+                filtered.map((b) => (
+                  <div key={b.playerUID} className="listRow">
+                    <div className="row" style={{ justifyContent: 'space-between' }}>
+                      <div>
+                        <div style={{ fontWeight: 700 }}>{b.playerName || b.playerUID}</div>
+                        <div className="muted" style={{ fontSize: 11 }}>UID: {b.playerUID}</div>
+                        <div className="muted" style={{ fontSize: 11 }}>
+                          {b.reason} &middot; By: {b.bannedBy} &middot; {formatExpiry(b)}
+                        </div>
+                        <div className="muted" style={{ fontSize: 10 }}>{new Date(b.timestamp * 1000).toLocaleString()}</div>
+                      </div>
+                      <button className="button" style={{ fontSize: 11, padding: '4px 10px', borderColor: 'rgba(183,247,200,0.35)' }}
+                        disabled={busy} onClick={() => onUnban(b.playerUID, b.playerName)}>Unban</button>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
           </div>
         </div>
       </div>

@@ -177,10 +177,69 @@ code {
 
 .error {
   color: #ffb4b4;
+  font-size: 13px;
+  padding: 10px 14px;
+  border-radius: 8px;
+  background: rgba(255,180,180,0.06);
+  border: 1px solid rgba(255,180,180,0.15);
 }
 
 .success {
   color: #b7f7c8;
+}
+
+.statCard {
+  text-align: center;
+  padding: 20px 16px;
+}
+
+.statValue {
+  font-size: 28px;
+  font-weight: 900;
+  line-height: 1.2;
+}
+
+.statsGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 12px;
+}
+
+.listContainer {
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.listRow {
+  padding: 10px 12px;
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+}
+
+.listRow:last-child {
+  border-bottom: none;
+}
+
+.tag {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  background: rgba(0,0,0,0.3);
+}
+
+.pageHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.main {
+  overflow-y: auto;
+  max-height: 100vh;
 }
 
 .appShell {
@@ -200,30 +259,37 @@ code {
   gap: 12px;
 }
 
+.sidebarSection {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: rgba(230, 237, 243, 0.4);
+  padding: 10px 4px 4px;
+}
+
 .navItem {
   display: block;
-  padding: 10px 12px;
+  padding: 8px 12px;
   border-radius: 8px;
   text-decoration: none;
-  border: 1px solid rgba(255, 255, 255, 0.10);
-  background: rgba(255, 255, 255, 0.04);
+  font-size: 13px;
+  border: 1px solid transparent;
+  background: transparent;
   color: var(--rz-text);
+  transition: background 120ms ease, border-color 120ms ease;
 }
 
 .navItem:hover {
-  border-color: rgba(249, 188, 89, 0.32);
-  background: rgba(249, 188, 89, 0.12);
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(255, 255, 255, 0.08);
 }
 
 .navItemActive {
-  border-color: rgba(249, 188, 89, 0.55);
-  background: var(--rz-accent);
-  color: var(--rz-accent-text);
-  font-weight: 800;
-}
-
-.main {
-  flex: 1;
+  border-color: rgba(249, 188, 89, 0.35);
+  background: rgba(249, 188, 89, 0.12);
+  color: var(--rz-accent);
+  font-weight: 700;
 }
 
 /* Scroll areas (use class="scroll") */

@@ -992,10 +992,18 @@ function verifyPassword(password, record) {
 
 function normalizeTools(tools) {
   const t = tools && typeof tools === 'object' ? tools : {};
+  const admin = !!t.admin;
   return {
     replay: !!t.replay,
-    admin: !!t.admin,
+    admin,
     dev: !!t.dev,
+    // Granular admin sub-tools — default to `admin` flag for backward compatibility
+    players: t.players !== undefined ? !!t.players : admin,
+    bans: t.bans !== undefined ? !!t.bans : admin,
+    mutes: t.mutes !== undefined ? !!t.mutes : admin,
+    events: t.events !== undefined ? !!t.events : admin,
+    health: t.health !== undefined ? !!t.health : admin,
+    playerLookup: t.playerLookup !== undefined ? !!t.playerLookup : admin,
   };
 }
 
@@ -1682,7 +1690,7 @@ app.post('/api/auth/login', (req, res) => {
     const token = signToken({
       sub: uname,
       exp: Date.now() + 24 * 60 * 60 * 1000,
-      tools: { replay: true, admin: true, dev: true },
+      tools: { replay: true, admin: true, dev: true, players: true, bans: true, mutes: true, events: true, health: true, playerLookup: true },
       bootstrap: true,
     });
 
@@ -2451,7 +2459,7 @@ app.post('/api/dev/servers/regenerateTerrain', requireAuth, requireTool('dev'), 
 
 // ─── Admin Bridge Endpoints ─────────────────────────────────────────────────
 
-app.get('/api/admin/health', requireAuth, requireTool('admin'), asyncRoute(async (req, res) => {
+app.get('/api/admin/health', requireAuth, requireTool('health'), asyncRoute(async (req, res) => {
   const serverId = String(req.query.serverId || '');
   if (!serverId) { res.status(400).send('Missing serverId'); return; }
 
@@ -2463,12 +2471,20 @@ app.get('/api/admin/health', requireAuth, requireTool('admin'), asyncRoute(async
   res.json(data);
 }));
 
-app.get('/api/admin/players', requireAuth, requireTool('admin'), asyncRoute(async (req, res) => {
+app.get('/api/admin/players', requireAuth, requireTool('players'), asyncRoute(async (req, res) => {
   const serverId = String(req.query.serverId || '');
   if (!serverId) { res.status(400).send('Missing serverId'); return; }
 
   const safeId = sanitizeServerId(serverId);
   const serverDir = path.join(DATA_DIR, 'servers', safeId);
+
+  // Check if the server has reported recently — if snapshot is stale (>60s), return empty
+  const idxPath = path.join(serverDir, 'index.json');
+  const idx = await readJsonOrNull(idxPath);
+  const lastReceived = idx && typeof idx.lastReceivedAt === 'number' ? idx.lastReceivedAt : 0;
+  const staleCutoff = Date.now() - 60000; // 60 seconds
+  if (lastReceived < staleCutoff) { res.json([]); return; }
+
   const snapPath = path.join(serverDir, 'latestSnapshot.json');
   const snap = await readJsonOrNull(snapPath);
   if (!snap || !Array.isArray(snap.players)) { res.json([]); return; }
@@ -2485,7 +2501,7 @@ app.get('/api/admin/players', requireAuth, requireTool('admin'), asyncRoute(asyn
   res.json(players);
 }));
 
-app.get('/api/admin/bans', requireAuth, requireTool('admin'), asyncRoute(async (req, res) => {
+app.get('/api/admin/bans', requireAuth, requireTool('bans'), asyncRoute(async (req, res) => {
   const serverId = String(req.query.serverId || '');
   if (!serverId) { res.status(400).send('Missing serverId'); return; }
 
@@ -2497,7 +2513,7 @@ app.get('/api/admin/bans', requireAuth, requireTool('admin'), asyncRoute(async (
   res.json(data.bans);
 }));
 
-app.post('/api/admin/bans', requireAuth, requireTool('admin'), asyncRoute(async (req, res) => {
+app.post('/api/admin/bans', requireAuth, requireTool('bans'), asyncRoute(async (req, res) => {
   const body = (req.body && typeof req.body === 'object') ? req.body : {};
   const { serverId, playerUID, playerName, reason, duration, bannedBy } = body;
   if (typeof serverId !== 'string' || !serverId) { res.status(400).send('Missing serverId'); return; }
@@ -2524,7 +2540,7 @@ app.post('/api/admin/bans', requireAuth, requireTool('admin'), asyncRoute(async 
   res.json({ ok: true });
 }));
 
-app.delete('/api/admin/bans/:uid', requireAuth, requireTool('admin'), asyncRoute(async (req, res) => {
+app.delete('/api/admin/bans/:uid', requireAuth, requireTool('bans'), asyncRoute(async (req, res) => {
   const serverId = String(req.query.serverId || '');
   const uid = String(req.params.uid || '');
   if (!serverId || !uid) { res.status(400).send('Missing serverId or uid'); return; }
@@ -2546,7 +2562,7 @@ app.delete('/api/admin/bans/:uid', requireAuth, requireTool('admin'), asyncRoute
   res.json({ ok: true });
 }));
 
-app.get('/api/admin/mutes', requireAuth, requireTool('admin'), asyncRoute(async (req, res) => {
+app.get('/api/admin/mutes', requireAuth, requireTool('mutes'), asyncRoute(async (req, res) => {
   const serverId = String(req.query.serverId || '');
   if (!serverId) { res.status(400).send('Missing serverId'); return; }
 
@@ -2558,7 +2574,7 @@ app.get('/api/admin/mutes', requireAuth, requireTool('admin'), asyncRoute(async 
   res.json(data.mutes);
 }));
 
-app.post('/api/admin/mutes', requireAuth, requireTool('admin'), asyncRoute(async (req, res) => {
+app.post('/api/admin/mutes', requireAuth, requireTool('mutes'), asyncRoute(async (req, res) => {
   const body = (req.body && typeof req.body === 'object') ? req.body : {};
   const { serverId, playerUID, playerName, reason, duration, mutedBy } = body;
   if (typeof serverId !== 'string' || !serverId) { res.status(400).send('Missing serverId'); return; }
@@ -2590,7 +2606,7 @@ app.post('/api/admin/mutes', requireAuth, requireTool('admin'), asyncRoute(async
   res.json({ ok: true });
 }));
 
-app.delete('/api/admin/mutes/:uid', requireAuth, requireTool('admin'), asyncRoute(async (req, res) => {
+app.delete('/api/admin/mutes/:uid', requireAuth, requireTool('mutes'), asyncRoute(async (req, res) => {
   const serverId = String(req.query.serverId || '');
   const uid = String(req.params.uid || '');
   if (!serverId || !uid) { res.status(400).send('Missing serverId or uid'); return; }
@@ -2612,7 +2628,7 @@ app.delete('/api/admin/mutes/:uid', requireAuth, requireTool('admin'), asyncRout
   res.json({ ok: true });
 }));
 
-app.post('/api/admin/kick', requireAuth, requireTool('admin'), asyncRoute(async (req, res) => {
+app.post('/api/admin/kick', requireAuth, requireTool('players'), asyncRoute(async (req, res) => {
   const body = (req.body && typeof req.body === 'object') ? req.body : {};
   const { serverId, playerUID, reason } = body;
   if (typeof serverId !== 'string' || !serverId) { res.status(400).send('Missing serverId'); return; }
@@ -2638,7 +2654,7 @@ app.post('/api/admin/kick', requireAuth, requireTool('admin'), asyncRoute(async 
   res.json({ ok: true });
 }));
 
-app.post('/api/admin/globalMessage', requireAuth, requireTool('admin'), asyncRoute(async (req, res) => {
+app.post('/api/admin/globalMessage', requireAuth, requireTool('health'), asyncRoute(async (req, res) => {
   const body = (req.body && typeof req.body === 'object') ? req.body : {};
   const { serverId, message } = body;
   if (typeof serverId !== 'string' || !serverId) { res.status(400).send('Missing serverId'); return; }
@@ -2664,13 +2680,14 @@ app.post('/api/admin/globalMessage', requireAuth, requireTool('admin'), asyncRou
   res.json({ ok: true });
 }));
 
-app.get('/api/admin/events', requireAuth, requireTool('admin'), asyncRoute(async (req, res) => {
+app.get('/api/admin/events', requireAuth, requireTool('events'), asyncRoute(async (req, res) => {
   const serverId = String(req.query.serverId || '');
   if (!serverId) { res.status(400).send('Missing serverId'); return; }
 
   const safeId = sanitizeServerId(serverId);
   const types = typeof req.query.types === 'string' ? req.query.types.split(',').map((t) => t.trim()).filter(Boolean) : null;
   const limit = Math.min(Math.max(parseInt(req.query.limit || '200', 10) || 200, 1), 1000);
+  const sinceReceivedAt = req.query.sinceTsMs ? Number(req.query.sinceTsMs) : null;
 
   // Try in-memory cache first, fall back to disk.
   const cached = tryReadReplayEventsFromCache(safeId, { tail: true, limit: limit * 2 });
@@ -2693,6 +2710,11 @@ app.get('/api/admin/events', requireAuth, requireTool('admin'), asyncRoute(async
     const t = r.payload && typeof r.payload.type === 'string' ? r.payload.type : '';
     if (!eventTypes.has(t)) return false;
     if (types && types.length > 0 && !types.includes(t)) return false;
+    // Filter by wall-clock receivedAt if sinceTsMs provided
+    if (sinceReceivedAt !== null && Number.isFinite(sinceReceivedAt)) {
+      const ra = typeof r.receivedAt === 'number' ? r.receivedAt : 0;
+      if (ra < sinceReceivedAt) return false;
+    }
     return true;
   });
 
@@ -2708,7 +2730,7 @@ app.get('/api/admin/events', requireAuth, requireTool('admin'), asyncRoute(async
   res.json(result);
 }));
 
-app.get('/api/admin/player/:uid', requireAuth, requireTool('admin'), asyncRoute(async (req, res) => {
+app.get('/api/admin/player/:uid', requireAuth, requireTool('playerLookup'), asyncRoute(async (req, res) => {
   const serverId = String(req.query.serverId || '');
   const uid = String(req.params.uid || '');
   if (!serverId || !uid) { res.status(400).send('Missing serverId or uid'); return; }

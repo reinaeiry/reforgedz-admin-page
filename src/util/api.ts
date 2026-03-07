@@ -318,6 +318,12 @@ export type ToolAccess = {
   replay: boolean;
   admin: boolean;
   dev: boolean;
+  players: boolean;
+  bans: boolean;
+  mutes: boolean;
+  events: boolean;
+  health: boolean;
+  playerLookup: boolean;
 };
 
 export type AdminUser = {

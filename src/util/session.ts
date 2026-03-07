@@ -9,6 +9,12 @@ export type SessionClaims = {
     replay?: boolean;
     admin?: boolean;
     dev?: boolean;
+    players?: boolean;
+    bans?: boolean;
+    mutes?: boolean;
+    events?: boolean;
+    health?: boolean;
+    playerLookup?: boolean;
   };
 };
 
@@ -64,10 +70,12 @@ export function getSessionClaims(): SessionClaims | null {
   }
 }
 
-export function hasToolAccess(tool: 'replay' | 'admin' | 'dev'): boolean {
+export type ToolName = 'replay' | 'admin' | 'dev' | 'players' | 'bans' | 'mutes' | 'events' | 'health' | 'playerLookup';
+
+export function hasToolAccess(tool: ToolName): boolean {
   const c = getSessionClaims();
   if (!c) return false;
   const tools = c.tools;
   if (!tools || typeof tools !== 'object') return tool === 'replay';
-  return !!(tools as any)[tool];
+  return !!(tools as Record<string, unknown>)[tool];
 }

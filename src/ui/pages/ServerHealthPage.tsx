@@ -74,22 +74,16 @@ export function ServerHealthPage() {
 
   function renderMiniChart(data: number[], maxVal: number, color: string) {
     if (data.length < 2) return null;
-    const w = 300;
-    const h = 50;
+    const w = 280;
+    const h = 48;
     const points = data.map((v, i) => {
       const x = (i / (data.length - 1)) * w;
       const y = h - (Math.min(v, maxVal) / maxVal) * h;
       return `${x},${y}`;
     });
     return (
-      <svg width={w} height={h} style={{ display: 'block' }}>
-        <polyline
-          points={points.join(' ')}
-          fill="none"
-          stroke={color}
-          strokeWidth="2"
-          strokeLinejoin="round"
-        />
+      <svg width={w} height={h} style={{ display: 'block', marginTop: 8 }}>
+        <polyline points={points.join(' ')} fill="none" stroke={color} strokeWidth="2" strokeLinejoin="round" />
       </svg>
     );
   }
@@ -97,16 +91,14 @@ export function ServerHealthPage() {
   return (
     <div className="container">
       <div className="stack">
-        <div className="row" style={{ justifyContent: 'space-between' }}>
+        <div className="pageHeader">
           <h1 className="h1">Server Health</h1>
           <div className="row" style={{ gap: 8 }}>
             <label className="row" style={{ gap: 6 }}>
               <input type="checkbox" checked={autoRefresh} onChange={(e) => setAutoRefresh(e.target.checked)} />
               <span className="muted" style={{ fontSize: 12 }}>Auto-refresh (15s)</span>
             </label>
-            <button className="button" onClick={refresh} disabled={busy || !serverId}>
-              Refresh
-            </button>
+            <button className="button" onClick={refresh} disabled={busy || !serverId}>Refresh</button>
           </div>
         </div>
 
@@ -114,34 +106,23 @@ export function ServerHealthPage() {
           <div className="label">Server</div>
           <select className="input" value={serverId} onChange={(e) => setServerId(e.target.value)}>
             <option value="">Select server...</option>
-            {servers.map((s) => (
-              <option key={s.id} value={s.id}>{s.name}</option>
-            ))}
+            {servers.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
           </select>
         </div>
 
         {error ? <div className="error">{error}</div> : null}
 
         {health ? (
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: 12 }}>
-            <div className="card">
-              <div className="stack" style={{ gap: 8 }}>
-                <div className="label">Server FPS</div>
-                <div style={{ fontSize: 32, fontWeight: 900, color: fpsColor(health.fps) }}>
-                  {health.fps.toFixed(1)}
-                </div>
-                {renderMiniChart(fpsHistory, 60, fpsColor(health.fps))}
-              </div>
+          <div className="statsGrid">
+            <div className="card statCard">
+              <div className="label">Server FPS</div>
+              <div className="statValue" style={{ color: fpsColor(health.fps) }}>{health.fps.toFixed(1)}</div>
+              {renderMiniChart(fpsHistory, 60, fpsColor(health.fps))}
             </div>
-
-            <div className="card">
-              <div className="stack" style={{ gap: 8 }}>
-                <div className="label">Players Online</div>
-                <div style={{ fontSize: 32, fontWeight: 900 }}>
-                  {health.playerCount}
-                </div>
-                {renderMiniChart(playerHistory, Math.max(64, ...playerHistory), 'var(--rz-accent)')}
-              </div>
+            <div className="card statCard">
+              <div className="label">Players Online</div>
+              <div className="statValue">{health.playerCount}</div>
+              {renderMiniChart(playerHistory, Math.max(64, ...playerHistory), 'var(--rz-accent)')}
             </div>
           </div>
         ) : serverId ? (
@@ -152,24 +133,13 @@ export function ServerHealthPage() {
           <div className="stack">
             <div>
               <div className="label">Global Message</div>
-              <div className="muted" style={{ fontSize: 12 }}>
-                Broadcast a message to all players on the server.
-              </div>
+              <div className="muted" style={{ fontSize: 12 }}>Broadcast a message to all players on the server.</div>
             </div>
             <div className="row">
-              <input
-                className="input"
-                style={{ flex: 1 }}
-                value={message}
-                onChange={(e) => setMessage(e.target.value)}
+              <input className="input" style={{ flex: 1 }} value={message} onChange={(e) => setMessage(e.target.value)}
                 placeholder="Server restarting in 5 minutes..."
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') onSendMessage();
-                }}
-              />
-              <button className="button buttonPrimary" disabled={busy || !serverId || !message.trim()} onClick={onSendMessage}>
-                Send
-              </button>
+                onKeyDown={(e) => { if (e.key === 'Enter') onSendMessage(); }} />
+              <button className="button buttonPrimary" disabled={busy || !serverId || !message.trim()} onClick={onSendMessage}>Send</button>
             </div>
             {msgSuccess ? <div className="success" style={{ fontSize: 12 }}>Message sent!</div> : null}
           </div>

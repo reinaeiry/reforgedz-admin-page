@@ -67,10 +67,7 @@ export function MutesPage() {
     if (!search.trim()) return mutes;
     const q = search.toLowerCase();
     return mutes.filter(
-      (m) =>
-        m.playerName.toLowerCase().includes(q) ||
-        m.playerUID.toLowerCase().includes(q) ||
-        m.reason.toLowerCase().includes(q)
+      (m) => m.playerName.toLowerCase().includes(q) || m.playerUID.toLowerCase().includes(q) || m.reason.toLowerCase().includes(q)
     );
   }, [mutes, search]);
 
@@ -81,17 +78,11 @@ export function MutesPage() {
     try {
       const claims = getSessionClaims();
       await addMute({
-        serverId,
-        playerUID: muteUID.trim(),
-        playerName: muteName.trim(),
-        reason: muteReason.trim() || 'No reason',
-        duration: muteDuration,
+        serverId, playerUID: muteUID.trim(), playerName: muteName.trim(),
+        reason: muteReason.trim() || 'No reason', duration: muteDuration,
         mutedBy: claims?.sub ?? 'WebAdmin',
       });
-      setMuteUID('');
-      setMuteName('');
-      setMuteReason('');
-      setMuteDuration(0);
+      setMuteUID(''); setMuteName(''); setMuteReason(''); setMuteDuration(0);
       await refresh();
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to mute player');
@@ -125,9 +116,7 @@ export function MutesPage() {
               <div className="label">Server</div>
               <select className="input" value={serverId} onChange={(e) => setServerId(e.target.value)}>
                 <option value="">Select server...</option>
-                {servers.map((s) => (
-                  <option key={s.id} value={s.id}>{s.name}</option>
-                ))}
+                {servers.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
               </select>
             </div>
             <div style={{ flex: 1 }}>
@@ -142,7 +131,7 @@ export function MutesPage() {
         <div className="card">
           <div className="stack">
             <div className="label">Add mute</div>
-            <div className="row">
+            <div className="row" style={{ gap: 12 }}>
               <div style={{ flex: 1 }}>
                 <div className="label">Player UID</div>
                 <input className="input" value={muteUID} onChange={(e) => setMuteUID(e.target.value)} placeholder="BI Identity ID" />
@@ -152,7 +141,7 @@ export function MutesPage() {
                 <input className="input" value={muteName} onChange={(e) => setMuteName(e.target.value)} placeholder="Name" />
               </div>
             </div>
-            <div className="row">
+            <div className="row" style={{ gap: 12 }}>
               <div style={{ flex: 2 }}>
                 <div className="label">Reason</div>
                 <input className="input" value={muteReason} onChange={(e) => setMuteReason(e.target.value)} placeholder="Mute reason" />
@@ -160,59 +149,47 @@ export function MutesPage() {
               <div style={{ flex: 1 }}>
                 <div className="label">Duration</div>
                 <select className="input" value={muteDuration} onChange={(e) => setMuteDuration(Number(e.target.value))}>
-                  {DURATION_OPTIONS.map((o) => (
-                    <option key={o.value} value={o.value}>{o.label}</option>
-                  ))}
+                  {DURATION_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
                 </select>
               </div>
             </div>
             <div className="row" style={{ justifyContent: 'flex-end' }}>
-              <button className="button buttonPrimary" disabled={busy || !serverId || !muteUID.trim()} onClick={onMute}>
-                Mute player
-              </button>
+              <button className="button buttonPrimary" disabled={busy || !serverId || !muteUID.trim()} onClick={onMute}>Mute player</button>
             </div>
           </div>
         </div>
 
         <div className="card">
-          <div className="row" style={{ justifyContent: 'space-between', marginBottom: 8 }}>
+          <div className="pageHeader" style={{ marginBottom: 8 }}>
             <div className="label">{filtered.length} mute{filtered.length !== 1 ? 's' : ''}</div>
             <button className="button" onClick={refresh} disabled={busy || !serverId}>Refresh</button>
           </div>
 
-          <div className="scroll" style={{ maxHeight: 520, overflow: 'auto', border: '1px solid rgba(255,255,255,0.10)', borderRadius: 10 }}>
-            {filtered.length === 0 ? (
-              <div className="muted" style={{ padding: 10, fontSize: 12 }}>
-                {serverId ? 'No mutes found.' : 'Select a server.'}
-              </div>
-            ) : (
-              filtered.map((m) => (
-                <div key={m.playerUID} style={{ padding: 10, borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
-                  <div className="row" style={{ justifyContent: 'space-between' }}>
-                    <div>
-                      <div style={{ fontWeight: 800 }}>{m.playerName || m.playerUID}</div>
-                      <div className="muted" style={{ fontSize: 12 }}>
-                        UID: {m.playerUID}
-                      </div>
-                      <div className="muted" style={{ fontSize: 12 }}>
-                        Reason: {m.reason} | By: {m.mutedBy} | {formatExpiry(m)}
-                      </div>
-                      <div className="muted" style={{ fontSize: 11 }}>
-                        Muted: {new Date(m.timestamp * 1000).toLocaleString()}
-                      </div>
-                    </div>
-                    <button
-                      className="button"
-                      style={{ borderColor: 'rgba(183,247,200,0.35)' }}
-                      disabled={busy}
-                      onClick={() => onUnmute(m.playerUID, m.playerName)}
-                    >
-                      Unmute
-                    </button>
-                  </div>
+          <div className="listContainer">
+            <div className="scroll" style={{ maxHeight: 520, overflow: 'auto' }}>
+              {filtered.length === 0 ? (
+                <div className="muted" style={{ padding: 20, fontSize: 12, textAlign: 'center' }}>
+                  {serverId ? 'No mutes found.' : 'Select a server.'}
                 </div>
-              ))
-            )}
+              ) : (
+                filtered.map((m) => (
+                  <div key={m.playerUID} className="listRow">
+                    <div className="row" style={{ justifyContent: 'space-between' }}>
+                      <div>
+                        <div style={{ fontWeight: 700 }}>{m.playerName || m.playerUID}</div>
+                        <div className="muted" style={{ fontSize: 11 }}>UID: {m.playerUID}</div>
+                        <div className="muted" style={{ fontSize: 11 }}>
+                          {m.reason} &middot; By: {m.mutedBy} &middot; {formatExpiry(m)}
+                        </div>
+                        <div className="muted" style={{ fontSize: 10 }}>{new Date(m.timestamp * 1000).toLocaleString()}</div>
+                      </div>
+                      <button className="button" style={{ fontSize: 11, padding: '4px 10px', borderColor: 'rgba(183,247,200,0.35)' }}
+                        disabled={busy} onClick={() => onUnmute(m.playerUID, m.playerName)}>Unmute</button>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
           </div>
         </div>
       </div>
