@@ -1,6 +1,7 @@
 import React from 'react';
 import { NavLink, Outlet, useNavigate } from 'react-router-dom';
 import { clearSession, hasToolAccess } from '../../util/session';
+import { ServerProvider, useServer } from '../ServerContext';
 
 function NavItem(props: { to: string; label: string }) {
   return (
@@ -24,7 +25,20 @@ function SidebarSection(props: { label: string; children: React.ReactNode }) {
   );
 }
 
-export function AppShell() {
+function ServerSelector() {
+  const { servers, serverId, setServerId } = useServer();
+  return (
+    <div style={{ padding: '0 4px' }}>
+      <div className="label">Server</div>
+      <select className="input" style={{ fontSize: 12, padding: '6px 8px' }} value={serverId} onChange={(e) => setServerId(e.target.value)}>
+        <option value="">Select server...</option>
+        {servers.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+      </select>
+    </div>
+  );
+}
+
+function AppShellInner() {
   const nav = useNavigate();
 
   function onLogout() {
@@ -45,6 +59,8 @@ export function AppShell() {
             <div className="label">ReforgedZ</div>
             <div className="h2">Admin Panel</div>
           </div>
+
+          <ServerSelector />
 
           <NavItem to="/" label="Home" />
 
@@ -81,5 +97,13 @@ export function AppShell() {
         <Outlet />
       </main>
     </div>
+  );
+}
+
+export function AppShell() {
+  return (
+    <ServerProvider>
+      <AppShellInner />
+    </ServerProvider>
   );
 }

@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
-import { getEventLog, getServerHealth, listServers, sendGlobalMessage, type EventLogEntry, type ServerHealth, type ServerInfo } from '../../util/api';
+import { getEventLog, getServerHealth, sendGlobalMessage, type EventLogEntry, type ServerHealth } from '../../util/api';
+import { useServer } from '../ServerContext';
 
 const EVENT_TYPES = [
   { label: 'All', value: '' },
@@ -233,8 +233,8 @@ function HealthTab({ serverId }: { serverId: string }) {
       <div className="card">
         <div className="stack">
           <div>
-            <div className="label">Global Message</div>
-            <div className="muted" style={{ fontSize: 12 }}>Broadcast a message to all players on the server.</div>
+            <div className="label">Global Announcement</div>
+            <div className="muted" style={{ fontSize: 12 }}>Broadcast to all players (appears on left side of screen).</div>
           </div>
           <div className="row" style={{ gap: 12 }}>
             <div style={{ flex: 1 }}>
@@ -256,26 +256,13 @@ function HealthTab({ serverId }: { serverId: string }) {
 }
 
 export function ServerPage() {
-  const [searchParams] = useSearchParams();
-  const initialServerId = searchParams.get('serverId') ?? '';
-  const [servers, setServers] = useState<ServerInfo[]>([]);
-  const [serverId, setServerId] = useState(initialServerId);
+  const { serverId } = useServer();
   const [tab, setTab] = useState<'events' | 'health'>('events');
-
-  useEffect(() => { listServers().then(setServers).catch(() => {}); }, []);
 
   return (
     <div className="container">
       <div className="stack">
         <h1 className="h1">Server</h1>
-
-        <div className="card">
-          <div className="label">Server</div>
-          <select className="input" value={serverId} onChange={(e) => setServerId(e.target.value)}>
-            <option value="">Select server...</option>
-            {servers.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
-          </select>
-        </div>
 
         <div className="tabBar">
           <button className={`tab${tab === 'events' ? ' tabActive' : ''}`} onClick={() => setTab('events')}>Event Log</button>

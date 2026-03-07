@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
-import { addBan, getBans, removeBan, addMute, getMutes, removeMute, listServers, type BanEntry, type MuteEntry, type ServerInfo } from '../../util/api';
+import { addBan, getBans, removeBan, addMute, getMutes, removeMute, type BanEntry, type MuteEntry } from '../../util/api';
 import { getSessionClaims } from '../../util/session';
+import { useServer } from '../ServerContext';
 
 const BAN_DURATIONS = [
   { label: 'Permanent', value: 0 },
@@ -217,26 +217,13 @@ function MutesTab({ serverId }: { serverId: string }) {
 }
 
 export function ModerationPage() {
-  const [searchParams] = useSearchParams();
-  const initialServerId = searchParams.get('serverId') ?? '';
-  const [servers, setServers] = useState<ServerInfo[]>([]);
-  const [serverId, setServerId] = useState(initialServerId);
+  const { serverId } = useServer();
   const [tab, setTab] = useState<'bans' | 'mutes'>('bans');
-
-  useEffect(() => { listServers().then(setServers).catch(() => {}); }, []);
 
   return (
     <div className="container">
       <div className="stack">
         <h1 className="h1">Moderation</h1>
-
-        <div className="card">
-          <div className="label">Server</div>
-          <select className="input" value={serverId} onChange={(e) => setServerId(e.target.value)}>
-            <option value="">Select server...</option>
-            {servers.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
-          </select>
-        </div>
 
         <div className="tabBar">
           <button className={`tab${tab === 'bans' ? ' tabActive' : ''}`} onClick={() => setTab('bans')}>Bans</button>

@@ -2984,24 +2984,23 @@ app.post('/api/replay/ingest', async (req, res) => {
           await ensureDir(MAPS_DIR);
           const terrainPath = path.join(MAPS_DIR, `${mapId}.terrain.json`);
           const existing = await readJsonOrNull(terrainPath);
+          const hasHeights = ev && Array.isArray(ev.heights) && ev.heights.length > 0;
 
-          const shouldWrite = !existing
-            || (existing && typeof existing === 'object' && worldFile && typeof existing.worldFile === 'string' && existing.worldFile !== worldFile);
-
-          if (shouldWrite) {
+          if (hasHeights) {
+            await writeJsonAtomic(terrainPath, {
+              mapId,
+              worldFile,
+              createdAt: (existing && existing.createdAt) || receivedAt,
+              updatedAt: receivedAt,
+              ...ev,
+            });
+          } else if (!existing) {
             await writeJsonAtomic(terrainPath, {
               mapId,
               worldFile,
               createdAt: receivedAt,
               updatedAt: receivedAt,
               ...ev,
-            });
-          } else {
-            await writeJsonAtomic(terrainPath, {
-              ...existing,
-              mapId,
-              worldFile: worldFile || (existing && existing.worldFile),
-              updatedAt: receivedAt,
             });
           }
         }

@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
-import { getLivePlayers, getEventLog, listServers, kickPlayer, getPlayerProfile, type LivePlayer, type ServerInfo, type PlayerProfile } from '../../util/api';
+import { getLivePlayers, getEventLog, kickPlayer, getPlayerProfile, type LivePlayer, type PlayerProfile } from '../../util/api';
+import { useServer } from '../ServerContext';
 
 function formatExpiry(timestamp: number, duration: number): string {
   if (duration === 0) return 'Permanent';
@@ -212,26 +212,13 @@ function PlayerLookupTab({ serverId }: { serverId: string }) {
 }
 
 export function PlayersPage() {
-  const [searchParams] = useSearchParams();
-  const initialServerId = searchParams.get('serverId') ?? '';
-  const [servers, setServers] = useState<ServerInfo[]>([]);
-  const [serverId, setServerId] = useState(initialServerId);
+  const { serverId } = useServer();
   const [tab, setTab] = useState<'live' | 'lookup'>('live');
-
-  useEffect(() => { listServers().then(setServers).catch(() => {}); }, []);
 
   return (
     <div className="container">
       <div className="stack">
         <h1 className="h1">Players</h1>
-
-        <div className="card">
-          <div className="label">Server</div>
-          <select className="input" value={serverId} onChange={(e) => setServerId(e.target.value)}>
-            <option value="">Select server...</option>
-            {servers.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
-          </select>
-        </div>
 
         <div className="tabBar">
           <button className={`tab${tab === 'live' ? ' tabActive' : ''}`} onClick={() => setTab('live')}>Live Players</button>
