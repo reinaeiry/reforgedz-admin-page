@@ -9,6 +9,7 @@ const EVENT_TYPES = [
   { label: 'AI Kills', value: 'aiKill' },
   { label: 'Joins', value: 'join' },
   { label: 'Disconnects', value: 'disconnect' },
+  { label: 'Server', value: 'serverStart,serverStop' },
 ];
 
 function formatEventSummary(entry: EventLogEntry): string {
@@ -43,6 +44,10 @@ function formatEventSummary(entry: EventLogEntry): string {
       const cause = (e.kickCause as string) ?? '';
       return `${name} disconnected${cause ? ` (${cause})` : ''}`;
     }
+    case 'serverStart':
+      return 'Server started';
+    case 'serverStop':
+      return 'Server stopped';
     default:
       return entry.type;
   }
@@ -55,6 +60,8 @@ function typeColor(type: string): string {
     case 'aiKill': return '#d4b4ff';
     case 'join': return '#b7f7c8';
     case 'disconnect': return 'rgba(230,237,243,0.5)';
+    case 'serverStart': return '#b7f7c8';
+    case 'serverStop': return '#ffb4b4';
     default: return 'rgba(230,237,243,0.6)';
   }
 }

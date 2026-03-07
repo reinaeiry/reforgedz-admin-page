@@ -271,7 +271,6 @@ export function ReplayToolPage() {
   const [focusNonce, setFocusNonce] = useState(0);
 
   const [playersPanelOpen, setPlayersPanelOpen] = useState(true);
-  const [leftPanelTab, setLeftPanelTab] = useState<'players' | 'events'>('players');
   const [nameTagOptionsOpen, setNameTagOptionsOpen] = useState(false);
 
   const [showEventTimeline, setShowEventTimeline] = useState(true);
@@ -1636,27 +1635,51 @@ export function ReplayToolPage() {
     return { points: pts };
   }, [currentTsMs, enableTrails, playerSeriesById, selectedPlayerId, terrain, trailSeconds]);
 
-  const visibleDeathMarkers = useMemo(() => {
-    if (!showDeathMarkers) return [] as Array<{ x: number; y: number; z: number }>;
-    const t = currentTsMs;
-    if (typeof t !== 'number') return [];
-
-    const out: Array<{ x: number; y: number; z: number }> = [];
+  const sortedKillDeathEvents = useMemo(() => {
+    const out: Array<{ tsMs: number; event: any }> = [];
     for (const e of events) {
       const p: any = e.payload;
       if (!p || typeof p !== 'object') continue;
       if (p.type !== 'kill' && p.type !== 'death') continue;
       if (typeof p.tsMs !== 'number') continue;
-      if (t < p.tsMs || t > p.tsMs + 3000) continue;
+      out.push({ tsMs: p.tsMs, event: (p as any).event });
+    }
+    out.sort((a, b) => a.tsMs - b.tsMs);
+    return out;
+  }, [events]);
 
-      const ev: any = (p as any).event;
+  const visibleDeathMarkers = useMemo(() => {
+    if (!showDeathMarkers) return [] as Array<{ x: number; y: number; z: number }>;
+    const t = currentTsMs;
+    if (typeof t !== 'number') return [];
+
+    // Binary search for first kill/death event with tsMs >= t - 3000.
+    const windowStart = t - 3000;
+    let lo = 0;
+    let hi = sortedKillDeathEvents.length - 1;
+    let startIdx = sortedKillDeathEvents.length;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (sortedKillDeathEvents[mid].tsMs >= windowStart) {
+        startIdx = mid;
+        hi = mid - 1;
+      } else {
+        lo = mid + 1;
+      }
+    }
+
+    const out: Array<{ x: number; y: number; z: number }> = [];
+    for (let i = startIdx; i < sortedKillDeathEvents.length; i++) {
+      const item = sortedKillDeathEvents[i];
+      if (item.tsMs > t) break;
+
+      const ev = item.event;
       let victimPos = ev ? coerceVec3(ev.victimPos) : null;
 
-      // Older events may not include victimPos; fall back to victim player series at event time.
       if (!victimPos && ev && typeof ev === 'object') {
         const victimId = typeof ev.victimPlayerId === 'number' ? ev.victimPlayerId : null;
         if (typeof victimId === 'number') {
-          const best = findBestPlayerPosAt(victimId, p.tsMs);
+          const best = findBestPlayerPosAt(victimId, item.tsMs);
           if (best) victimPos = best.pos;
         }
       }
@@ -1666,7 +1689,7 @@ export function ReplayToolPage() {
       if (out.length >= 40) break;
     }
     return out;
-  }, [currentTsMs, events, findBestPlayerPosAt, showDeathMarkers]);
+  }, [currentTsMs, findBestPlayerPosAt, showDeathMarkers, sortedKillDeathEvents]);
 
   const scrubber = useMemo(() => {
     const min = range.minTsMs;
@@ -1862,16 +1885,18 @@ export function ReplayToolPage() {
     };
   }, [currentTsMs, findPlayerEquipSampleAtOrBefore, selectedPlayerState]);
 
-  const timelineEvents = useMemo(() => {
-    const out: Array<{
-      tsMs: number;
-      type: string;
-      title: string;
-      subtitle: string;
-      focusPos: { x: number; y: number; z: number } | null;
-      focusPlayerId: number | null;
-      playerIds: number[];
-    }> = [];
+  type ParsedEvent = {
+    tsMs: number;
+    type: 'kill' | 'death' | 'aiKill' | 'join' | 'disconnect' | 'restart' | 'gmPing';
+    title: string;
+    subtitle: string;
+    focusPos: { x: number; y: number; z: number } | null;
+    focusPlayerId: number | null;
+    playerIds: number[];
+  };
+
+  const allParsedEvents = useMemo((): ParsedEvent[] => {
+    const out: ParsedEvent[] = [];
 
     for (const e of events) {
       const p: any = e.payload;
@@ -1906,8 +1931,6 @@ export function ReplayToolPage() {
           playerIds: [killerId, victimId].filter((x): x is number => typeof x === 'number'),
         });
       } else if (p.type === 'death') {
-        // If this death is attributable to another player, it will also have a corresponding `kill` event.
-        // Avoid double-reporting in the timeline by skipping those.
         const victimId = ev && typeof ev.victimPlayerId === 'number' ? ev.victimPlayerId : null;
         const killerId = ev && typeof ev.killerPlayerId === 'number' ? ev.killerPlayerId : null;
         if (victimId !== null && killerId !== null && killerId >= 0 && killerId !== victimId) continue;
@@ -1944,177 +1967,6 @@ export function ReplayToolPage() {
         if (weaponName) subtitleParts.push(weaponName);
         if (distText) subtitleParts.push(distText);
 
-        out.push({
-          tsMs: p.tsMs,
-          type: 'aiKill',
-          title: `${killerName} → AI: ${victimName}`,
-          subtitle: subtitleParts.join(' • '),
-          focusPos: victimPos,
-          focusPlayerId: killerId,
-          playerIds: [killerId].filter((x): x is number => typeof x === 'number'),
-        });
-      } else if (p.type === 'gmPing') {
-        const by = ev && typeof ev.by === 'string' && ev.by.length > 0 ? ev.by : '';
-        const target = ev && typeof ev.title === 'string' && ev.title.length > 0 ? ev.title : 'event';
-        const pos = ev ? coerceVec3(ev.pos) : null;
-        const msg = by ? `(${by} sent a GM ping to ${target})` : `GM ping to ${target}`;
-        out.push({
-          tsMs: p.tsMs,
-          type: 'gmPing',
-          title: msg,
-          subtitle: '',
-          focusPos: pos,
-          focusPlayerId: null,
-          playerIds: [],
-        });
-      } else {
-        if (p.type === 'restart') {
-          out.push({
-            tsMs: p.tsMs,
-            type: 'restart',
-            title: 'Server restarted',
-            subtitle: 'restart / history cleared',
-            focusPos: null,
-            focusPlayerId: null,
-            playerIds: [],
-          });
-          continue;
-        }
-        const name = ev && typeof ev.name === 'string' ? ev.name : String(ev && ev.playerId ? ev.playerId : 'player');
-        const id = ev && typeof ev.playerId === 'number' ? ev.playerId : null;
-
-        const joinFocusPos = (p.type === 'join' && typeof id === 'number')
-          ? findFirstNonOriginPosAfter(id, p.tsMs, 90_000)
-          : null;
-
-        const disconnectFocusPos = (p.type === 'disconnect' && typeof id === 'number')
-          ? findLastNonOriginPosBefore(id, p.tsMs, 90_000)
-          : null;
-
-        out.push({
-          tsMs: p.tsMs,
-          type: String(p.type),
-          title: `${p.type === 'join' ? 'Join' : 'Disconnect'}: ${name}`,
-          subtitle: p.type === 'disconnect' && ev && typeof ev.kickCause === 'string' && ev.kickCause ? `cause: ${ev.kickCause}` : '',
-          focusPos: joinFocusPos || disconnectFocusPos,
-          focusPlayerId: id,
-          playerIds: [id].filter((x): x is number => typeof x === 'number'),
-        });
-      }
-    }
-
-    out.sort((a, b) => a.tsMs - b.tsMs);
-
-    const t = currentTsMs;
-    const filterId = eventPlayerFilterId;
-
-    let visible = out;
-    if (typeof t === 'number') {
-      visible = visible.filter((x) => x.tsMs <= t);
-    }
-    if (typeof filterId === 'number') {
-      visible = visible.filter((x) => x.playerIds.includes(filterId));
-    }
-    return visible.slice(-200);
-  }, [currentTsMs, eventPlayerFilterId, events, findFirstNonOriginPosAfter]);
-
-  useEffect(() => {
-    if (!selectedEventKey) return;
-
-    const t = window.setTimeout(() => {
-      const el = eventCardRefs.current.get(selectedEventKey);
-      if (el) el.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
-    }, 0);
-
-    return () => window.clearTimeout(t);
-  }, [selectedEventKey, leftPanelTab]);
-
-  const eventDots = useMemo(() => {
-    const min = range.minTsMs;
-    const max = range.maxTsMs;
-    if (typeof min !== 'number' || typeof max !== 'number') return [] as Array<{
-      tsMs: number;
-      type: 'kill' | 'death' | 'aiKill' | 'join' | 'disconnect' | 'restart' | 'gmPing';
-      title: string;
-      subtitle: string;
-      focusPos: { x: number; y: number; z: number } | null;
-      focusPlayerId: number | null;
-      playerIds: number[];
-    }>;
-
-    let out: Array<{
-      tsMs: number;
-      type: 'kill' | 'death' | 'aiKill' | 'join' | 'disconnect' | 'restart' | 'gmPing';
-      title: string;
-      subtitle: string;
-      focusPos: { x: number; y: number; z: number } | null;
-      focusPlayerId: number | null;
-      playerIds: number[];
-    }> = [];
-
-    for (const rec of events) {
-      const p: any = (rec as any).payload;
-      if (!p || typeof p !== 'object') continue;
-      if (p.type !== 'kill' && p.type !== 'death' && p.type !== 'aiKill' && p.type !== 'join' && p.type !== 'disconnect' && p.type !== 'restart' && p.type !== 'gmPing') continue;
-      if (typeof p.tsMs !== 'number') continue;
-      if (p.tsMs < min || p.tsMs > max) continue;
-
-      const ev: any = (p as any).event;
-      if (p.type === 'kill') {
-        const killerName = ev && typeof ev.killerName === 'string' ? ev.killerName : 'Unknown';
-        const victimName = ev && typeof ev.victimName === 'string' ? ev.victimName : 'Unknown';
-        const weaponName = ev && typeof ev.weaponName === 'string' ? ev.weaponName : '';
-        const distanceM = ev && typeof ev.distanceM === 'number' ? ev.distanceM : null;
-        const distText = (typeof distanceM === 'number' && Number.isFinite(distanceM)) ? `${Math.round(distanceM)}m` : '';
-        const victimPos = ev ? coerceVec3(ev.victimPos) : null;
-        const victimId = ev && typeof ev.victimPlayerId === 'number' ? ev.victimPlayerId : null;
-        const killerId = ev && typeof ev.killerPlayerId === 'number' ? ev.killerPlayerId : null;
-        const subtitleParts = [] as string[];
-        if (weaponName) subtitleParts.push(weaponName);
-        if (distText) subtitleParts.push(distText);
-        out.push({
-          tsMs: p.tsMs,
-          type: 'kill',
-          title: `${killerName} → ${victimName}`,
-          subtitle: subtitleParts.join(' • '),
-          focusPos: victimPos,
-          focusPlayerId: victimId,
-          playerIds: [killerId, victimId].filter((x): x is number => typeof x === 'number'),
-        });
-      } else if (p.type === 'death') {
-        // Avoid double-reporting attributed kills.
-        const victimId = ev && typeof ev.victimPlayerId === 'number' ? ev.victimPlayerId : null;
-        const killerId = ev && typeof ev.killerPlayerId === 'number' ? ev.killerPlayerId : null;
-        if (victimId !== null && killerId !== null && killerId >= 0 && killerId !== victimId) continue;
-
-        const victimName = ev && typeof ev.victimName === 'string' ? ev.victimName : 'Unknown';
-        const weaponName = ev && typeof ev.weaponName === 'string' ? ev.weaponName : '';
-        const distanceM = ev && typeof ev.distanceM === 'number' ? ev.distanceM : null;
-        const distText = (typeof distanceM === 'number' && Number.isFinite(distanceM)) ? `${Math.round(distanceM)}m` : '';
-        const victimPos = ev ? coerceVec3(ev.victimPos) : null;
-        const subtitleParts = [] as string[];
-        if (weaponName) subtitleParts.push(weaponName);
-        if (distText) subtitleParts.push(distText);
-        out.push({
-          tsMs: p.tsMs,
-          type: 'death',
-          title: `${victimName} died`,
-          subtitle: subtitleParts.join(' • '),
-          focusPos: victimPos,
-          focusPlayerId: victimId,
-          playerIds: [victimId].filter((x): x is number => typeof x === 'number'),
-        });
-      } else if (p.type === 'aiKill') {
-        const killerName = ev && typeof ev.killerName === 'string' ? ev.killerName : 'Unknown';
-        const victimName = ev && typeof ev.victimName === 'string' ? ev.victimName : 'Unknown';
-        const weaponName = ev && typeof ev.weaponName === 'string' ? ev.weaponName : '';
-        const distanceM = ev && typeof ev.distanceM === 'number' ? ev.distanceM : null;
-        const distText = (typeof distanceM === 'number' && Number.isFinite(distanceM)) ? `${Math.round(distanceM)}m` : '';
-        const victimPos = ev ? coerceVec3(ev.victimPos) : null;
-        const killerId = ev && typeof ev.killerPlayerId === 'number' ? ev.killerPlayerId : null;
-        const subtitleParts = [] as string[];
-        if (weaponName) subtitleParts.push(weaponName);
-        if (distText) subtitleParts.push(distText);
         out.push({
           tsMs: p.tsMs,
           type: 'aiKill',
@@ -2160,12 +2012,16 @@ export function ReplayToolPage() {
           ? findFirstNonOriginPosAfter(id, p.tsMs, 90_000)
           : null;
 
+        const disconnectFocusPos = (p.type === 'disconnect' && typeof id === 'number')
+          ? findLastNonOriginPosBefore(id, p.tsMs, 90_000)
+          : null;
+
         out.push({
           tsMs: p.tsMs,
-          type: p.type,
+          type: p.type as 'join' | 'disconnect',
           title: `${p.type === 'join' ? 'Join' : 'Disconnect'}: ${name}`,
           subtitle: p.type === 'disconnect' && ev && typeof ev.kickCause === 'string' && ev.kickCause ? `cause: ${ev.kickCause}` : '',
-          focusPos: joinFocusPos,
+          focusPos: joinFocusPos || disconnectFocusPos,
           focusPlayerId: id,
           playerIds: [id].filter((x): x is number => typeof x === 'number'),
         });
@@ -2173,6 +2029,76 @@ export function ReplayToolPage() {
     }
 
     out.sort((a, b) => a.tsMs - b.tsMs);
+    return out;
+  }, [events, findFirstNonOriginPosAfter, findLastNonOriginPosBefore]);
+
+  const timelineEvents = useMemo(() => {
+    const t = currentTsMs;
+    const filterId = eventPlayerFilterId;
+
+    let source = allParsedEvents;
+
+    // Binary search for time cutoff (allParsedEvents is sorted by tsMs).
+    if (typeof t === 'number') {
+      let lo = 0;
+      let hi = source.length - 1;
+      let cutoff = source.length;
+      while (lo <= hi) {
+        const mid = (lo + hi) >> 1;
+        if (source[mid].tsMs > t) {
+          cutoff = mid;
+          hi = mid - 1;
+        } else {
+          lo = mid + 1;
+        }
+      }
+      source = source.slice(0, cutoff);
+    }
+
+    if (typeof filterId === 'number') {
+      source = source.filter((x) => x.playerIds.includes(filterId));
+    }
+    return source.slice(-200);
+  }, [allParsedEvents, currentTsMs, eventPlayerFilterId]);
+
+  useEffect(() => {
+    if (!selectedEventKey) return;
+
+    const t = window.setTimeout(() => {
+      const el = eventCardRefs.current.get(selectedEventKey);
+      if (el) el.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    }, 0);
+
+    return () => window.clearTimeout(t);
+  }, [selectedEventKey]);
+
+  const eventDots = useMemo(() => {
+    const min = range.minTsMs;
+    const max = range.maxTsMs;
+    if (typeof min !== 'number' || typeof max !== 'number') return [] as ParsedEvent[];
+
+    // Binary search for range start in sorted allParsedEvents.
+    let startIdx = 0;
+    {
+      let lo = 0;
+      let hi = allParsedEvents.length - 1;
+      while (lo <= hi) {
+        const mid = (lo + hi) >> 1;
+        if (allParsedEvents[mid].tsMs >= min) {
+          startIdx = mid;
+          hi = mid - 1;
+        } else {
+          lo = mid + 1;
+        }
+      }
+    }
+
+    let out: ParsedEvent[] = [];
+    for (let i = startIdx; i < allParsedEvents.length; i++) {
+      const ev = allParsedEvents[i];
+      if (ev.tsMs > max) break;
+      out.push(ev);
+    }
 
     const filterId = eventPlayerFilterId;
     if (typeof filterId === 'number') {
@@ -2183,13 +2109,13 @@ export function ReplayToolPage() {
     const maxDots = 420;
     if (out.length > maxDots) {
       const stride = Math.ceil(out.length / maxDots);
-      const down: typeof out = [];
+      const down: ParsedEvent[] = [];
       for (let i = 0; i < out.length; i += stride) down.push(out[i]);
       return down;
     }
 
     return out;
-  }, [eventPlayerFilterId, events, findFirstNonOriginPosAfter, range.maxTsMs, range.minTsMs]);
+  }, [allParsedEvents, eventPlayerFilterId, range.maxTsMs, range.minTsMs]);
 
   function pushToast(t: { kind: 'kill' | 'event'; title: string; subtitle: string }) {
     const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -2447,8 +2373,8 @@ export function ReplayToolPage() {
                 </div>
               ) : null}
 
-              {/* Top-right toast popups */}
-              <div style={{ position: 'absolute', top: 12, right: 12, width: 340, display: 'flex', flexDirection: 'column', gap: 8, pointerEvents: 'none' }}>
+              {/* Top-right toast popups (overlay above events panel) */}
+              <div style={{ position: 'absolute', top: 12, right: 362, width: 300, display: 'flex', flexDirection: 'column', gap: 8, pointerEvents: 'none', zIndex: 10 }}>
                 {toasts.map((t) => (
                   <div
                     key={t.id}
@@ -2469,437 +2395,312 @@ export function ReplayToolPage() {
                 ))}
               </div>
 
-              {/* Floating Players panel */}
-              <div style={{ position: 'absolute', top: 12, left: 12, width: playersPanelOpen ? 360 : 'auto' }}>
-                <div className="card" style={{ padding: 10, background: 'rgba(0,0,0,0.45)', border: '1px solid rgba(255,255,255,0.14)' }}>
-                  <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', gap: 10, flexWrap: 'nowrap' }}>
-                    <div className="row" style={{ gap: 8, flexWrap: 'nowrap' }}>
-                      <button
-                        type="button"
-                        className="button"
-                        style={{
-                          padding: '6px 10px',
-                          background: leftPanelTab === 'players' ? 'rgba(249,188,89,0.22)' : 'rgba(255,255,255,0.10)',
-                          borderColor: leftPanelTab === 'players' ? 'rgba(249,188,89,0.40)' : 'rgba(255,255,255,0.14)',
-                        }}
-                        onClick={() => setLeftPanelTab('players')}
-                      >
-                        Players
-                      </button>
-                      <button
-                        type="button"
-                        className="button"
-                        style={{
-                          padding: '6px 10px',
-                          background: leftPanelTab === 'events' ? 'rgba(249,188,89,0.22)' : 'rgba(255,255,255,0.10)',
-                          borderColor: leftPanelTab === 'events' ? 'rgba(249,188,89,0.40)' : 'rgba(255,255,255,0.14)',
-                        }}
-                        onClick={() => setLeftPanelTab('events')}
-                      >
-                        Events
-                      </button>
+              {/* Left panel — Players & Detail */}
+              <div style={{ position: 'absolute', top: 12, left: 12, bottom: 148, width: playersPanelOpen ? 300 : 'auto', display: 'flex', flexDirection: 'column' }}>
+                <div className="card" style={{ padding: 10, background: 'rgba(0,0,0,0.55)', border: '1px solid rgba(255,255,255,0.14)', display: 'flex', flexDirection: 'column', overflow: 'hidden', maxHeight: '100%' }}>
+                  <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', gap: 8, flexWrap: 'nowrap', flexShrink: 0 }}>
+                    <div style={{ fontWeight: 800, fontSize: 12, whiteSpace: 'nowrap' }}>
+                      Players <span className="muted">({filteredPlayers.length})</span>
                     </div>
-
-                    <div className="row" style={{ gap: 8, flexWrap: 'nowrap' }}>
-                      {leftPanelTab === 'players' ? (
-                        <button
-                          type="button"
-                          className="button"
-                          title="Nametag options"
-                          style={{ padding: '6px 10px' }}
-                          onClick={() => setNameTagOptionsOpen((v) => !v)}
-                        >
-                          ⚙
-                        </button>
-                      ) : null}
-
-                      <button
-                        type="button"
-                        className="button"
-                        style={{ padding: '6px 10px' }}
-                        onClick={() => setPlayersPanelOpen((v) => !v)}
-                      >
-                        {playersPanelOpen ? '−' : '+'}
-                      </button>
+                    <div className="row" style={{ gap: 6, flexWrap: 'nowrap' }}>
+                      <button type="button" className="button" title="Display settings" style={{ padding: '4px 8px', fontSize: 11 }}
+                        onClick={() => setNameTagOptionsOpen((v) => !v)}>⚙</button>
+                      <button type="button" className="button" style={{ padding: '4px 8px', fontSize: 11 }}
+                        onClick={() => setPlayersPanelOpen((v) => !v)}>{playersPanelOpen ? '−' : '+'}</button>
                     </div>
                   </div>
 
                   {playersPanelOpen ? (
-                    <div className="stack" style={{ marginTop: 10 }}>
-                      {leftPanelTab === 'players' ? (
-                        <>
-                          {nameTagOptionsOpen ? (
-                            <div style={{ border: '1px solid rgba(255,255,255,0.10)', borderRadius: 10, padding: 10 }}>
-                              <div className="label" style={{ marginBottom: 8 }}>Nametags</div>
+                    <div style={{ display: 'flex', flexDirection: 'column', flex: 1, overflow: 'hidden', marginTop: 8, gap: 8 }}>
+                      {nameTagOptionsOpen ? (
+                        <div style={{ border: '1px solid rgba(255,255,255,0.10)', borderRadius: 8, padding: 10, flexShrink: 0 }}>
+                          <div className="label" style={{ marginBottom: 8 }}>Display</div>
 
-                              <label className="row" style={{ gap: 8, marginBottom: 8 }}>
-                                <input type="checkbox" checked={nameTagsEnabled} onChange={(e) => setNameTagsEnabled(e.target.checked)} />
-                                <span className="muted" style={{ fontSize: 12 }}>Show nametags</span>
-                              </label>
+                          <label className="row" style={{ gap: 8, marginBottom: 6 }}>
+                            <input type="checkbox" checked={nameTagsEnabled} onChange={(e) => setNameTagsEnabled(e.target.checked)} />
+                            <span className="muted" style={{ fontSize: 11 }}>Nametags</span>
+                          </label>
+                          <label className="row" style={{ gap: 8, marginBottom: 6 }}>
+                            <input type="checkbox" checked={nameTagBackground} onChange={(e) => setNameTagBackground(e.target.checked)} />
+                            <span className="muted" style={{ fontSize: 11 }}>Tag background</span>
+                          </label>
+                          <label className="row" style={{ gap: 8, marginBottom: 6 }}>
+                            <input type="checkbox" checked={showVehicleInTags} onChange={(e) => setShowVehicleInTags(e.target.checked)} />
+                            <span className="muted" style={{ fontSize: 11 }}>Vehicle in label</span>
+                          </label>
+                          <label className="row" style={{ gap: 8, marginBottom: 6 }}>
+                            <input type="checkbox" checked={showAimLines} onChange={(e) => setShowAimLines(e.target.checked)} />
+                            <span className="muted" style={{ fontSize: 11 }}>Aim lines</span>
+                          </label>
+                          <label className="row" style={{ gap: 8, marginBottom: 6 }}>
+                            <input type="checkbox" checked={showDeathMarkers} onChange={(e) => setShowDeathMarkers(e.target.checked)} />
+                            <span className="muted" style={{ fontSize: 11 }}>Death markers</span>
+                          </label>
+                          <label className="row" style={{ gap: 8, marginBottom: 6 }}>
+                            <input type="checkbox" checked={enableTrails} onChange={(e) => setEnableTrails(e.target.checked)} />
+                            <span className="muted" style={{ fontSize: 11 }}>Trails</span>
+                          </label>
 
-                              <label className="row" style={{ gap: 8, marginBottom: 8 }}>
-                                <input type="checkbox" checked={nameTagBackground} onChange={(e) => setNameTagBackground(e.target.checked)} />
-                                <span className="muted" style={{ fontSize: 12 }}>Background</span>
-                              </label>
-
-                              <label className="row" style={{ gap: 8, marginBottom: 8 }}>
-                                <input type="checkbox" checked={showVehicleInTags} onChange={(e) => setShowVehicleInTags(e.target.checked)} />
-                                <span className="muted" style={{ fontSize: 12 }}>Include vehicle in label</span>
-                              </label>
-
-                              <div className="label" style={{ marginBottom: 6 }}>Nametag size</div>
-                              <input
-                                style={{ width: '100%' }}
-                                type="range"
-                                min={0.6}
-                                max={1.6}
-                                step={0.1}
-                                value={nameTagScale}
-                                onChange={(e) => setNameTagScale(Number(e.target.value))}
-                              />
-                              <div className="muted" style={{ fontSize: 12 }}>
-                                {nameTagScale.toFixed(1)}×
-                              </div>
-
-                              <div style={{ height: 8 }} />
-
-                              <label className="row" style={{ gap: 8, marginBottom: 8 }}>
-                                <input type="checkbox" checked={showAimLines} onChange={(e) => setShowAimLines(e.target.checked)} />
-                                <span className="muted" style={{ fontSize: 12 }}>Aim direction line</span>
-                              </label>
-
-                              <label className="row" style={{ gap: 8, marginBottom: 8 }}>
-                                <input type="checkbox" checked={showDeathMarkers} onChange={(e) => setShowDeathMarkers(e.target.checked)} />
-                                <span className="muted" style={{ fontSize: 12 }}>Death markers</span>
-                              </label>
-
-                              <label className="row" style={{ gap: 8, marginBottom: 8 }}>
-                                <input type="checkbox" checked={enableTrails} onChange={(e) => setEnableTrails(e.target.checked)} />
-                                <span className="muted" style={{ fontSize: 12 }}>Trails (focused player)</span>
-                              </label>
-
-                              {enableTrails ? (
-                                <>
-                                  <div className="label" style={{ marginBottom: 6 }}>Trail window (seconds)</div>
-                                  <input
-                                    style={{ width: '100%' }}
-                                    type="range"
-                                    min={5}
-                                    max={60}
-                                    step={5}
-                                    value={trailSeconds}
-                                    onChange={(e) => setTrailSeconds(Number(e.target.value))}
-                                  />
-                                  <div className="muted" style={{ fontSize: 12 }}>{trailSeconds}s</div>
-                                </>
-                              ) : null}
+                          <div className="row" style={{ gap: 8, marginTop: 4 }}>
+                            <div className="muted" style={{ fontSize: 11, whiteSpace: 'nowrap' }}>Size {nameTagScale.toFixed(1)}×</div>
+                            <input style={{ flex: 1 }} type="range" min={0.6} max={1.6} step={0.1} value={nameTagScale}
+                              onChange={(e) => setNameTagScale(Number(e.target.value))} />
+                          </div>
+                          {enableTrails ? (
+                            <div className="row" style={{ gap: 8, marginTop: 4 }}>
+                              <div className="muted" style={{ fontSize: 11, whiteSpace: 'nowrap' }}>Trail {trailSeconds}s</div>
+                              <input style={{ flex: 1 }} type="range" min={5} max={60} step={5} value={trailSeconds}
+                                onChange={(e) => setTrailSeconds(Number(e.target.value))} />
                             </div>
                           ) : null}
-
-                          <input
-                            className="input"
-                            placeholder="Search players…"
-                            value={playerSearch}
-                            onChange={(e) => setPlayerSearch(e.target.value)}
-                          />
-                        </>
+                        </div>
                       ) : null}
 
-                      {leftPanelTab === 'players' ? (
-                        <div className="scroll" style={{ maxHeight: 240, overflow: 'auto', border: '1px solid rgba(255,255,255,0.10)', borderRadius: 10 }}>
-                          {filteredPlayers.length === 0 ? (
-                            <div className="muted" style={{ padding: 10, fontSize: 12 }}>No players.</div>
-                          ) : (
-                            filteredPlayers.map((p) => {
-                              const isSelected = selectedPlayerId === p.playerId;
-                              return (
-                                <button
-                                  key={p.playerId}
-                                  type="button"
-                                  onClick={() => {
-                                    setLeftPanelTab('players');
-                                    setSelectedPlayerId(p.playerId);
-                                    setAttachedPlayerId(p.playerId);
+                      <input className="input" style={{ flexShrink: 0 }} placeholder="Search players…"
+                        value={playerSearch} onChange={(e) => setPlayerSearch(e.target.value)} />
 
-                                    const marker = playerMarkers.find((m) => m.playerId === p.playerId);
-                                    if (marker) {
-                                      setFocusTarget(marker.pos);
-                                      setFocusNonce((n) => n + 1);
-                                    }
-                                  }}
-                                  className="button"
-                                  style={{
-                                    width: '100%',
-                                    textAlign: 'left',
-                                    borderRadius: 0,
-                                    border: 'none',
-                                    borderBottom: '1px solid rgba(255,255,255,0.06)',
-                                    background: isSelected ? 'rgba(255,255,255,0.08)' : 'transparent',
-                                    padding: '8px 10px',
-                                  }}
-                                >
-                                  <div style={{ fontWeight: 700, fontSize: 13 }}>{p.name}</div>
-                                  <div className="muted" style={{ fontSize: 11 }}>#{p.playerId}</div>
-                                </button>
-                              );
-                            })
-                          )}
-                        </div>
-                      ) : (
-                        <div className="stack" style={{ gap: 8 }}>
-                          <div className="row" style={{ justifyContent: 'space-between', gap: 10 }}>
-                            <div className="muted" style={{ fontSize: 12 }}>Event click offset</div>
-                            <div className="row" style={{ gap: 8 }}>
-                              <input
-                                className="input"
-                                style={{ width: 90, padding: '6px 10px' }}
-                                type="number"
-                                min={0}
-                                max={60}
-                                step={1}
-                                value={eventClickOffsetSeconds}
-                                onChange={(e) => setEventClickOffsetSeconds(Math.max(0, Math.min(60, Math.floor(Number(e.target.value) || 0))))}
-                                title="Jump this many seconds before an event"
-                              />
-                              <div className="muted" style={{ fontSize: 12 }}>sec</div>
-                            </div>
-                          </div>
-
-                          <div className="scroll" style={{ maxWidth: 340, overflowX: 'auto', overflowY: 'hidden', border: '1px solid rgba(255,255,255,0.10)', borderRadius: 10, padding: 10 }}>
-                            {timelineEvents.length === 0 ? (
-                              <div className="muted" style={{ fontSize: 12 }}>No events in buffer yet.</div>
-                            ) : (
-                              <div style={{ display: 'flex', gap: 10 }}>
-                                {timelineEvents.slice().reverse().map((ev, idx) => {
-                                  const key = `${ev.tsMs}|${ev.type}|${ev.title}|${ev.subtitle || ''}`;
-                                  const isSelected = selectedEventKey === key;
-                                  const canPing = !!serverId && ev.type !== 'gmPing' && !!ev.focusPos;
-                                  const pingTitle = ev.subtitle ? `${ev.title} • ${ev.subtitle}` : ev.title;
-                                  return (
-                                    <div
-                                      key={`${ev.tsMs}-${idx}`}
-                                      ref={(el) => {
-                                        if (el) eventCardRefs.current.set(key, el);
-                                        else eventCardRefs.current.delete(key);
-                                      }}
-                                      className="button"
-                                      style={{
-                                        minWidth: 220,
-                                        textAlign: 'left',
-                                        borderRadius: 10,
-                                        border: isSelected ? '1px solid rgba(255,255,255,0.35)' : '1px solid rgba(255,255,255,0.10)',
-                                        background: isSelected ? 'rgba(255,255,255,0.10)' : 'rgba(255,255,255,0.06)',
-                                        padding: '8px 10px',
-                                        position: 'relative',
-                                      }}
-                                      role="button"
-                                      tabIndex={0}
-                                      onClick={() => {
-                                        setSelectedEventKey(key);
-                                        setIsPlaying(false);
-                                        setLive(false);
-                                        jumpToEventTs(ev.tsMs);
-                                        if (typeof ev.focusPlayerId === 'number') setSelectedPlayerId(ev.focusPlayerId);
-                                        if (ev.focusPos) {
-                                          setFocusTarget(ev.focusPos);
-                                          setFocusNonce((n) => n + 1);
-                                        }
-                                      }}
-                                      onKeyDown={(e) => {
-                                        if (e.key !== 'Enter' && e.key !== ' ') return;
-                                        e.preventDefault();
-                                        setSelectedEventKey(key);
-                                        setIsPlaying(false);
-                                        setLive(false);
-                                        jumpToEventTs(ev.tsMs);
-                                        if (typeof ev.focusPlayerId === 'number') setSelectedPlayerId(ev.focusPlayerId);
-                                        if (ev.focusPos) {
-                                          setFocusTarget(ev.focusPos);
-                                          setFocusNonce((n) => n + 1);
-                                        }
-                                      }}
-                                    >
-                                      <button
-                                        type="button"
-                                        className="button"
-                                        style={{
-                                          position: 'absolute',
-                                          top: 8,
-                                          right: 8,
-                                          padding: '4px 8px',
-                                          fontSize: 11,
-                                          opacity: canPing ? 1 : 0.4,
-                                        }}
-                                        title={canPing ? 'Send GM ping to this event location' : 'No position for this event'}
-                                        disabled={!canPing}
-                                        onClick={(e) => {
-                                          e.stopPropagation();
-                                          if (!serverId) return;
-                                          const pingPos = ev.focusPos;
-                                          if (!pingPos) return;
-
-                                          const reporterPlayerId = (typeof ev.focusPlayerId === 'number')
-                                            ? ev.focusPlayerId
-                                            : (Array.isArray(ev.playerIds) && ev.playerIds.length > 0 ? ev.playerIds[0] : null);
-
-                                          void sendReplayGmPing({
-                                            serverId,
-                                            tsMs: ev.tsMs,
-                                            pos: pingPos,
-                                            title: pingTitle,
-                                            reporterPlayerId,
-                                          });
-                                        }}
-                                      >
-                                        GM ping
-                                      </button>
-
-                                      <button
-                                        type="button"
-                                        className="button"
-                                        style={{
-                                          position: 'absolute',
-                                          top: 34,
-                                          right: 8,
-                                          padding: '4px 8px',
-                                          fontSize: 11,
-                                          opacity: canPing ? 1 : 0.4,
-                                        }}
-                                        title={canPing ? 'Export 5s before/after as a GIF to Discord' : 'No position for this event'}
-                                        disabled={!canPing}
-                                        onClick={(e) => {
-                                          e.stopPropagation();
-                                          if (!serverId) return;
-                                          const exportPos = ev.focusPos;
-                                          if (!exportPos) return;
-
-                                          void (async () => {
-                                            try {
-                                              await exportReplayEventToDiscord({
-                                                serverId,
-                                                tsMs: ev.tsMs,
-                                                title: ev.title,
-                                                pos: exportPos,
-                                                focusPlayerId: (typeof ev.focusPlayerId === 'number') ? ev.focusPlayerId : null,
-                                                playerIds: Array.isArray(ev.playerIds) ? ev.playerIds : null,
-                                              });
-                                              pushToast({ kind: 'event', title: 'Discord export', subtitle: 'Sent' });
-                                            } catch (err) {
-                                              setError(err instanceof Error ? err.message : 'Failed to export to Discord');
-                                            }
-                                          })();
-                                        }}
-                                      >
-                                        Export
-                                      </button>
-                                      <div style={{ fontWeight: 800, fontSize: 12 }}>{ev.title}</div>
-                                      <div className="muted" style={{ fontSize: 11, marginTop: 2 }}>
-                                        +{formatElapsedMs(ev.tsMs - scrubber.min)}{formatWallClock ? ` • ${formatWallClock(ev.tsMs)}` : ''}{ev.subtitle ? ` • ${ev.subtitle}` : ''}
-                                      </div>
-                                    </div>
-                                  );
-                                })}
-                              </div>
-                            )}
-                          </div>
-                        </div>
-                      )}
-
-                      <div>
-                        <div className="label">Selected</div>
-                        {selectedPlayerId === null ? (
-                          <div className="muted" style={{ fontSize: 12 }}>Click a player to view equipment.</div>
-                        ) : selectedPlayerStateWithEquipmentCache ? (
-                          <div style={{ fontSize: 12 }}>
-                            <div className="muted" style={{ marginBottom: 6 }}>
-                              pos: {JSON.stringify((selectedPlayerStateWithEquipmentCache as any).pos)}
-                            </div>
-
-                            <details open>
-                              <summary style={{ cursor: 'pointer', fontWeight: 700 }}>Weapon</summary>
-                              <div className="muted" style={{ marginTop: 6 }}>
-                                {((selectedPlayerStateWithEquipmentCache as any).weapon && (selectedPlayerStateWithEquipmentCache as any).weapon.name) ? (selectedPlayerStateWithEquipmentCache as any).weapon.name : 'None'}
-                              </div>
-                            </details>
-
-                            <div style={{ height: 6 }} />
-
-                            <details>
-                              <summary style={{ cursor: 'pointer', fontWeight: 700 }}>
-                                Inventory ({Array.isArray((selectedPlayerStateWithEquipmentCache as any).inventory) ? (selectedPlayerStateWithEquipmentCache as any).inventory.length : 0})
-                              </summary>
-                              <div className="scroll" style={{ marginTop: 6, maxHeight: 170, overflow: 'auto', border: '1px solid rgba(255,255,255,0.10)', borderRadius: 10 }}>
-                                {(() => {
-                                  const grouped = groupByName((selectedPlayerStateWithEquipmentCache as any).inventory, (it) => (it && it.name) ? String(it.name) : 'Item');
-                                  if (grouped.length === 0) {
-                                    return <div className="muted" style={{ padding: 10, fontSize: 12 }}>No inventory data in this snapshot.</div>;
-                                  }
-                                  return grouped.slice(0, 80).map((g, idx) => (
-                                    <div key={idx} style={{ padding: '7px 10px', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
-                                      <div style={{ fontSize: 12 }}>{g.name}{g.count > 1 ? ` ×${g.count}` : ''}</div>
-                                    </div>
-                                  ));
-                                })()}
-                              </div>
-                            </details>
-
-                            <div style={{ height: 6 }} />
-
-                            <details>
-                              <summary style={{ cursor: 'pointer', fontWeight: 700 }}>
-                                Hotbar ({Array.isArray((selectedPlayerStateWithEquipmentCache as any).attachments) ? (selectedPlayerStateWithEquipmentCache as any).attachments.length : 0})
-                              </summary>
-                              <div className="scroll" style={{ marginTop: 6, maxHeight: 170, overflow: 'auto', border: '1px solid rgba(255,255,255,0.10)', borderRadius: 10 }}>
-                                {Array.isArray((selectedPlayerStateWithEquipmentCache as any).attachments) && (selectedPlayerStateWithEquipmentCache as any).attachments.length > 0 ? (
-                                  (selectedPlayerStateWithEquipmentCache as any).attachments.map((at: any, idx: number) => (
-                                    <div key={idx} style={{ padding: '8px 10px', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
-                                      <div style={{ fontSize: 12 }}>
-                                        {at && at.slot ? <span className="muted" style={{ fontSize: 11 }}>{String(at.slot)}:</span> : null}
-                                        {' '}
-                                        {at && at.name ? String(at.name) : 'Item'}
-                                      </div>
-                                    </div>
-                                  ))
-                                ) : (
-                                  <div className="muted" style={{ padding: 10, fontSize: 12 }}>No attachments data in this snapshot.</div>
-                                )}
-                              </div>
-                            </details>
-
-                            <div style={{ height: 8 }} />
-
-                            <div>
-                              <div className="muted" style={{ fontSize: 12, marginBottom: 6 }}>Filter events by player</div>
-                              <select
-                                className="input"
-                                style={{ width: '100%', padding: '6px 10px' }}
-                                value={eventPlayerFilterId === null ? '' : String(eventPlayerFilterId)}
-                                onChange={(e) => {
-                                  const raw = String(e.target.value || '');
-                                  if (!raw) {
-                                    setEventPlayerFilterId(null);
-                                    return;
-                                  }
-                                  const id = Number(raw);
-                                  setEventPlayerFilterId(Number.isFinite(id) ? id : null);
-                                }}
-                                title="Filter events by player"
-                              >
-                                <option value="">All players</option>
-                                {playersAtTime.map((p) => (
-                                  <option key={p.playerId} value={String(p.playerId)}>
-                                    {p.name} (#{p.playerId})
-                                  </option>
-                                ))}
-                              </select>
-                            </div>
-                          </div>
+                      <div className="scroll" style={{ flex: 1, minHeight: 0, overflow: 'auto', border: '1px solid rgba(255,255,255,0.10)', borderRadius: 8 }}>
+                        {filteredPlayers.length === 0 ? (
+                          <div className="muted" style={{ padding: 10, fontSize: 12 }}>No players.</div>
                         ) : (
-                          <div className="muted" style={{ fontSize: 12 }}>No snapshot data for this player at the current time.</div>
+                          filteredPlayers.map((p) => {
+                            const isSelected = selectedPlayerId === p.playerId;
+                            return (
+                              <button
+                                key={p.playerId}
+                                type="button"
+                                onClick={() => {
+                                  setSelectedPlayerId(p.playerId);
+                                  setAttachedPlayerId(p.playerId);
+                                  const marker = playerMarkers.find((m) => m.playerId === p.playerId);
+                                  if (marker) {
+                                    setFocusTarget(marker.pos);
+                                    setFocusNonce((n) => n + 1);
+                                  }
+                                }}
+                                className="button"
+                                style={{
+                                  width: '100%', textAlign: 'left', borderRadius: 0, border: 'none',
+                                  borderBottom: '1px solid rgba(255,255,255,0.06)',
+                                  background: isSelected ? 'rgba(249,188,89,0.15)' : 'transparent',
+                                  padding: '6px 10px',
+                                }}
+                              >
+                                <div style={{ fontWeight: 600, fontSize: 12 }}>{p.name}</div>
+                              </button>
+                            );
+                          })
                         )}
                       </div>
+
+                      {/* Selected player detail */}
+                      {selectedPlayerId !== null ? (
+                        <div style={{ flexShrink: 0, borderTop: '1px solid rgba(255,255,255,0.10)', paddingTop: 8 }}>
+                          {selectedPlayerStateWithEquipmentCache ? (
+                            <div style={{ fontSize: 12 }}>
+                              <div style={{ fontWeight: 700, marginBottom: 4 }}>
+                                {knownPlayers.find((x) => x.playerId === selectedPlayerId)?.name || `#${selectedPlayerId}`}
+                              </div>
+                              <div className="muted" style={{ fontSize: 11, marginBottom: 6 }}>
+                                {((selectedPlayerStateWithEquipmentCache as any).weapon && (selectedPlayerStateWithEquipmentCache as any).weapon.name)
+                                  ? `Weapon: ${(selectedPlayerStateWithEquipmentCache as any).weapon.name}`
+                                  : 'No weapon'}
+                              </div>
+
+                              <details>
+                                <summary style={{ cursor: 'pointer', fontWeight: 700, fontSize: 11 }}>
+                                  Inventory ({Array.isArray((selectedPlayerStateWithEquipmentCache as any).inventory) ? (selectedPlayerStateWithEquipmentCache as any).inventory.length : 0})
+                                </summary>
+                                <div className="scroll" style={{ marginTop: 4, maxHeight: 120, overflow: 'auto', border: '1px solid rgba(255,255,255,0.10)', borderRadius: 6 }}>
+                                  {(() => {
+                                    const grouped = groupByName((selectedPlayerStateWithEquipmentCache as any).inventory, (it) => (it && it.name) ? String(it.name) : 'Item');
+                                    if (grouped.length === 0) {
+                                      return <div className="muted" style={{ padding: 8, fontSize: 11 }}>No inventory data.</div>;
+                                    }
+                                    return grouped.slice(0, 80).map((g, idx) => (
+                                      <div key={idx} style={{ padding: '4px 8px', borderBottom: '1px solid rgba(255,255,255,0.06)', fontSize: 11 }}>
+                                        {g.name}{g.count > 1 ? ` ×${g.count}` : ''}
+                                      </div>
+                                    ));
+                                  })()}
+                                </div>
+                              </details>
+
+                              <details style={{ marginTop: 4 }}>
+                                <summary style={{ cursor: 'pointer', fontWeight: 700, fontSize: 11 }}>
+                                  Hotbar ({Array.isArray((selectedPlayerStateWithEquipmentCache as any).attachments) ? (selectedPlayerStateWithEquipmentCache as any).attachments.length : 0})
+                                </summary>
+                                <div className="scroll" style={{ marginTop: 4, maxHeight: 120, overflow: 'auto', border: '1px solid rgba(255,255,255,0.10)', borderRadius: 6 }}>
+                                  {Array.isArray((selectedPlayerStateWithEquipmentCache as any).attachments) && (selectedPlayerStateWithEquipmentCache as any).attachments.length > 0 ? (
+                                    (selectedPlayerStateWithEquipmentCache as any).attachments.map((at: any, idx: number) => (
+                                      <div key={idx} style={{ padding: '4px 8px', borderBottom: '1px solid rgba(255,255,255,0.06)', fontSize: 11 }}>
+                                        {at && at.slot ? <span className="muted">{String(at.slot)}: </span> : null}
+                                        {at && at.name ? String(at.name) : 'Item'}
+                                      </div>
+                                    ))
+                                  ) : (
+                                    <div className="muted" style={{ padding: 8, fontSize: 11 }}>No hotbar data.</div>
+                                  )}
+                                </div>
+                              </details>
+                            </div>
+                          ) : (
+                            <div className="muted" style={{ fontSize: 11 }}>No snapshot data for this player.</div>
+                          )}
+                        </div>
+                      ) : null}
                     </div>
                   ) : null}
+                </div>
+              </div>
+
+              {/* Right panel — Events */}
+              <div style={{ position: 'absolute', top: 12, right: 12, bottom: 148, width: 340, display: 'flex', flexDirection: 'column' }}>
+                <div className="card" style={{ padding: 10, background: 'rgba(0,0,0,0.55)', border: '1px solid rgba(255,255,255,0.14)', display: 'flex', flexDirection: 'column', overflow: 'hidden', maxHeight: '100%' }}>
+                  <div style={{ flexShrink: 0 }}>
+                    <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', gap: 8, flexWrap: 'nowrap' }}>
+                      <div style={{ fontWeight: 800, fontSize: 12 }}>Events</div>
+                      <div className="row" style={{ gap: 6, alignItems: 'center' }}>
+                        <div className="muted" style={{ fontSize: 10 }}>offset</div>
+                        <input className="input" style={{ width: 48, padding: '3px 6px', fontSize: 11, textAlign: 'center' }}
+                          type="number" min={0} max={60} step={1} value={eventClickOffsetSeconds}
+                          onChange={(e) => setEventClickOffsetSeconds(Math.max(0, Math.min(60, Math.floor(Number(e.target.value) || 0))))}
+                          title="Jump this many seconds before an event" />
+                        <div className="muted" style={{ fontSize: 10 }}>s</div>
+                      </div>
+                    </div>
+
+                    <select className="input" style={{ width: '100%', padding: '4px 8px', marginTop: 6, fontSize: 11 }}
+                      value={eventPlayerFilterId === null ? '' : String(eventPlayerFilterId)}
+                      onChange={(e) => {
+                        const raw = String(e.target.value || '');
+                        if (!raw) { setEventPlayerFilterId(null); return; }
+                        const id = Number(raw);
+                        setEventPlayerFilterId(Number.isFinite(id) ? id : null);
+                      }}
+                      title="Filter events by player"
+                    >
+                      <option value="">All players</option>
+                      {playersAtTime.map((p) => (
+                        <option key={p.playerId} value={String(p.playerId)}>
+                          {p.name} (#{p.playerId})
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="scroll" style={{ flex: 1, minHeight: 0, overflow: 'auto', marginTop: 8 }}>
+                    {timelineEvents.length === 0 ? (
+                      <div className="muted" style={{ padding: 10, fontSize: 12, textAlign: 'center' }}>No events yet.</div>
+                    ) : (
+                      timelineEvents.slice().reverse().map((ev, idx) => {
+                        const key = `${ev.tsMs}|${ev.type}|${ev.title}|${ev.subtitle || ''}`;
+                        const isSelected = selectedEventKey === key;
+                        const canPing = !!serverId && ev.type !== 'gmPing' && !!ev.focusPos;
+                        const pingTitle = ev.subtitle ? `${ev.title} • ${ev.subtitle}` : ev.title;
+                        const typeColor = (ev.type === 'kill' || ev.type === 'death' || ev.type === 'aiKill')
+                          ? '#ff4a4a'
+                          : ev.type === 'restart' ? '#ffd966'
+                          : ev.type === 'gmPing' ? '#7acbff'
+                          : ev.type === 'disconnect' ? 'rgba(183,247,200,0.4)'
+                          : '#b7f7c8';
+                        return (
+                          <div
+                            key={`${ev.tsMs}-${idx}`}
+                            ref={(el) => {
+                              if (el) eventCardRefs.current.set(key, el);
+                              else eventCardRefs.current.delete(key);
+                            }}
+                            role="button"
+                            tabIndex={0}
+                            style={{
+                              padding: '6px 8px',
+                              borderLeft: `3px solid ${typeColor}`,
+                              marginBottom: 2,
+                              borderRadius: 4,
+                              background: isSelected ? 'rgba(255,255,255,0.10)' : 'transparent',
+                              cursor: 'pointer',
+                              position: 'relative',
+                            }}
+                            onClick={() => {
+                              setSelectedEventKey(key);
+                              setIsPlaying(false);
+                              setLive(false);
+                              jumpToEventTs(ev.tsMs);
+                              if (typeof ev.focusPlayerId === 'number') setSelectedPlayerId(ev.focusPlayerId);
+                              if (ev.focusPos) {
+                                setFocusTarget(ev.focusPos);
+                                setFocusNonce((n) => n + 1);
+                              }
+                            }}
+                            onKeyDown={(e) => {
+                              if (e.key !== 'Enter' && e.key !== ' ') return;
+                              e.preventDefault();
+                              setSelectedEventKey(key);
+                              setIsPlaying(false);
+                              setLive(false);
+                              jumpToEventTs(ev.tsMs);
+                              if (typeof ev.focusPlayerId === 'number') setSelectedPlayerId(ev.focusPlayerId);
+                              if (ev.focusPos) {
+                                setFocusTarget(ev.focusPos);
+                                setFocusNonce((n) => n + 1);
+                              }
+                            }}
+                          >
+                            <div className="row" style={{ justifyContent: 'space-between', gap: 6 }}>
+                              <div style={{ fontWeight: 700, fontSize: 11, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>{ev.title}</div>
+                              <div className="muted" style={{ fontSize: 10, whiteSpace: 'nowrap', flexShrink: 0 }}>
+                                +{formatElapsedMs(ev.tsMs - scrubber.min)}
+                              </div>
+                            </div>
+                            <div className="row" style={{ justifyContent: 'space-between', gap: 6 }}>
+                              <div className="muted" style={{ fontSize: 10, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>
+                                {ev.subtitle || (formatWallClock ? formatWallClock(ev.tsMs) : '')}
+                              </div>
+                              {isSelected && canPing ? (
+                                <div className="row" style={{ gap: 4, flexShrink: 0 }}>
+                                  <button type="button" className="button" style={{ padding: '2px 6px', fontSize: 10 }}
+                                    title="Send GM ping"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      if (!serverId) return;
+                                      const pingPos = ev.focusPos;
+                                      if (!pingPos) return;
+                                      const reporterPlayerId = (typeof ev.focusPlayerId === 'number')
+                                        ? ev.focusPlayerId
+                                        : (Array.isArray(ev.playerIds) && ev.playerIds.length > 0 ? ev.playerIds[0] : null);
+                                      void sendReplayGmPing({ serverId, tsMs: ev.tsMs, pos: pingPos, title: pingTitle, reporterPlayerId });
+                                    }}
+                                  >Ping</button>
+                                  <button type="button" className="button" style={{ padding: '2px 6px', fontSize: 10 }}
+                                    title="Export to Discord"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      if (!serverId) return;
+                                      const exportPos = ev.focusPos;
+                                      if (!exportPos) return;
+                                      void (async () => {
+                                        try {
+                                          await exportReplayEventToDiscord({
+                                            serverId, tsMs: ev.tsMs, title: ev.title, pos: exportPos,
+                                            focusPlayerId: (typeof ev.focusPlayerId === 'number') ? ev.focusPlayerId : null,
+                                            playerIds: Array.isArray(ev.playerIds) ? ev.playerIds : null,
+                                          });
+                                          pushToast({ kind: 'event', title: 'Discord export', subtitle: 'Sent' });
+                                        } catch (err) {
+                                          setError(err instanceof Error ? err.message : 'Failed to export to Discord');
+                                        }
+                                      })();
+                                    }}
+                                  >Export</button>
+                                </div>
+                              ) : null}
+                            </div>
+                          </div>
+                        );
+                      })
+                    )}
+                  </div>
                 </div>
               </div>
 
@@ -3045,7 +2846,6 @@ export function ReplayToolPage() {
                                   setFocusNonce((n) => n + 1);
                                 }
 
-                                setLeftPanelTab('events');
                                 setSelectedEventKey(key);
                                 setHoveredEventDot(null);
                               }}
