@@ -253,6 +253,91 @@ function formatReplayClock(ms) {
   return `${m}:${s}`;
 }
 
+// ─── PII tracking ─────────────────────────────────────────────────────────
+// Persistent per-server player database: { [uid]: { uid, names: [str], ips: [str], firstSeen, lastSeen, sessionCount } }
+const piiCaches = new Map(); // safeId -> { data, dirty, writeTimer }
+
+async function loadPii(serverDir) {
+  const piiPath = path.join(serverDir, 'pii.json');
+  const raw = await readJsonOrNull(piiPath);
+  return (raw && typeof raw === 'object' && !Array.isArray(raw)) ? raw : {};
+}
+
+async function savePii(serverDir, data) {
+  const piiPath = path.join(serverDir, 'pii.json');
+  await writeJsonAtomic(piiPath, data);
+}
+
+function getPiiCache(safeId, serverDir) {
+  if (piiCaches.has(safeId)) return piiCaches.get(safeId);
+  const entry = { data: null, dirty: false, writeTimer: null, serverDir };
+  piiCaches.set(safeId, entry);
+  return entry;
+}
+
+async function ensurePiiLoaded(safeId, serverDir) {
+  const cache = getPiiCache(safeId, serverDir);
+  if (!cache.data) {
+    cache.data = await loadPii(serverDir);
+  }
+  return cache;
+}
+
+function schedulePiiWrite(safeId) {
+  const cache = piiCaches.get(safeId);
+  if (!cache || cache.writeTimer) return;
+  cache.writeTimer = setTimeout(async () => {
+    cache.writeTimer = null;
+    if (cache.dirty && cache.data) {
+      cache.dirty = false;
+      try { await savePii(cache.serverDir, cache.data); }
+      catch (e) { console.error('[pii] write error', e); cache.dirty = true; }
+    }
+  }, 5000);
+}
+
+function recordPiiPlayer(cache, uid, name, ip, tsMs) {
+  if (!uid) return;
+  const data = cache.data;
+  if (!data[uid]) {
+    data[uid] = { uid, names: [], ips: [], firstSeen: tsMs, lastSeen: tsMs, sessionCount: 0 };
+  }
+  const rec = data[uid];
+  if (name && !rec.names.includes(name)) rec.names.push(name);
+  if (ip && !rec.ips.includes(ip)) rec.ips.push(ip);
+  if (tsMs > rec.lastSeen) rec.lastSeen = tsMs;
+  cache.dirty = true;
+}
+
+async function updatePiiFromPayload(serverDir, payload, receivedAt) {
+  if (!payload) return;
+  const safeId = path.basename(serverDir);
+  const cache = await ensurePiiLoaded(safeId, serverDir);
+  const tsMs = receivedAt;
+
+  if (payload.type === 'join' && payload.event) {
+    const ev = payload.event;
+    const uid = typeof ev.identityId === 'string' ? ev.identityId : '';
+    const name = typeof ev.name === 'string' ? ev.name : '';
+    const ip = typeof ev.ip === 'string' ? ev.ip : '';
+    if (uid) {
+      recordPiiPlayer(cache, uid, name, ip, tsMs);
+      if (cache.data[uid]) cache.data[uid].sessionCount = (cache.data[uid].sessionCount || 0) + 1;
+    }
+  }
+
+  if (payload.type === 'snapshot' && Array.isArray(payload.players)) {
+    for (const p of payload.players) {
+      if (!p) continue;
+      const uid = typeof p.identityId === 'string' ? p.identityId : '';
+      const name = typeof p.name === 'string' ? p.name : '';
+      if (uid) recordPiiPlayer(cache, uid, name, '', tsMs);
+    }
+  }
+
+  if (cache.dirty) schedulePiiWrite(safeId);
+}
+
 function coerceTerrainGrid(t) {
   if (!t || typeof t !== 'object') return null;
   const bbMin = coerceVec3(t.bbMin);
@@ -1004,6 +1089,7 @@ function normalizeTools(tools) {
     events: t.events !== undefined ? !!t.events : admin,
     health: t.health !== undefined ? !!t.health : admin,
     playerLookup: t.playerLookup !== undefined ? !!t.playerLookup : admin,
+    pii: t.pii !== undefined ? !!t.pii : admin,
   };
 }
 
@@ -1690,7 +1776,7 @@ app.post('/api/auth/login', (req, res) => {
     const token = signToken({
       sub: uname,
       exp: Date.now() + 24 * 60 * 60 * 1000,
-      tools: { replay: true, admin: true, dev: true, players: true, bans: true, mutes: true, events: true, health: true, playerLookup: true },
+      tools: { replay: true, admin: true, dev: true, players: true, bans: true, mutes: true, events: true, health: true, playerLookup: true, pii: true },
       bootstrap: true,
     });
 
@@ -1828,6 +1914,8 @@ app.get('/api/replay/mapTerrain', requireAuth, requireTool('replay'), asyncRoute
   const safeId = sanitizeServerId(serverId);
   const { mapId } = await getOrInferServerMapId(safeId);
 
+  console.log(`[mapTerrain] serverId=${serverId}, safeId=${safeId}, mapId=${mapId || 'null'}`);
+
   if (!mapId) {
     res.status(404).send('No mapId for server');
     return;
@@ -1835,6 +1923,7 @@ app.get('/api/replay/mapTerrain', requireAuth, requireTool('replay'), asyncRoute
 
   const terrainPath = path.join(MAPS_DIR, `${mapId}.terrain.json`);
   const terrain = await readJsonOrNull(terrainPath);
+  console.log(`[mapTerrain] terrainPath=${terrainPath}, found=${!!terrain}, hasHeights=${terrain && Array.isArray(terrain.heights) ? terrain.heights.length : 0}`);
   if (!terrain) {
     res.status(404).send('No terrain cached for map');
     return;
@@ -2790,6 +2879,61 @@ app.get('/api/admin/player/:uid', requireAuth, requireTool('playerLookup'), asyn
   res.json({ playerUID: uid, playerName, lastSeen, totalKills, totalDeaths, bans, mutes });
 }));
 
+// ─── PII ────────────────────────────────────────────────────────────────────
+
+app.get('/api/admin/pii', requireAuth, requireTool('pii'), asyncRoute(async (req, res) => {
+  const serverId = String(req.query.serverId || '');
+  if (!serverId) { res.status(400).send('Missing serverId'); return; }
+
+  const safeId = sanitizeServerId(serverId);
+  const serverDir = path.join(DATA_DIR, 'servers', safeId);
+  const cache = await ensurePiiLoaded(safeId, serverDir);
+  const records = Object.values(cache.data);
+
+  // Build IP -> UIDs map for alt detection
+  const ipToUids = {};
+  for (const rec of records) {
+    if (!rec.ips || !Array.isArray(rec.ips)) continue;
+    for (const ip of rec.ips) {
+      if (!ipToUids[ip]) ipToUids[ip] = [];
+      if (!ipToUids[ip].includes(rec.uid)) ipToUids[ip].push(rec.uid);
+    }
+  }
+
+  // Mark records that share IPs with other accounts
+  const result = records.map((rec) => {
+    const altUids = new Set();
+    if (rec.ips && Array.isArray(rec.ips)) {
+      for (const ip of rec.ips) {
+        const uids = ipToUids[ip];
+        if (uids && uids.length > 1) {
+          for (const u of uids) {
+            if (u !== rec.uid) altUids.add(u);
+          }
+        }
+      }
+    }
+    return {
+      uid: rec.uid,
+      names: rec.names || [],
+      ips: rec.ips || [],
+      firstSeen: rec.firstSeen,
+      lastSeen: rec.lastSeen,
+      sessionCount: rec.sessionCount || 0,
+      altUids: [...altUids],
+    };
+  });
+
+  // Sort: players with alts first, then by lastSeen descending
+  result.sort((a, b) => {
+    if (a.altUids.length > 0 && b.altUids.length === 0) return -1;
+    if (a.altUids.length === 0 && b.altUids.length > 0) return 1;
+    return (b.lastSeen || 0) - (a.lastSeen || 0);
+  });
+
+  res.json({ players: result, total: result.length });
+}));
+
 // ─── End Admin Bridge ───────────────────────────────────────────────────────
 
 app.post('/api/replay/ingest', async (req, res) => {
@@ -2977,6 +3121,8 @@ app.post('/api/replay/ingest', async (req, res) => {
           ? crypto.createHash('sha256').update(worldFile, 'utf8').digest('hex').slice(0, 16)
           : (typeof next.mapId === 'string' ? next.mapId : null);
 
+        console.log(`[terrain] Received terrain payload: mapId=${mapId}, worldFile=${worldFile}, hasEvent=${!!ev}, heightsLen=${ev && Array.isArray(ev.heights) ? ev.heights.length : 0}, gridW=${ev ? ev.gridW : '?'}, gridH=${ev ? ev.gridH : '?'}, bbMin=${JSON.stringify(ev ? ev.bbMin : null)}, bbMax=${JSON.stringify(ev ? ev.bbMax : null)}`);
+
         if (mapId) {
           next.mapId = mapId;
           if (worldFile) next.mapWorldFile = worldFile;
@@ -2987,6 +3133,7 @@ app.post('/api/replay/ingest', async (req, res) => {
           const hasHeights = ev && Array.isArray(ev.heights) && ev.heights.length > 0;
 
           if (hasHeights) {
+            console.log(`[terrain] Writing terrain with ${ev.heights.length} heights to ${terrainPath}`);
             await writeJsonAtomic(terrainPath, {
               mapId,
               worldFile,
@@ -2995,6 +3142,7 @@ app.post('/api/replay/ingest', async (req, res) => {
               ...ev,
             });
           } else if (!existing) {
+            console.log(`[terrain] Writing terrain stub (no heights) to ${terrainPath}`);
             await writeJsonAtomic(terrainPath, {
               mapId,
               worldFile,
@@ -3002,7 +3150,11 @@ app.post('/api/replay/ingest', async (req, res) => {
               updatedAt: receivedAt,
               ...ev,
             });
+          } else {
+            console.log(`[terrain] Skipped write: no heights and file already exists at ${terrainPath}`);
           }
+        } else {
+          console.log(`[terrain] No mapId could be determined, skipping terrain save`);
         }
       }
 
@@ -3140,6 +3292,9 @@ app.post('/api/replay/ingest', async (req, res) => {
         };
         await writeJsonAtomic(latestSnapPath, minimalSnap);
       }
+
+      // PII tracking: record player data from join events and snapshots
+      await updatePiiFromPayload(serverDir, normalizedPayload, receivedAt);
     });
 
     res.json(commandsToSend ? { ok: true, commands: commandsToSend } : { ok: true });

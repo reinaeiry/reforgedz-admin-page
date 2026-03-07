@@ -74,7 +74,7 @@ function BansTab({ serverId }: { serverId: string }) {
   async function onUnban(uid: string, name: string) {
     if (!confirm(`Unban ${name || uid}?`)) return;
     setBusy(true); setError(null);
-    try { await removeBan(serverId, uid); await refresh(); } catch (e) { setError(e instanceof Error ? e.message : 'Failed to unban'); } finally { setBusy(false); }
+    try { await removeBan(serverId, uid); setBans((prev) => prev.filter((b) => b.playerUID !== uid)); } catch (e) { setError(e instanceof Error ? e.message : 'Failed to unban'); } finally { setBusy(false); }
   }
 
   return (
@@ -164,7 +164,7 @@ function MutesTab({ serverId }: { serverId: string }) {
   async function onUnmute(uid: string, name: string) {
     if (!confirm(`Unmute ${name || uid}?`)) return;
     setBusy(true); setError(null);
-    try { await removeMute(serverId, uid); await refresh(); } catch (e) { setError(e instanceof Error ? e.message : 'Failed to unmute'); } finally { setBusy(false); }
+    try { await removeMute(serverId, uid); setMutes((prev) => prev.filter((m) => m.playerUID !== uid)); } catch (e) { setError(e instanceof Error ? e.message : 'Failed to unmute'); } finally { setBusy(false); }
   }
 
   return (

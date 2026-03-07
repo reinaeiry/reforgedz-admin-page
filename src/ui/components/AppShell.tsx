@@ -78,8 +78,9 @@ function AppShellInner() {
             </SidebarSection>
           ) : null}
 
-          {(hasToolAccess('admin') || hasToolAccess('dev')) ? (
+          {(hasToolAccess('admin') || hasToolAccess('dev') || hasToolAccess('pii')) ? (
             <SidebarSection label="Management">
+              {hasToolAccess('pii') ? <NavItem to="/pii" label="PII" /> : null}
               {hasToolAccess('admin') ? <NavItem to="/admin" label="Admin Management" /> : null}
               {hasToolAccess('dev') ? <NavItem to="/dev" label="Dev" /> : null}
             </SidebarSection>

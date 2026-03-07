@@ -15,6 +15,7 @@ export type SessionClaims = {
     events?: boolean;
     health?: boolean;
     playerLookup?: boolean;
+    pii?: boolean;
   };
 };
 
@@ -70,7 +71,7 @@ export function getSessionClaims(): SessionClaims | null {
   }
 }
 
-export type ToolName = 'replay' | 'admin' | 'dev' | 'players' | 'bans' | 'mutes' | 'events' | 'health' | 'playerLookup';
+export type ToolName = 'replay' | 'admin' | 'dev' | 'players' | 'bans' | 'mutes' | 'events' | 'health' | 'playerLookup' | 'pii';
 
 export function hasToolAccess(tool: ToolName): boolean {
   const c = getSessionClaims();

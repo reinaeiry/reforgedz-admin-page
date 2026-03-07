@@ -764,3 +764,33 @@ export async function getPlayerProfile(serverId: string, playerUID: string): Pro
   if (!res.ok) throw new Error((await res.text()) || `Failed to get player profile (${res.status})`);
   return (await res.json()) as PlayerProfile;
 }
+
+// ─── PII ─────────────────────────────────────────────────────────────────────
+
+export type PiiPlayer = {
+  uid: string;
+  names: string[];
+  ips: string[];
+  firstSeen: number;
+  lastSeen: number;
+  sessionCount: number;
+  altUids: string[];
+};
+
+export type PiiResponse = {
+  players: PiiPlayer[];
+  total: number;
+};
+
+export async function getPiiPlayers(serverId: string): Promise<PiiResponse> {
+  const base = requireApiBaseUrl();
+  const session = getSession();
+  if (!session) throw new Error('Not authenticated');
+
+  const res = await fetch(
+    `${base}/api/admin/pii?serverId=${encodeURIComponent(serverId)}`,
+    { headers: { Authorization: `Bearer ${session.token}` } }
+  );
+  if (!res.ok) throw new Error((await res.text()) || `Failed to get PII data (${res.status})`);
+  return (await res.json()) as PiiResponse;
+}
