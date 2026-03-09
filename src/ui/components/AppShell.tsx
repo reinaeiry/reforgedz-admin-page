@@ -1,37 +1,67 @@
 import React from 'react';
-import { NavLink, Outlet, useNavigate } from 'react-router-dom';
-import { clearSession, hasToolAccess } from '../../util/session';
+import { NavLink, Outlet, useNavigate, useLocation } from 'react-router-dom';
+import { clearSession, hasToolAccess, type ToolName } from '../../util/session';
 import { ServerProvider, useServer } from '../ServerContext';
 
-function NavItem(props: { to: string; label: string; icon: string }) {
-  return (
-    <NavLink
-      to={props.to}
-      className={({ isActive }) => `navItem${isActive ? ' navItemActive' : ''}`}
-    >
-      <span className="navIcon">{props.icon}</span>
-      {props.label}
-    </NavLink>
-  );
+const NAV_ITEMS: { to: string; label: string; icon: string; tool?: ToolName | ToolName[] }[] = [
+  { to: '/', label: 'Dashboard', icon: '\u25A0' },
+  { to: '/replay', label: 'Replay', icon: '\u25B6', tool: 'replay' },
+  { to: '/players', label: 'Players', icon: '\u25CF', tool: ['players', 'playerLookup'] },
+  { to: '/moderation', label: 'Moderation', icon: '\u26A0', tool: ['bans', 'mutes'] },
+  { to: '/server', label: 'Server', icon: '\u2699', tool: ['events', 'health'] },
+  { to: '/pii', label: 'PII', icon: '\uD83D\uDD12', tool: 'pii' },
+  { to: '/admin', label: 'Users', icon: '\u2606', tool: 'admin' },
+  { to: '/dev', label: 'Dev', icon: '\u270E', tool: 'dev' },
+];
+
+function canAccess(tool?: ToolName | ToolName[]): boolean {
+  if (!tool) return true;
+  if (Array.isArray(tool)) return tool.some((t) => hasToolAccess(t));
+  return hasToolAccess(tool);
 }
 
-function SidebarSection(props: { label: string; children: React.ReactNode }) {
+function pageName(pathname: string): string {
+  const item = NAV_ITEMS.find((n) => n.to === pathname);
+  return item?.label ?? 'ReforgedZ';
+}
+
+// Split nav items into sections for dividers
+function RailNav() {
+  const accessible = NAV_ITEMS.filter((n) => canAccess(n.tool));
+  const home = accessible.filter((n) => n.to === '/');
+  const tools = accessible.filter((n) => ['/replay'].includes(n.to));
+  const admin = accessible.filter((n) => ['/players', '/moderation', '/server'].includes(n.to));
+  const mgmt = accessible.filter((n) => ['/pii', '/admin', '/dev'].includes(n.to));
+
+  const sections = [home, tools, admin, mgmt].filter((s) => s.length > 0);
+
   return (
-    <div>
-      <div className="sidebarSection">{props.label}</div>
-      <div className="stack" style={{ gap: 2 }}>
-        {props.children}
-      </div>
-    </div>
+    <>
+      {sections.map((section, si) => (
+        <React.Fragment key={si}>
+          {si > 0 && <div className="railDivider" />}
+          {section.map((n) => (
+            <NavLink
+              key={n.to}
+              to={n.to}
+              end={n.to === '/'}
+              className={({ isActive }) => `railItem${isActive ? ' railItemActive' : ''}`}
+              data-tooltip={n.label}
+            >
+              {n.icon}
+            </NavLink>
+          ))}
+        </React.Fragment>
+      ))}
+    </>
   );
 }
 
 function ServerSelector() {
   const { servers, serverId, setServerId } = useServer();
   return (
-    <div className="serverSelector">
-      <div className="label">Server</div>
-      <select className="input" value={serverId} onChange={(e) => setServerId(e.target.value)}>
+    <div className="topBarServer">
+      <select value={serverId} onChange={(e) => setServerId(e.target.value)}>
         <option value="">Select server...</option>
         {servers.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
       </select>
@@ -41,58 +71,34 @@ function ServerSelector() {
 
 function AppShellInner() {
   const nav = useNavigate();
+  const location = useLocation();
 
   function onLogout() {
     clearSession();
     nav('/login', { replace: true });
   }
 
-  const showPlayers = hasToolAccess('players') || hasToolAccess('playerLookup');
-  const showModeration = hasToolAccess('bans') || hasToolAccess('mutes');
-  const showServer = hasToolAccess('events') || hasToolAccess('health');
-  const showAdmin = showPlayers || showModeration || showServer;
-
   return (
     <div className="appShell">
-      <aside className="sidebar scroll">
-        <div className="sidebarBrand">
-          <div className="sidebarBrandName">ReforgedZ</div>
-          <div className="sidebarBrandTitle">Admin Panel</div>
+      {/* Icon rail */}
+      <nav className="rail scroll">
+        <div className="railLogo">RZ</div>
+        <RailNav />
+        <div className="railSpacer" />
+      </nav>
+
+      {/* Top bar */}
+      <header className="topBar">
+        <div className="topBarLeft">
+          <span className="topBarTitle">{pageName(location.pathname)}</span>
+          <ServerSelector />
         </div>
-
-        <ServerSelector />
-
-        <div className="stack" style={{ gap: 2 }}>
-          <NavItem to="/" label="Dashboard" icon="&#9632;" />
-
-          {hasToolAccess('replay') ? (
-            <SidebarSection label="Tools">
-              <NavItem to="/replay" label="Replay Tool" icon="&#9654;" />
-            </SidebarSection>
-          ) : null}
-
-          {showAdmin ? (
-            <SidebarSection label="Admin">
-              {showPlayers ? <NavItem to="/players" label="Players" icon="&#9679;" /> : null}
-              {showModeration ? <NavItem to="/moderation" label="Moderation" icon="&#9888;" /> : null}
-              {showServer ? <NavItem to="/server" label="Server" icon="&#9881;" /> : null}
-            </SidebarSection>
-          ) : null}
-
-          {(hasToolAccess('admin') || hasToolAccess('dev') || hasToolAccess('pii')) ? (
-            <SidebarSection label="Management">
-              {hasToolAccess('pii') ? <NavItem to="/pii" label="PII Data" icon="&#128274;" /> : null}
-              {hasToolAccess('admin') ? <NavItem to="/admin" label="Users" icon="&#9734;" /> : null}
-              {hasToolAccess('dev') ? <NavItem to="/dev" label="Developer" icon="&#9998;" /> : null}
-            </SidebarSection>
-          ) : null}
+        <div className="topBarRight">
+          <button className="logoutBtn" onClick={onLogout}>Sign out</button>
         </div>
+      </header>
 
-        <button className="logoutBtn" onClick={onLogout}>
-          Sign out
-        </button>
-      </aside>
-
+      {/* Page content */}
       <main className="main scroll">
         <Outlet />
       </main>

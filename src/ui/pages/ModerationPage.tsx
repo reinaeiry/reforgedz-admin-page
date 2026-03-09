@@ -36,12 +36,11 @@ function formatExpiry(timestamp: number, duration: number): string {
   return `${mins}m remaining`;
 }
 
-function expiryTagStyle(timestamp: number, duration: number): React.CSSProperties {
-  if (duration === 0) return { color: 'var(--rz-danger)', background: 'var(--rz-danger-soft)' };
-  const expiresAt = (timestamp + duration) * 1000;
-  const remaining = expiresAt - Date.now();
-  if (remaining <= 0) return { color: 'var(--rz-muted)', background: 'rgba(255,255,255,0.04)' };
-  return { color: 'var(--rz-warning)', background: 'rgba(251,191,36,0.08)' };
+function expiryTag(ts: number, dur: number): { color: string; bg: string } {
+  if (dur === 0) return { color: 'var(--red)', bg: 'var(--red-dim)' };
+  const rem = (ts + dur) * 1000 - Date.now();
+  if (rem <= 0) return { color: 'var(--text-dim)', bg: 'rgba(255,255,255,0.04)' };
+  return { color: 'var(--yellow)', bg: 'var(--yellow-dim)' };
 }
 
 function BansTab({ serverId }: { serverId: string }) {
@@ -82,26 +81,23 @@ function BansTab({ serverId }: { serverId: string }) {
   async function onUnban(uid: string, name: string) {
     if (!confirm(`Unban ${name || uid}?`)) return;
     setBusy(true); setError(null);
-    try { await removeBan(serverId, uid); setBans((prev) => prev.filter((b) => b.playerUID !== uid)); } catch (e) { setError(e instanceof Error ? e.message : 'Failed to unban'); } finally { setBusy(false); }
+    try { await removeBan(serverId, uid); setBans((p) => p.filter((b) => b.playerUID !== uid)); } catch (e) { setError(e instanceof Error ? e.message : 'Failed to unban'); } finally { setBusy(false); }
   }
 
   return (
     <div className="stack">
       <div className="card">
-        <div className="stack">
-          <div>
-            <div style={{ fontWeight: 700, fontSize: 15, color: 'var(--rz-text-bright)', marginBottom: 4 }}>Add Ban</div>
-            <div className="muted" style={{ fontSize: 12 }}>Ban a player by their Bohemia Identity ID.</div>
-          </div>
-          <div className="row" style={{ gap: 12 }}>
+        <div className="stack" style={{ gap: 12 }}>
+          <div style={{ fontWeight: 700, color: 'var(--text-bright)' }}>Add Ban</div>
+          <div className="row" style={{ gap: 10 }}>
             <div style={{ flex: 1 }}><div className="label">Player UID</div><input className="input" value={banUID} onChange={(e) => setBanUID(e.target.value)} placeholder="BI Identity ID" /></div>
-            <div style={{ flex: 1 }}><div className="label">Name (optional)</div><input className="input" value={banName} onChange={(e) => setBanName(e.target.value)} placeholder="Player name" /></div>
+            <div style={{ flex: 1 }}><div className="label">Name</div><input className="input" value={banName} onChange={(e) => setBanName(e.target.value)} placeholder="Optional" /></div>
           </div>
-          <div className="row" style={{ gap: 12 }}>
+          <div className="row" style={{ gap: 10 }}>
             <div style={{ flex: 2 }}><div className="label">Reason</div><input className="input" value={banReason} onChange={(e) => setBanReason(e.target.value)} placeholder="Ban reason" /></div>
             <div style={{ flex: 1 }}><div className="label">Duration</div><select className="input" value={banDuration} onChange={(e) => setBanDuration(Number(e.target.value))}>{BAN_DURATIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}</select></div>
           </div>
-          <div className="row" style={{ justifyContent: 'flex-end' }}>
+          <div style={{ textAlign: 'right' }}>
             <button className="button buttonPrimary" disabled={busy || !serverId || !banUID.trim()} onClick={onBan}>Ban Player</button>
           </div>
         </div>
@@ -109,35 +105,38 @@ function BansTab({ serverId }: { serverId: string }) {
 
       {error ? <div className="error">{error}</div> : null}
 
-      <div className="row" style={{ gap: 12 }}>
+      <div className="row" style={{ gap: 10 }}>
         <div style={{ flex: 1 }}><input className="input" placeholder="Search bans..." value={search} onChange={(e) => setSearch(e.target.value)} /></div>
         <button className="button" onClick={refresh} disabled={busy || !serverId}>Refresh</button>
       </div>
 
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-        <span style={{ fontWeight: 700, fontSize: 14, color: 'var(--rz-text-bright)' }}>{filtered.length}</span>
-        <span className="muted" style={{ fontSize: 13 }}>ban{filtered.length !== 1 ? 's' : ''}</span>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+        <span style={{ fontWeight: 700, color: 'var(--text-bright)' }}>{filtered.length}</span>
+        <span className="muted">ban{filtered.length !== 1 ? 's' : ''}</span>
       </div>
 
       <div className="listContainer">
         <div className="scroll" style={{ maxHeight: 440, overflow: 'auto' }}>
           {filtered.length === 0 ? (
-            <div className="listEmpty">{serverId ? 'No bans found.' : 'Select a server.'}</div>
-          ) : filtered.map((b) => (
-            <div key={b.playerUID} className="listRow">
-              <div className="row" style={{ justifyContent: 'space-between' }}>
-                <div style={{ minWidth: 0 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <span style={{ fontWeight: 700, color: 'var(--rz-text-bright)' }}>{b.playerName || b.playerUID}</span>
-                    <span className="tag" style={expiryTagStyle(b.timestamp, b.duration)}>{formatExpiry(b.timestamp, b.duration)}</span>
+            <div className="listEmpty">{serverId ? 'No bans.' : 'Select a server.'}</div>
+          ) : filtered.map((b) => {
+            const et = expiryTag(b.timestamp, b.duration);
+            return (
+              <div key={b.playerUID} className="listRow">
+                <div className="row" style={{ justifyContent: 'space-between' }}>
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <span style={{ fontWeight: 700, color: 'var(--text-bright)' }}>{b.playerName || b.playerUID}</span>
+                      <span className="tag" style={{ color: et.color, background: et.bg }}>{formatExpiry(b.timestamp, b.duration)}</span>
+                    </div>
+                    <div className="muted" style={{ fontSize: 10, fontFamily: "'JetBrains Mono', monospace", marginTop: 2 }}>{b.playerUID}</div>
+                    <div className="muted" style={{ fontSize: 11, marginTop: 1 }}>{b.reason} &middot; by {b.bannedBy}</div>
                   </div>
-                  <div className="muted" style={{ fontSize: 11, marginTop: 3, fontFamily: 'monospace' }}>{b.playerUID}</div>
-                  <div className="muted" style={{ fontSize: 12, marginTop: 2 }}>{b.reason} &middot; by {b.bannedBy}</div>
+                  <button className="button buttonSuccess" style={{ fontSize: 10, padding: '4px 10px', flexShrink: 0 }} disabled={busy} onClick={() => onUnban(b.playerUID, b.playerName)}>Unban</button>
                 </div>
-                <button className="button buttonSuccess" style={{ fontSize: 11, padding: '5px 12px', flexShrink: 0 }} disabled={busy} onClick={() => onUnban(b.playerUID, b.playerName)}>Unban</button>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       </div>
     </div>
@@ -182,26 +181,23 @@ function MutesTab({ serverId }: { serverId: string }) {
   async function onUnmute(uid: string, name: string) {
     if (!confirm(`Unmute ${name || uid}?`)) return;
     setBusy(true); setError(null);
-    try { await removeMute(serverId, uid); setMutes((prev) => prev.filter((m) => m.playerUID !== uid)); } catch (e) { setError(e instanceof Error ? e.message : 'Failed to unmute'); } finally { setBusy(false); }
+    try { await removeMute(serverId, uid); setMutes((p) => p.filter((m) => m.playerUID !== uid)); } catch (e) { setError(e instanceof Error ? e.message : 'Failed to unmute'); } finally { setBusy(false); }
   }
 
   return (
     <div className="stack">
       <div className="card">
-        <div className="stack">
-          <div>
-            <div style={{ fontWeight: 700, fontSize: 15, color: 'var(--rz-text-bright)', marginBottom: 4 }}>Add Mute</div>
-            <div className="muted" style={{ fontSize: 12 }}>Mute a player by their Bohemia Identity ID.</div>
-          </div>
-          <div className="row" style={{ gap: 12 }}>
+        <div className="stack" style={{ gap: 12 }}>
+          <div style={{ fontWeight: 700, color: 'var(--text-bright)' }}>Add Mute</div>
+          <div className="row" style={{ gap: 10 }}>
             <div style={{ flex: 1 }}><div className="label">Player UID</div><input className="input" value={muteUID} onChange={(e) => setMuteUID(e.target.value)} placeholder="BI Identity ID" /></div>
-            <div style={{ flex: 1 }}><div className="label">Name (optional)</div><input className="input" value={muteName} onChange={(e) => setMuteName(e.target.value)} placeholder="Player name" /></div>
+            <div style={{ flex: 1 }}><div className="label">Name</div><input className="input" value={muteName} onChange={(e) => setMuteName(e.target.value)} placeholder="Optional" /></div>
           </div>
-          <div className="row" style={{ gap: 12 }}>
+          <div className="row" style={{ gap: 10 }}>
             <div style={{ flex: 2 }}><div className="label">Reason</div><input className="input" value={muteReason} onChange={(e) => setMuteReason(e.target.value)} placeholder="Mute reason" /></div>
             <div style={{ flex: 1 }}><div className="label">Duration</div><select className="input" value={muteDuration} onChange={(e) => setMuteDuration(Number(e.target.value))}>{MUTE_DURATIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}</select></div>
           </div>
-          <div className="row" style={{ justifyContent: 'flex-end' }}>
+          <div style={{ textAlign: 'right' }}>
             <button className="button buttonPrimary" disabled={busy || !serverId || !muteUID.trim()} onClick={onMute}>Mute Player</button>
           </div>
         </div>
@@ -209,35 +205,38 @@ function MutesTab({ serverId }: { serverId: string }) {
 
       {error ? <div className="error">{error}</div> : null}
 
-      <div className="row" style={{ gap: 12 }}>
+      <div className="row" style={{ gap: 10 }}>
         <div style={{ flex: 1 }}><input className="input" placeholder="Search mutes..." value={search} onChange={(e) => setSearch(e.target.value)} /></div>
         <button className="button" onClick={refresh} disabled={busy || !serverId}>Refresh</button>
       </div>
 
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-        <span style={{ fontWeight: 700, fontSize: 14, color: 'var(--rz-text-bright)' }}>{filtered.length}</span>
-        <span className="muted" style={{ fontSize: 13 }}>mute{filtered.length !== 1 ? 's' : ''}</span>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+        <span style={{ fontWeight: 700, color: 'var(--text-bright)' }}>{filtered.length}</span>
+        <span className="muted">mute{filtered.length !== 1 ? 's' : ''}</span>
       </div>
 
       <div className="listContainer">
         <div className="scroll" style={{ maxHeight: 440, overflow: 'auto' }}>
           {filtered.length === 0 ? (
-            <div className="listEmpty">{serverId ? 'No mutes found.' : 'Select a server.'}</div>
-          ) : filtered.map((m) => (
-            <div key={m.playerUID} className="listRow">
-              <div className="row" style={{ justifyContent: 'space-between' }}>
-                <div style={{ minWidth: 0 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <span style={{ fontWeight: 700, color: 'var(--rz-text-bright)' }}>{m.playerName || m.playerUID}</span>
-                    <span className="tag" style={expiryTagStyle(m.timestamp, m.duration)}>{formatExpiry(m.timestamp, m.duration)}</span>
+            <div className="listEmpty">{serverId ? 'No mutes.' : 'Select a server.'}</div>
+          ) : filtered.map((m) => {
+            const et = expiryTag(m.timestamp, m.duration);
+            return (
+              <div key={m.playerUID} className="listRow">
+                <div className="row" style={{ justifyContent: 'space-between' }}>
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <span style={{ fontWeight: 700, color: 'var(--text-bright)' }}>{m.playerName || m.playerUID}</span>
+                      <span className="tag" style={{ color: et.color, background: et.bg }}>{formatExpiry(m.timestamp, m.duration)}</span>
+                    </div>
+                    <div className="muted" style={{ fontSize: 10, fontFamily: "'JetBrains Mono', monospace", marginTop: 2 }}>{m.playerUID}</div>
+                    <div className="muted" style={{ fontSize: 11, marginTop: 1 }}>{m.reason} &middot; by {m.mutedBy}</div>
                   </div>
-                  <div className="muted" style={{ fontSize: 11, marginTop: 3, fontFamily: 'monospace' }}>{m.playerUID}</div>
-                  <div className="muted" style={{ fontSize: 12, marginTop: 2 }}>{m.reason} &middot; by {m.mutedBy}</div>
+                  <button className="button buttonSuccess" style={{ fontSize: 10, padding: '4px 10px', flexShrink: 0 }} disabled={busy} onClick={() => onUnmute(m.playerUID, m.playerName)}>Unmute</button>
                 </div>
-                <button className="button buttonSuccess" style={{ fontSize: 11, padding: '5px 12px', flexShrink: 0 }} disabled={busy} onClick={() => onUnmute(m.playerUID, m.playerName)}>Unmute</button>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       </div>
     </div>
@@ -251,13 +250,13 @@ export function ModerationPage() {
   return (
     <div className="container">
       <div className="stack">
-        <h1 className="h1">Moderation</h1>
-
-        <div className="tabBar">
-          <button className={`tab${tab === 'bans' ? ' tabActive' : ''}`} onClick={() => setTab('bans')}>Bans</button>
-          <button className={`tab${tab === 'mutes' ? ' tabActive' : ''}`} onClick={() => setTab('mutes')}>Mutes</button>
+        <div className="row" style={{ justifyContent: 'space-between' }}>
+          <h1 className="h1">Moderation</h1>
+          <div className="tabBar">
+            <button className={`tab${tab === 'bans' ? ' tabActive' : ''}`} onClick={() => setTab('bans')}>Bans</button>
+            <button className={`tab${tab === 'mutes' ? ' tabActive' : ''}`} onClick={() => setTab('mutes')}>Mutes</button>
+          </div>
         </div>
-
         {tab === 'bans' ? <BansTab serverId={serverId} /> : <MutesTab serverId={serverId} />}
       </div>
     </div>

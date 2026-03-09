@@ -25,15 +25,10 @@ function LivePlayersTab({ serverId }: { serverId: string }) {
 
   const refresh = useCallback(async () => {
     if (!serverId) return;
-    setBusy(true);
-    setError(null);
-    try {
-      setPlayers(await getLivePlayers(serverId));
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to load players');
-    } finally {
-      setBusy(false);
-    }
+    setBusy(true); setError(null);
+    try { setPlayers(await getLivePlayers(serverId)); }
+    catch (e) { setError(e instanceof Error ? e.message : 'Failed to load players'); }
+    finally { setBusy(false); }
   }, [serverId]);
 
   useEffect(() => {
@@ -60,71 +55,66 @@ function LivePlayersTab({ serverId }: { serverId: string }) {
     const reason = prompt(`Kick reason for ${p.name}:`);
     if (!reason) return;
     setBusy(true);
-    try {
-      await kickPlayer({ serverId, playerUID: p.identityId, reason });
-      await refresh();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to kick player');
-    } finally {
-      setBusy(false);
-    }
+    try { await kickPlayer({ serverId, playerUID: p.identityId, reason }); await refresh(); }
+    catch (e) { setError(e instanceof Error ? e.message : 'Failed to kick player'); }
+    finally { setBusy(false); }
   }
 
   return (
     <div className="stack">
-      <div className="row" style={{ gap: 12 }}>
+      <div className="row" style={{ gap: 10 }}>
         <div style={{ flex: 1 }}>
-          <div className="label">Search</div>
-          <input className="input" placeholder="Filter by name or UID..." value={search} onChange={(e) => setSearch(e.target.value)} />
+          <input className="input" placeholder="Search by name or UID..." value={search} onChange={(e) => setSearch(e.target.value)} />
         </div>
-        <div style={{ display: 'flex', alignItems: 'flex-end', gap: 8 }}>
-          <label className="row" style={{ gap: 6 }}>
-            <input type="checkbox" checked={autoRefresh} onChange={(e) => setAutoRefresh(e.target.checked)} />
-            <span className="muted" style={{ fontSize: 12 }}>Auto</span>
-          </label>
-          <button className="button" onClick={refresh} disabled={busy || !serverId}>Refresh</button>
-        </div>
+        <label className="row" style={{ gap: 6, cursor: 'pointer' }}>
+          <input type="checkbox" checked={autoRefresh} onChange={(e) => setAutoRefresh(e.target.checked)} />
+          <span className="muted" style={{ fontSize: 11 }}>Auto</span>
+        </label>
+        <button className="button" onClick={refresh} disabled={busy || !serverId}>Refresh</button>
       </div>
 
       {error ? <div className="error">{error}</div> : null}
 
-      <div className="pageHeader">
-        <div className="label">{filtered.length} player{filtered.length !== 1 ? 's' : ''} online</div>
-        <div className="muted" style={{ fontSize: 11 }}>Refreshes on join / leave</div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <span className={`statusDot ${filtered.length > 0 ? 'statusDotOnline' : 'statusDotOffline'}`} />
+        <span style={{ fontWeight: 700, color: 'var(--text-bright)' }}>{filtered.length}</span>
+        <span className="muted">player{filtered.length !== 1 ? 's' : ''} online</span>
       </div>
 
       <div className="listContainer">
-        <div style={{
-          display: 'grid', gridTemplateColumns: '2fr 1.5fr 1fr 1fr auto',
-          gap: 8, padding: '8px 12px', borderBottom: '1px solid rgba(255,255,255,0.10)',
-          fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'rgba(230,237,243,0.4)',
-        }}>
+        <div className="listHeader" style={{ gridTemplateColumns: '2fr 1.5fr 1fr 1fr auto' }}>
           <div>Player</div><div>Position</div><div>Vehicle</div><div>Weapon</div><div style={{ textAlign: 'right' }}>Actions</div>
         </div>
-        <div className="scroll" style={{ maxHeight: 520, overflow: 'auto' }}>
+        <div className="scroll" style={{ maxHeight: 560, overflow: 'auto' }}>
           {filtered.length === 0 ? (
-            <div className="muted" style={{ padding: 20, fontSize: 12, textAlign: 'center' }}>
-              {serverId ? 'No players online.' : 'Select a server.'}
-            </div>
-          ) : (
-            filtered.map((p) => (
-              <div key={p.playerId} className="listRow" style={{
-                display: 'grid', gridTemplateColumns: '2fr 1.5fr 1fr 1fr auto', gap: 8, alignItems: 'center',
-              }}>
-                <div style={{ minWidth: 0 }}>
-                  <div style={{ fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.name}</div>
-                  <div className="muted" style={{ fontSize: 11, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.identityId || `ID: ${p.playerId}`}</div>
-                </div>
-                <div className="muted" style={{ fontSize: 12 }}>{p.pos ? `${Math.round(p.pos.x)}, ${Math.round(p.pos.y)}, ${Math.round(p.pos.z)}` : '-'}</div>
-                <div>{p.inVehicle && p.vehicle ? <span className="tag" style={{ background: 'rgba(100,180,255,0.12)', color: '#8ec8ff' }}>{p.vehicle.name || p.vehicle.prefab}</span> : <span className="muted" style={{ fontSize: 12 }}>-</span>}</div>
-                <div>{p.weapon ? <span className="tag" style={{ background: 'rgba(255,180,100,0.12)', color: '#ffc88e' }}>{p.weapon.name || p.weapon.prefab}</span> : <span className="muted" style={{ fontSize: 12 }}>-</span>}</div>
-                <div className="row" style={{ gap: 4, justifyContent: 'flex-end' }}>
-                  <button className="button" style={{ fontSize: 11, padding: '4px 8px' }} disabled={busy || !p.identityId} onClick={() => navigator.clipboard.writeText(p.identityId)}>Copy UID</button>
-                  <button className="button" style={{ fontSize: 11, padding: '4px 8px', borderColor: 'rgba(255,180,180,0.35)' }} disabled={busy || !p.identityId} onClick={() => onKick(p)}>Kick</button>
-                </div>
+            <div className="listEmpty">{serverId ? 'No players online.' : 'Select a server.'}</div>
+          ) : filtered.map((p) => (
+            <div key={p.playerId} className="listRow" style={{
+              display: 'grid', gridTemplateColumns: '2fr 1.5fr 1fr 1fr auto', gap: 8, alignItems: 'center',
+            }}>
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontWeight: 700, fontSize: 13, color: 'var(--text-bright)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.name}</div>
+                <div className="muted" style={{ fontSize: 10, fontFamily: "'JetBrains Mono', monospace", overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.identityId || `ID: ${p.playerId}`}</div>
               </div>
-            ))
-          )}
+              <div className="muted" style={{ fontSize: 11, fontFamily: "'JetBrains Mono', monospace" }}>
+                {p.pos ? `${Math.round(p.pos.x)}, ${Math.round(p.pos.y)}, ${Math.round(p.pos.z)}` : '-'}
+              </div>
+              <div>
+                {p.inVehicle && p.vehicle
+                  ? <span className="tag tagServer">{p.vehicle.name || p.vehicle.prefab}</span>
+                  : <span className="muted" style={{ fontSize: 11 }}>-</span>}
+              </div>
+              <div>
+                {p.weapon
+                  ? <span className="tag tagDeath">{p.weapon.name || p.weapon.prefab}</span>
+                  : <span className="muted" style={{ fontSize: 11 }}>-</span>}
+              </div>
+              <div className="row" style={{ gap: 4, justifyContent: 'flex-end' }}>
+                <button className="button" style={{ fontSize: 10, padding: '4px 8px' }} disabled={busy || !p.identityId} onClick={() => navigator.clipboard.writeText(p.identityId)}>Copy UID</button>
+                <button className="button buttonDanger" style={{ fontSize: 10, padding: '4px 8px' }} disabled={busy || !p.identityId} onClick={() => onKick(p)}>Kick</button>
+              </div>
+            </div>
+          ))}
         </div>
       </div>
     </div>
@@ -140,51 +130,68 @@ function PlayerLookupTab({ serverId }: { serverId: string }) {
   async function onSearch() {
     if (!uid.trim() || !serverId) return;
     setBusy(true); setError(null); setProfile(null);
-    try {
-      setProfile(await getPlayerProfile(serverId, uid.trim()));
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Player not found');
-    } finally {
-      setBusy(false);
-    }
+    try { setProfile(await getPlayerProfile(serverId, uid.trim())); }
+    catch (e) { setError(e instanceof Error ? e.message : 'Player not found'); }
+    finally { setBusy(false); }
   }
 
   return (
     <div className="stack">
-      <div className="row" style={{ gap: 12 }}>
+      <div className="row" style={{ gap: 10 }}>
         <div style={{ flex: 1 }}>
-          <div className="label">Player UID</div>
           <input className="input" value={uid} onChange={(e) => setUid(e.target.value)} placeholder="BI Identity ID"
             onKeyDown={(e) => { if (e.key === 'Enter') onSearch(); }} />
         </div>
-        <div style={{ display: 'flex', alignItems: 'flex-end' }}>
-          <button className="button buttonPrimary" disabled={busy || !serverId || !uid.trim()} onClick={onSearch}>Search</button>
-        </div>
+        <button className="button buttonPrimary" disabled={busy || !serverId || !uid.trim()} onClick={onSearch}>Search</button>
       </div>
 
       {error ? <div className="error">{error}</div> : null}
 
       {profile ? (
-        <div className="stack">
-          <div className="card">
-            <div style={{ fontWeight: 800, fontSize: 16 }}>{profile.playerName}</div>
-            <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>UID: {profile.playerUID}</div>
-            {profile.lastSeen ? <div className="muted" style={{ fontSize: 11 }}>Last seen: {new Date(profile.lastSeen).toLocaleString()}</div> : null}
+        <div className="stack" style={{ animation: 'fadeUp 250ms var(--ease)' }}>
+          <div className="card cardGlow" style={{ padding: 22 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+              <div style={{
+                width: 44, height: 44, borderRadius: 'var(--r)',
+                background: 'var(--cyan-dim)', border: '1px solid rgba(56,189,248,0.15)',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                fontSize: 18, fontWeight: 900, color: 'var(--cyan)',
+              }}>{(profile.playerName || '?')[0].toUpperCase()}</div>
+              <div>
+                <div style={{ fontWeight: 800, fontSize: 16, color: 'var(--text-bright)' }}>{profile.playerName}</div>
+                <div className="muted" style={{ fontSize: 11, fontFamily: "'JetBrains Mono', monospace" }}>{profile.playerUID}</div>
+                {profile.lastSeen ? <div className="muted" style={{ fontSize: 11 }}>Last seen: {new Date(profile.lastSeen).toLocaleString()}</div> : null}
+              </div>
+            </div>
           </div>
 
           <div className="statsGrid">
-            <div className="card statCard"><div className="label">Kills</div><div className="statValue">{profile.totalKills}</div></div>
-            <div className="card statCard"><div className="label">Deaths</div><div className="statValue">{profile.totalDeaths}</div></div>
-            <div className="card statCard"><div className="label">K/D</div><div className="statValue">{profile.totalDeaths > 0 ? (profile.totalKills / profile.totalDeaths).toFixed(2) : profile.totalKills > 0 ? '---' : '0.00'}</div></div>
+            <div className="card statCard">
+              <div className="label">Kills</div>
+              <div className="statValue" style={{ color: 'var(--red)' }}>{profile.totalKills}</div>
+            </div>
+            <div className="card statCard">
+              <div className="label">Deaths</div>
+              <div className="statValue" style={{ color: 'var(--orange)' }}>{profile.totalDeaths}</div>
+            </div>
+            <div className="card statCard">
+              <div className="label">K/D</div>
+              <div className="statValue" style={{ color: 'var(--cyan)' }}>
+                {profile.totalDeaths > 0 ? (profile.totalKills / profile.totalDeaths).toFixed(2) : profile.totalKills > 0 ? '---' : '0.00'}
+              </div>
+            </div>
           </div>
 
           {profile.bans.length > 0 ? (
             <div className="card">
-              <div className="label" style={{ marginBottom: 8 }}>Ban History ({profile.bans.length})</div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+                <div className="label" style={{ marginBottom: 0 }}>Bans</div>
+                <span className="badge" style={{ background: 'var(--red-dim)', color: 'var(--red)' }}>{profile.bans.length}</span>
+              </div>
               <div className="listContainer"><div className="scroll" style={{ maxHeight: 200, overflow: 'auto' }}>
                 {profile.bans.map((b, i) => (
                   <div key={i} className="listRow">
-                    <div style={{ fontWeight: 700, color: '#ffb4b4', fontSize: 13 }}>{b.reason}</div>
+                    <div style={{ fontWeight: 700, color: 'var(--red)', fontSize: 12 }}>{b.reason}</div>
                     <div className="muted" style={{ fontSize: 11 }}>By: {b.bannedBy} &middot; {formatExpiry(b.timestamp, b.duration)}</div>
                   </div>
                 ))}
@@ -194,11 +201,14 @@ function PlayerLookupTab({ serverId }: { serverId: string }) {
 
           {profile.mutes.length > 0 ? (
             <div className="card">
-              <div className="label" style={{ marginBottom: 8 }}>Mute History ({profile.mutes.length})</div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+                <div className="label" style={{ marginBottom: 0 }}>Mutes</div>
+                <span className="badge" style={{ background: 'var(--orange-dim)', color: 'var(--orange)' }}>{profile.mutes.length}</span>
+              </div>
               <div className="listContainer"><div className="scroll" style={{ maxHeight: 200, overflow: 'auto' }}>
                 {profile.mutes.map((m, i) => (
                   <div key={i} className="listRow">
-                    <div style={{ fontWeight: 700, color: '#ffd4b4', fontSize: 13 }}>{m.reason}</div>
+                    <div style={{ fontWeight: 700, color: 'var(--orange)', fontSize: 12 }}>{m.reason}</div>
                     <div className="muted" style={{ fontSize: 11 }}>By: {m.mutedBy} &middot; {formatExpiry(m.timestamp, m.duration)}</div>
                   </div>
                 ))}
@@ -218,13 +228,13 @@ export function PlayersPage() {
   return (
     <div className="container">
       <div className="stack">
-        <h1 className="h1">Players</h1>
-
-        <div className="tabBar">
-          <button className={`tab${tab === 'live' ? ' tabActive' : ''}`} onClick={() => setTab('live')}>Live Players</button>
-          <button className={`tab${tab === 'lookup' ? ' tabActive' : ''}`} onClick={() => setTab('lookup')}>Player Lookup</button>
+        <div className="row" style={{ justifyContent: 'space-between' }}>
+          <h1 className="h1">Players</h1>
+          <div className="tabBar">
+            <button className={`tab${tab === 'live' ? ' tabActive' : ''}`} onClick={() => setTab('live')}>Live</button>
+            <button className={`tab${tab === 'lookup' ? ' tabActive' : ''}`} onClick={() => setTab('lookup')}>Lookup</button>
+          </div>
         </div>
-
         {tab === 'live' ? <LivePlayersTab serverId={serverId} /> : <PlayerLookupTab serverId={serverId} />}
       </div>
     </div>

@@ -34,17 +34,13 @@ function formatEventSummary(entry: EventLogEntry): string {
       const weapon = (e.weaponName as string) ?? '';
       return `${killer} eliminated ${ai} (AI)${weapon ? ` with ${weapon}` : ''}`;
     }
-    case 'join': {
-      const name = (e.name as string) ?? '?';
-      return `${name} joined the server`;
-    }
+    case 'join': return `${(e.name as string) ?? '?'} joined`;
     case 'disconnect': {
       const name = (e.name as string) ?? '?';
       const cause = (e.kickCause as string) ?? '';
       return `${name} disconnected${cause ? ` (${cause})` : ''}`;
     }
-    default:
-      return entry.type;
+    default: return entry.type;
   }
 }
 
@@ -72,21 +68,14 @@ export function EventLogPage() {
   const [search, setSearch] = useState('');
   const [autoRefresh, setAutoRefresh] = useState(true);
 
-  useEffect(() => {
-    listServers().then(setServers).catch(() => {});
-  }, []);
+  useEffect(() => { listServers().then(setServers).catch(() => {}); }, []);
 
   const refresh = useCallback(async () => {
     if (!serverId) return;
-    setBusy(true);
-    setError(null);
-    try {
-      setEvents(await getEventLog({ serverId, types: typeFilter || undefined, limit: 200 }));
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to load events');
-    } finally {
-      setBusy(false);
-    }
+    setBusy(true); setError(null);
+    try { setEvents(await getEventLog({ serverId, types: typeFilter || undefined, limit: 200 })); }
+    catch (e) { setError(e instanceof Error ? e.message : 'Failed'); }
+    finally { setBusy(false); }
   }, [serverId, typeFilter]);
 
   useEffect(() => {
@@ -111,14 +100,14 @@ export function EventLogPage() {
           <div className="row" style={{ gap: 8 }}>
             <label className="row" style={{ gap: 6, cursor: 'pointer' }}>
               <input type="checkbox" checked={autoRefresh} onChange={(e) => setAutoRefresh(e.target.checked)} />
-              <span className="muted" style={{ fontSize: 12 }}>Auto-refresh</span>
+              <span className="muted" style={{ fontSize: 11 }}>Auto</span>
             </label>
             <button className="button" onClick={refresh} disabled={busy || !serverId}>Refresh</button>
           </div>
         </div>
 
         <div className="card">
-          <div className="row" style={{ gap: 12 }}>
+          <div className="row" style={{ gap: 10 }}>
             <div style={{ flex: 1 }}>
               <div className="label">Server</div>
               <select className="input" value={serverId} onChange={(e) => setServerId(e.target.value)}>
@@ -134,39 +123,33 @@ export function EventLogPage() {
             </div>
             <div style={{ flex: 1 }}>
               <div className="label">Search</div>
-              <input className="input" placeholder="Filter events..." value={search} onChange={(e) => setSearch(e.target.value)} />
+              <input className="input" placeholder="Filter..." value={search} onChange={(e) => setSearch(e.target.value)} />
             </div>
           </div>
         </div>
 
         {error ? <div className="error">{error}</div> : null}
 
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <span style={{ fontWeight: 700, fontSize: 14, color: 'var(--rz-text-bright)' }}>{filtered.length}</span>
-          <span className="muted" style={{ fontSize: 13 }}>event{filtered.length !== 1 ? 's' : ''}</span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <span style={{ fontWeight: 700, color: 'var(--text-bright)' }}>{filtered.length}</span>
+          <span className="muted">event{filtered.length !== 1 ? 's' : ''}</span>
         </div>
 
         <div className="listContainer">
-          <div className="scroll" style={{ maxHeight: 620, overflow: 'auto' }}>
+          <div className="scroll" style={{ maxHeight: 600, overflow: 'auto' }}>
             {filtered.length === 0 ? (
-              <div className="listEmpty">
-                {serverId ? 'No events found.' : 'Select a server to view events.'}
-              </div>
-            ) : (
-              filtered.map((e, i) => (
-                <div key={`${e.tsMs}-${i}`} className="listRow" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
-                    <span className={`tag ${typeTagClass(e.type)}`} style={{ minWidth: 70, textAlign: 'center', textTransform: 'capitalize' }}>
-                      {e.type}
-                    </span>
-                    <span style={{ fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{formatEventSummary(e)}</span>
-                  </div>
-                  <div className="muted" style={{ fontSize: 11, whiteSpace: 'nowrap', flexShrink: 0 }}>
-                    {new Date(e.receivedAt).toLocaleTimeString()}
-                  </div>
+              <div className="listEmpty">{serverId ? 'No events.' : 'Select a server.'}</div>
+            ) : filtered.map((e, i) => (
+              <div key={`${e.tsMs}-${i}`} className="listRow" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+                  <span className={`tag ${typeTagClass(e.type)}`} style={{ minWidth: 64, textAlign: 'center', textTransform: 'capitalize' }}>{e.type}</span>
+                  <span style={{ fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{formatEventSummary(e)}</span>
                 </div>
-              ))
-            )}
+                <span className="muted" style={{ fontSize: 10, whiteSpace: 'nowrap', flexShrink: 0, fontFamily: "'JetBrains Mono', monospace" }}>
+                  {new Date(e.receivedAt).toLocaleTimeString()}
+                </span>
+              </div>
+            ))}
           </div>
         </div>
       </div>

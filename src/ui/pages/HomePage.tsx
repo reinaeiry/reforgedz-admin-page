@@ -3,11 +3,7 @@ import { getReplayStatusAll, type ReplayStatus } from '../../util/api';
 
 function formatClockTime(tsMs: number | null | undefined): string {
   if (typeof tsMs !== 'number' || !Number.isFinite(tsMs)) return '--';
-  try {
-    return new Date(tsMs).toLocaleString();
-  } catch {
-    return '--';
-  }
+  try { return new Date(tsMs).toLocaleString(); } catch { return '--'; }
 }
 
 function formatDurationMs(ms: number): string {
@@ -27,113 +23,84 @@ export function HomePage() {
   useEffect(() => {
     let cancelled = false;
     getReplayStatusAll()
-      .then((data) => {
-        if (cancelled) return;
-        setStatuses(data);
-        setStatusError(null);
-      })
-      .catch((err) => {
-        if (cancelled) return;
-        const message = err instanceof Error ? err.message : 'Failed to load replay status';
-        setStatusError(message);
-      });
+      .then((data) => { if (!cancelled) { setStatuses(data); setStatusError(null); } })
+      .catch((err) => { if (!cancelled) setStatusError(err instanceof Error ? err.message : 'Failed to load replay status'); });
     return () => { cancelled = true; };
   }, []);
 
   const topServers = useMemo(() => {
     if (!statuses) return [] as ReplayStatus[];
-    const copy = statuses.slice();
-    copy.sort((a, b) => {
-      const aa = typeof a.storedEvents === 'number' ? a.storedEvents : -1;
-      const bb = typeof b.storedEvents === 'number' ? b.storedEvents : -1;
-      return bb - aa;
-    });
-    return copy.slice(0, 6);
+    return statuses.slice().sort((a, b) => {
+      return (typeof b.storedEvents === 'number' ? b.storedEvents : -1) - (typeof a.storedEvents === 'number' ? a.storedEvents : -1);
+    }).slice(0, 6);
   }, [statuses]);
+
+  const totalStored = statuses?.reduce((s, x) => s + (typeof x.storedEvents === 'number' ? x.storedEvents : 0), 0) ?? 0;
+  const totalAll = statuses?.reduce((s, x) => s + (typeof x.totalEvents === 'number' ? x.totalEvents : 0), 0) ?? 0;
 
   return (
     <div className="container">
-      <div className="stack" style={{ gap: 24 }}>
-        {/* Hero */}
+      <div className="stack" style={{ gap: 20 }}>
         <div className="heroCard">
           <div style={{ position: 'relative', zIndex: 1 }}>
-            <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: 'var(--rz-accent)', marginBottom: 6 }}>
-              Dashboard
-            </div>
-            <h1 className="h1" style={{ fontSize: 28, marginBottom: 8 }}>Welcome back</h1>
-            <div className="muted" style={{ fontSize: 14 }}>
-              Use the sidebar to manage users, servers, and replay history.
+            <div className="label" style={{ color: 'var(--cyan)', marginBottom: 8 }}>Overview</div>
+            <h1 className="h1" style={{ fontSize: 26, marginBottom: 6 }}>Welcome back</h1>
+            <div className="muted" style={{ fontSize: 13 }}>
+              Manage your servers, players, and replay data from one place.
             </div>
           </div>
         </div>
 
-        {/* Stats row */}
         {statuses ? (
           <div className="statsGrid">
             <div className="card statCard">
               <div className="label">Servers</div>
-              <div className="statValue">{statuses.length}</div>
+              <div className="statValue" style={{ color: 'var(--cyan)' }}>{statuses.length}</div>
             </div>
             <div className="card statCard">
-              <div className="label">Total Events</div>
-              <div className="statValue">
-                {statuses.reduce((sum, s) => sum + (typeof s.storedEvents === 'number' ? s.storedEvents : 0), 0).toLocaleString()}
-              </div>
+              <div className="label">Buffered Events</div>
+              <div className="statValue">{totalStored.toLocaleString()}</div>
             </div>
             <div className="card statCard">
               <div className="label">All-Time Events</div>
-              <div className="statValue">
-                {statuses.reduce((sum, s) => sum + (typeof s.totalEvents === 'number' ? s.totalEvents : 0), 0).toLocaleString()}
-              </div>
+              <div className="statValue">{totalAll.toLocaleString()}</div>
             </div>
           </div>
         ) : null}
 
-        {/* Content grid */}
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(340px, 1fr))', gap: 16 }}>
-          {/* Replay overview */}
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 14 }}>
           <div className="card">
-            <div className="stack" style={{ gap: 14 }}>
-              <div>
-                <div className="label">Replay Overview</div>
-                <div className="muted" style={{ fontSize: 13 }}>
-                  {statuses ? `${statuses.length} server${statuses.length === 1 ? '' : 's'} detected.` : 'Loading...'}
-                </div>
-                {statusError ? <div className="error" style={{ marginTop: 8 }}>{statusError}</div> : null}
-              </div>
-
+            <div className="stack" style={{ gap: 12 }}>
+              <div className="label">Server Activity</div>
+              {statusError ? <div className="error">{statusError}</div> : null}
               {topServers.length > 0 ? (
                 <div className="stack" style={{ gap: 4 }}>
                   {topServers.map((s) => {
-                    const retentionMs = typeof s.retentionMs === 'number' ? s.retentionMs : 0;
-                    const bufferEnd = typeof s.lastReceivedAt === 'number' ? s.lastReceivedAt : null;
-                    const computedStart = (retentionMs > 0 && bufferEnd !== null) ? (bufferEnd - retentionMs) : null;
-                    const bufferStart = (typeof s.firstReceivedAt === 'number')
-                      ? (computedStart !== null ? Math.max(s.firstReceivedAt, computedStart) : s.firstReceivedAt)
-                      : computedStart;
+                    const retMs = typeof s.retentionMs === 'number' ? s.retentionMs : 0;
+                    const end = typeof s.lastReceivedAt === 'number' ? s.lastReceivedAt : null;
+                    const compStart = (retMs > 0 && end !== null) ? (end - retMs) : null;
+                    const start = typeof s.firstReceivedAt === 'number'
+                      ? (compStart !== null ? Math.max(s.firstReceivedAt, compStart) : s.firstReceivedAt)
+                      : compStart;
 
                     return (
                       <div key={s.serverId} style={{
-                        display: 'flex',
-                        justifyContent: 'space-between',
-                        gap: 12,
-                        padding: '10px 12px',
-                        borderRadius: 'var(--rz-radius)',
-                        background: 'rgba(255,255,255,0.02)',
-                        border: '1px solid rgba(255,255,255,0.04)',
+                        display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12,
+                        padding: '10px 12px', borderRadius: 'var(--r)',
+                        background: 'var(--bg-raised)', border: '1px solid var(--border)',
                       }}>
                         <div style={{ minWidth: 0 }}>
-                          <div style={{ fontWeight: 700, fontSize: 13, color: 'var(--rz-text-bright)' }}>{s.name}</div>
+                          <div style={{ fontWeight: 700, fontSize: 13, color: 'var(--text-bright)' }}>{s.name}</div>
                           <div className="muted" style={{ fontSize: 11 }}>
-                            {formatClockTime(bufferStart)} &rarr; {formatClockTime(bufferEnd)}
+                            {formatClockTime(start)} &rarr; {formatClockTime(end)}
                           </div>
                         </div>
                         <div style={{ textAlign: 'right', flexShrink: 0 }}>
-                          <div style={{ fontWeight: 800, fontSize: 13, color: 'var(--rz-accent)' }}>
+                          <div style={{ fontWeight: 800, fontSize: 13, color: 'var(--cyan)' }}>
                             {typeof s.storedEvents === 'number' ? s.storedEvents.toLocaleString() : '--'}
                           </div>
                           <div className="muted" style={{ fontSize: 11 }}>
-                            {retentionMs > 0 ? formatDurationMs(retentionMs) : 'No limit'}
+                            {retMs > 0 ? formatDurationMs(retMs) : 'No limit'}
                           </div>
                         </div>
                       </div>
@@ -142,42 +109,43 @@ export function HomePage() {
                 </div>
               ) : (
                 <div className="muted" style={{ fontSize: 12 }}>
-                  Open Replay Tool to see a detailed per-server dashboard.
+                  {statuses ? 'No servers detected yet.' : 'Loading...'}
                 </div>
               )}
             </div>
           </div>
 
-          {/* Tips */}
-          <div className="stack" style={{ gap: 16 }}>
-            <div className="card">
-              <div className="stack" style={{ gap: 12 }}>
+          <div className="stack" style={{ gap: 14 }}>
+            <div className="card cardAccent">
+              <div className="stack" style={{ gap: 10 }}>
                 <div className="label">Replay Controls</div>
-                <div className="stack" style={{ gap: 8, fontSize: 13 }}>
-                  <div style={{ display: 'flex', gap: 10 }}>
-                    <span className="tag" style={{ color: 'var(--rz-accent)', background: 'var(--rz-accent-soft)', fontFamily: 'monospace', fontSize: 10 }}>CLICK</span>
-                    <span className="muted">Attach camera to player</span>
-                  </div>
-                  <div style={{ display: 'flex', gap: 10 }}>
-                    <span className="tag" style={{ color: 'var(--rz-accent)', background: 'var(--rz-accent-soft)', fontFamily: 'monospace', fontSize: 10, minWidth: 46, textAlign: 'center' }}>F</span>
-                    <span className="muted">Detach camera</span>
-                  </div>
-                  <div style={{ display: 'flex', gap: 10 }}>
-                    <span className="tag" style={{ color: 'var(--rz-accent)', background: 'var(--rz-accent-soft)', fontFamily: 'monospace', fontSize: 10, minWidth: 46, textAlign: 'center' }}>RMB</span>
-                    <span className="muted">Rotate camera</span>
-                  </div>
+                <div className="stack" style={{ gap: 6 }}>
+                  {[
+                    ['Click', 'Attach camera to player'],
+                    ['F', 'Detach camera'],
+                    ['RMB', 'Rotate view'],
+                    ['WASD', 'Move camera'],
+                  ].map(([key, desc]) => (
+                    <div key={key} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                      <span style={{
+                        display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                        minWidth: 44, padding: '2px 8px', borderRadius: 6,
+                        background: 'var(--cyan-dim)', border: '1px solid rgba(56,189,248,0.12)',
+                        color: 'var(--cyan)', fontSize: 10, fontWeight: 800, fontFamily: "'JetBrains Mono', monospace",
+                      }}>{key}</span>
+                      <span className="muted" style={{ fontSize: 12 }}>{desc}</span>
+                    </div>
+                  ))}
                 </div>
               </div>
             </div>
 
             <div className="card">
-              <div className="stack" style={{ gap: 8 }}>
+              <div className="stack" style={{ gap: 6 }}>
                 <div className="label">Retention</div>
-                <div className="muted" style={{ fontSize: 13 }}>
-                  Replay is a rolling buffer. Restarts are marked in the timeline.
-                </div>
                 <div className="muted" style={{ fontSize: 12 }}>
-                  Clearing server history removes replay data but preserves cached map metadata.
+                  Replay data is a rolling buffer. Server restarts are marked in the timeline.
+                  Clearing history removes events but keeps cached map metadata.
                 </div>
               </div>
             </div>
