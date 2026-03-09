@@ -18,25 +18,25 @@ function formatEventSummary(entry: EventLogEntry): string {
       const killer = (e.killerName as string) ?? '?';
       const victim = (e.victimName as string) ?? '?';
       const weapon = (e.weaponName as string) ?? '';
-      const dist = typeof e.distanceM === 'number' ? ` (${Math.round(e.distanceM as number)}m)` : '';
-      return `${killer} killed ${victim}${weapon ? ` with ${weapon}` : ''}${dist}`;
+      const dist = typeof e.distanceM === 'number' ? ` at ${Math.round(e.distanceM as number)}m` : '';
+      return `${killer} eliminated ${victim}${weapon ? ` with ${weapon}` : ''}${dist}`;
     }
     case 'death': {
       const victim = (e.victimName as string) ?? '?';
       const killer = (e.killerName as string) ?? '';
       const weapon = (e.weaponName as string) ?? '';
-      if (killer) return `${victim} killed by ${killer}${weapon ? ` with ${weapon}` : ''}`;
+      if (killer) return `${victim} eliminated by ${killer}${weapon ? ` with ${weapon}` : ''}`;
       return `${victim} died`;
     }
     case 'aiKill': {
       const killer = (e.killerName as string) ?? '?';
       const ai = (e.victimName as string) ?? 'AI';
       const weapon = (e.weaponName as string) ?? '';
-      return `${killer} killed ${ai} (AI)${weapon ? ` with ${weapon}` : ''}`;
+      return `${killer} eliminated ${ai} (AI)${weapon ? ` with ${weapon}` : ''}`;
     }
     case 'join': {
       const name = (e.name as string) ?? '?';
-      return `${name} joined`;
+      return `${name} joined the server`;
     }
     case 'disconnect': {
       const name = (e.name as string) ?? '?';
@@ -48,14 +48,14 @@ function formatEventSummary(entry: EventLogEntry): string {
   }
 }
 
-function typeColor(type: string): string {
+function typeTagClass(type: string): string {
   switch (type) {
-    case 'kill': return '#ffb4b4';
-    case 'death': return '#ffd4b4';
-    case 'aiKill': return '#d4b4ff';
-    case 'join': return '#b7f7c8';
-    case 'disconnect': return 'rgba(230,237,243,0.5)';
-    default: return 'rgba(230,237,243,0.6)';
+    case 'kill': return 'tagKill';
+    case 'death': return 'tagDeath';
+    case 'aiKill': return 'tagAiKill';
+    case 'join': return 'tagJoin';
+    case 'disconnect': return 'tagDisconnect';
+    default: return 'tagDisconnect';
   }
 }
 
@@ -109,7 +109,7 @@ export function EventLogPage() {
         <div className="pageHeader">
           <h1 className="h1">Event Log</h1>
           <div className="row" style={{ gap: 8 }}>
-            <label className="row" style={{ gap: 6 }}>
+            <label className="row" style={{ gap: 6, cursor: 'pointer' }}>
               <input type="checkbox" checked={autoRefresh} onChange={(e) => setAutoRefresh(e.target.checked)} />
               <span className="muted" style={{ fontSize: 12 }}>Auto-refresh</span>
             </label>
@@ -141,35 +141,32 @@ export function EventLogPage() {
 
         {error ? <div className="error">{error}</div> : null}
 
-        <div className="card">
-          <div className="label" style={{ marginBottom: 8 }}>
-            {filtered.length} event{filtered.length !== 1 ? 's' : ''}
-          </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <span style={{ fontWeight: 700, fontSize: 14, color: 'var(--rz-text-bright)' }}>{filtered.length}</span>
+          <span className="muted" style={{ fontSize: 13 }}>event{filtered.length !== 1 ? 's' : ''}</span>
+        </div>
 
-          <div className="listContainer">
-            <div className="scroll" style={{ maxHeight: 600, overflow: 'auto' }}>
-              {filtered.length === 0 ? (
-                <div className="muted" style={{ padding: 20, fontSize: 12, textAlign: 'center' }}>
-                  {serverId ? 'No events found.' : 'Select a server.'}
-                </div>
-              ) : (
-                filtered.map((e, i) => (
-                  <div key={`${e.tsMs}-${i}`} className="listRow">
-                    <div className="row" style={{ justifyContent: 'space-between' }}>
-                      <div className="row" style={{ gap: 8 }}>
-                        <span className="tag" style={{ color: typeColor(e.type), minWidth: 60, textAlign: 'center' }}>
-                          {e.type}
-                        </span>
-                        <span style={{ fontSize: 13 }}>{formatEventSummary(e)}</span>
-                      </div>
-                      <div className="muted" style={{ fontSize: 11, whiteSpace: 'nowrap' }}>
-                        {new Date(e.receivedAt).toLocaleTimeString()}
-                      </div>
-                    </div>
+        <div className="listContainer">
+          <div className="scroll" style={{ maxHeight: 620, overflow: 'auto' }}>
+            {filtered.length === 0 ? (
+              <div className="listEmpty">
+                {serverId ? 'No events found.' : 'Select a server to view events.'}
+              </div>
+            ) : (
+              filtered.map((e, i) => (
+                <div key={`${e.tsMs}-${i}`} className="listRow" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
+                    <span className={`tag ${typeTagClass(e.type)}`} style={{ minWidth: 70, textAlign: 'center', textTransform: 'capitalize' }}>
+                      {e.type}
+                    </span>
+                    <span style={{ fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{formatEventSummary(e)}</span>
                   </div>
-                ))
-              )}
-            </div>
+                  <div className="muted" style={{ fontSize: 11, whiteSpace: 'nowrap', flexShrink: 0 }}>
+                    {new Date(e.receivedAt).toLocaleTimeString()}
+                  </div>
+                </div>
+              ))
+            )}
           </div>
         </div>
       </div>

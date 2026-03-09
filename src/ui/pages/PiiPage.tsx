@@ -41,7 +41,6 @@ export function PiiPage() {
     });
   }, [players, search, revealed]);
 
-  // Build a lookup map for alt names
   const uidToNames = useMemo(() => {
     const map: Record<string, string[]> = {};
     for (const p of players) {
@@ -53,7 +52,7 @@ export function PiiPage() {
   return (
     <div className="container">
       <div className="stack">
-        <h1 className="h1">PII</h1>
+        <h1 className="h1">PII Data</h1>
 
         <div className="row" style={{ gap: 12 }}>
           <div style={{ flex: 1 }}>
@@ -62,9 +61,10 @@ export function PiiPage() {
               value={search} onChange={(e) => setSearch(e.target.value)} />
           </div>
           <div style={{ display: 'flex', alignItems: 'flex-end', gap: 8 }}>
-            <button className={`button${revealed ? ' buttonPrimary' : ''}`}
-              style={!revealed ? { borderColor: 'rgba(255,180,180,0.35)' } : undefined}
-              onClick={() => setRevealed(!revealed)}>
+            <button
+              className={`button ${revealed ? 'buttonSuccess' : 'buttonDanger'}`}
+              onClick={() => setRevealed(!revealed)}
+            >
               {revealed ? 'Hide All' : 'Reveal All'}
             </button>
             <button className="button" onClick={refresh} disabled={busy || !serverId}>Refresh</button>
@@ -73,29 +73,28 @@ export function PiiPage() {
 
         {error ? <div className="error">{error}</div> : null}
 
-        <div className="label">{filtered.length} record{filtered.length !== 1 ? 's' : ''}{players.length > 0 ? ` of ${players.length} total` : ''}</div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <span style={{ fontWeight: 700, fontSize: 14, color: 'var(--rz-text-bright)' }}>{filtered.length}</span>
+          <span className="muted" style={{ fontSize: 13 }}>record{filtered.length !== 1 ? 's' : ''}{players.length > 0 ? ` of ${players.length} total` : ''}</span>
+        </div>
 
         <div className="listContainer">
-          <div style={{
-            display: 'grid', gridTemplateColumns: '2fr 1.5fr 1.5fr 0.8fr 0.8fr auto',
-            gap: 8, padding: '8px 12px', borderBottom: '1px solid rgba(255,255,255,0.10)',
-            fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'rgba(230,237,243,0.4)',
-          }}>
+          <div className="listHeader" style={{ gridTemplateColumns: '2fr 1.5fr 1.5fr 0.8fr 0.8fr auto' }}>
             <div>Player</div><div>UID</div><div>{revealed ? 'Addresses' : 'Data'}</div><div>Sessions</div><div>Last Seen</div><div>Alts</div>
           </div>
-          <div className="scroll" style={{ maxHeight: 600, overflow: 'auto' }}>
+          <div className="scroll" style={{ maxHeight: 620, overflow: 'auto' }}>
             {filtered.length === 0 ? (
-              <div className="muted" style={{ padding: 20, fontSize: 12, textAlign: 'center' }}>
-                {serverId ? 'No records found.' : 'Select a server.'}
+              <div className="listEmpty">
+                {serverId ? 'No records found.' : 'Select a server to view PII data.'}
               </div>
             ) : (
               filtered.map((p) => (
                 <div key={p.uid} className="listRow" style={{
                   display: 'grid', gridTemplateColumns: '2fr 1.5fr 1.5fr 0.8fr 0.8fr auto', gap: 8, alignItems: 'center',
-                  background: p.altUids.length > 0 ? 'rgba(255,180,100,0.06)' : undefined,
+                  background: p.altUids.length > 0 ? 'rgba(251,146,60,0.04)' : undefined,
                 }}>
                   <div style={{ minWidth: 0 }}>
-                    <div style={{ fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    <div style={{ fontWeight: 700, fontSize: 13, color: 'var(--rz-text-bright)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                       {p.names[p.names.length - 1] || '???'}
                     </div>
                     {p.names.length > 1 ? (
@@ -122,7 +121,7 @@ export function PiiPage() {
                   </div>
                   <div>
                     {p.altUids.length > 0 ? (
-                      <span className="tag" style={{ background: 'rgba(255,180,100,0.15)', color: '#ffc88e', fontSize: 10 }}
+                      <span className="tag" style={{ color: '#fb923c', background: 'rgba(251,146,60,0.1)', borderColor: 'rgba(251,146,60,0.12)' }}
                         title={p.altUids.map((u) => {
                           const names = uidToNames[u];
                           return names && names.length > 0 ? names[names.length - 1] : u;

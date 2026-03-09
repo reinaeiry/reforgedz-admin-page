@@ -33,6 +33,10 @@ function toolSummary(tools: Partial<ToolAccess>): string {
   return active.length > 0 ? active.join(', ') : 'none';
 }
 
+function toolCount(tools: Partial<ToolAccess>): number {
+  return Object.values(tools).filter(Boolean).length;
+}
+
 export function AdminPage() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -42,7 +46,6 @@ export function AdminPage() {
   const [password, setPassword] = useState('');
   const [newTools, setNewTools] = useState<ToolAccess>({ ...DEFAULT_TOOLS });
 
-  // Which user row is expanded for editing
   const [expanded, setExpanded] = useState<string | null>(null);
 
   async function refresh() {
@@ -89,38 +92,45 @@ export function AdminPage() {
   return (
     <div className="container">
       <div className="stack">
-        <h1 className="h1">Admin Management</h1>
+        <h1 className="h1">User Management</h1>
 
         {error ? <div className="error">{error}</div> : null}
 
+        {/* Create user */}
         <div className="card">
           <div className="stack">
             <div>
-              <div className="label">Create user</div>
+              <div style={{ fontWeight: 700, fontSize: 15, color: 'var(--rz-text-bright)', marginBottom: 4 }}>Create User</div>
               <div className="muted" style={{ fontSize: 12 }}>
-                Create a new account and choose which tools it can access.
+                Create a new account and configure tool permissions.
               </div>
             </div>
 
-            <div className="row">
+            <div className="row" style={{ gap: 12 }}>
               <div style={{ flex: 1, minWidth: 200 }}>
                 <div className="label">Username</div>
-                <input className="input" value={username} onChange={(e) => setUsername(e.target.value)} placeholder="username" />
+                <input className="input" value={username} onChange={(e) => setUsername(e.target.value)} placeholder="username (min 3 chars)" />
               </div>
               <div style={{ flex: 1, minWidth: 200 }}>
                 <div className="label">Password</div>
-                <input className="input" type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="password" />
+                <input className="input" type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="password (min 6 chars)" />
               </div>
             </div>
 
             {TOOL_GROUPS.map((group) => (
               <div key={group.label}>
-                <div className="label" style={{ marginBottom: 6 }}>{group.label}</div>
-                <div className="row" style={{ gap: 12, flexWrap: 'wrap' }}>
+                <div className="label" style={{ marginBottom: 8 }}>{group.label}</div>
+                <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
                   {group.tools.map((t) => (
-                    <label key={t.key} className="row" style={{ gap: 6, cursor: 'pointer' }}>
+                    <label key={t.key} style={{
+                      display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer',
+                      padding: '6px 12px', borderRadius: 'var(--rz-radius)',
+                      background: newTools[t.key] ? 'var(--rz-success-soft)' : 'rgba(255,255,255,0.03)',
+                      border: `1px solid ${newTools[t.key] ? 'rgba(52,211,153,0.2)' : 'var(--rz-border)'}`,
+                      transition: 'all var(--rz-transition)',
+                    }}>
                       <input type="checkbox" checked={newTools[t.key]} onChange={() => toggleNewTool(t.key)} />
-                      <span style={{ fontSize: 12 }}>{t.label}</span>
+                      <span style={{ fontSize: 12, fontWeight: 600, color: newTools[t.key] ? 'var(--rz-success)' : 'var(--rz-muted)' }}>{t.label}</span>
                     </label>
                   ))}
                 </div>
@@ -147,100 +157,122 @@ export function AdminPage() {
                   }
                 }}
               >
-                Create user
+                Create User
               </button>
             </div>
           </div>
         </div>
 
+        {/* Users list */}
         <div className="card">
           <div className="stack">
             <div className="row" style={{ justifyContent: 'space-between' }}>
               <div>
-                <div className="label">Users</div>
-                <div className="muted" style={{ fontSize: 12 }}>Click a user to manage permissions.</div>
+                <div style={{ fontWeight: 700, fontSize: 15, color: 'var(--rz-text-bright)', marginBottom: 4 }}>
+                  Users
+                  {users.length > 0 ? <span className="badge badgeMuted" style={{ marginLeft: 8 }}>{users.length}</span> : null}
+                </div>
+                <div className="muted" style={{ fontSize: 12 }}>Click a user to manage their permissions.</div>
               </div>
               <button className="button" disabled={busy} onClick={refresh}>Refresh</button>
             </div>
 
-            <div className="scroll" style={{ maxHeight: 520, overflow: 'auto', border: '1px solid rgba(255,255,255,0.10)', borderRadius: 10 }}>
-              {users.length === 0 ? (
-                <div className="muted" style={{ padding: 10, fontSize: 12 }}>No users found.</div>
-              ) : (
-                users.map((u) => {
-                  const isExpanded = expanded === u.username;
-                  return (
-                    <div key={u.username} style={{ borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
-                      <div
-                        style={{ padding: '10px 12px', cursor: 'pointer' }}
-                        onClick={() => setExpanded(isExpanded ? null : u.username)}
-                      >
-                        <div className="row" style={{ justifyContent: 'space-between' }}>
-                          <div>
-                            <div style={{ fontWeight: 800 }}>{u.username}</div>
-                            <div className="muted" style={{ fontSize: 11 }}>{toolSummary(u.tools ?? {})}</div>
-                          </div>
-                          <div className="row" style={{ gap: 8 }}>
-                            <span className="muted" style={{ fontSize: 12 }}>{isExpanded ? 'collapse' : 'expand'}</span>
-                            <button
-                              className="button"
-                              style={{ fontSize: 11, padding: '4px 10px', borderColor: 'rgba(255,180,180,0.35)' }}
-                              disabled={busy}
-                              onClick={async (e) => {
-                                e.stopPropagation();
-                                if (!confirm(`Delete user '${u.username}'?`)) return;
-                                setBusy(true);
-                                setError(null);
-                                try {
-                                  await deleteUser(u.username);
-                                  await refresh();
-                                } catch (err) {
-                                  setError(err instanceof Error ? err.message : 'Failed to delete user');
-                                } finally {
-                                  setBusy(false);
-                                }
-                              }}
-                            >
-                              Delete
-                            </button>
-                          </div>
-                        </div>
-                      </div>
-
-                      {isExpanded ? (
-                        <div style={{ padding: '0 12px 12px', display: 'flex', flexDirection: 'column', gap: 8 }}>
-                          {TOOL_GROUPS.map((group) => (
-                            <div key={group.label}>
-                              <div className="label" style={{ marginBottom: 4 }}>{group.label}</div>
-                              <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
-                                {group.tools.map((t) => {
-                                  const on = !!(u.tools as Record<string, unknown> | undefined)?.[t.key];
-                                  return (
-                                    <button
-                                      key={t.key}
-                                      className="button"
-                                      style={{
-                                        fontSize: 11,
-                                        padding: '4px 10px',
-                                        borderColor: on ? 'rgba(183,247,200,0.4)' : 'rgba(255,255,255,0.12)',
-                                        background: on ? 'rgba(183,247,200,0.08)' : undefined,
-                                      }}
-                                      disabled={busy}
-                                      onClick={() => toggleUserTool(u, t.key)}
-                                    >
-                                      {t.label}: {on ? 'On' : 'Off'}
-                                    </button>
-                                  );
-                                })}
+            <div className="listContainer">
+              <div className="scroll" style={{ maxHeight: 560, overflow: 'auto' }}>
+                {users.length === 0 ? (
+                  <div className="listEmpty">No users found.</div>
+                ) : (
+                  users.map((u) => {
+                    const isExpanded = expanded === u.username;
+                    const count = toolCount(u.tools ?? {});
+                    return (
+                      <div key={u.username}>
+                        <div
+                          className={`listRow listRowClickable${isExpanded ? ' listRowHighlight' : ''}`}
+                          onClick={() => setExpanded(isExpanded ? null : u.username)}
+                        >
+                          <div className="row" style={{ justifyContent: 'space-between' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                              <div style={{
+                                width: 36, height: 36, borderRadius: 'var(--rz-radius)',
+                                background: 'var(--rz-accent-soft)', border: '1px solid var(--rz-border-accent)',
+                                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                fontSize: 14, fontWeight: 800, color: 'var(--rz-accent)', flexShrink: 0,
+                              }}>
+                                {u.username[0].toUpperCase()}
+                              </div>
+                              <div>
+                                <div style={{ fontWeight: 700, color: 'var(--rz-text-bright)' }}>{u.username}</div>
+                                <div className="muted" style={{ fontSize: 11 }}>
+                                  {count} tool{count !== 1 ? 's' : ''} enabled
+                                </div>
                               </div>
                             </div>
-                          ))}
+                            <div className="row" style={{ gap: 8 }}>
+                              <span className="muted" style={{ fontSize: 11 }}>{isExpanded ? 'collapse' : 'expand'}</span>
+                              <button
+                                className="button buttonDanger"
+                                style={{ fontSize: 11, padding: '5px 12px' }}
+                                disabled={busy}
+                                onClick={async (e) => {
+                                  e.stopPropagation();
+                                  if (!confirm(`Delete user '${u.username}'?`)) return;
+                                  setBusy(true);
+                                  setError(null);
+                                  try {
+                                    await deleteUser(u.username);
+                                    await refresh();
+                                  } catch (err) {
+                                    setError(err instanceof Error ? err.message : 'Failed to delete user');
+                                  } finally {
+                                    setBusy(false);
+                                  }
+                                }}
+                              >
+                                Delete
+                              </button>
+                            </div>
+                          </div>
                         </div>
-                      ) : null}
-                    </div>
-                  );
-                })
-              )}
+
+                        {isExpanded ? (
+                          <div style={{ padding: '4px 16px 16px', animation: 'fadeIn 200ms ease-out' }}>
+                            <div className="stack" style={{ gap: 12 }}>
+                              {TOOL_GROUPS.map((group) => (
+                                <div key={group.label}>
+                                  <div className="label" style={{ marginBottom: 6 }}>{group.label}</div>
+                                  <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
+                                    {group.tools.map((t) => {
+                                      const on = !!(u.tools as Record<string, unknown> | undefined)?.[t.key];
+                                      return (
+                                        <button
+                                          key={t.key}
+                                          className="button"
+                                          style={{
+                                            fontSize: 11,
+                                            padding: '5px 12px',
+                                            borderColor: on ? 'rgba(52,211,153,0.3)' : 'var(--rz-border)',
+                                            background: on ? 'var(--rz-success-soft)' : 'var(--rz-surface)',
+                                            color: on ? 'var(--rz-success)' : 'var(--rz-muted)',
+                                          }}
+                                          disabled={busy}
+                                          onClick={() => toggleUserTool(u, t.key)}
+                                        >
+                                          {t.label}: {on ? 'On' : 'Off'}
+                                        </button>
+                                      );
+                                    })}
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        ) : null}
+                      </div>
+                    );
+                  })
+                )}
+              </div>
             </div>
           </div>
         </div>

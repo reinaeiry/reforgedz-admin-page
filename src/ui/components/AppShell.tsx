@@ -3,12 +3,13 @@ import { NavLink, Outlet, useNavigate } from 'react-router-dom';
 import { clearSession, hasToolAccess } from '../../util/session';
 import { ServerProvider, useServer } from '../ServerContext';
 
-function NavItem(props: { to: string; label: string }) {
+function NavItem(props: { to: string; label: string; icon: string }) {
   return (
     <NavLink
       to={props.to}
       className={({ isActive }) => `navItem${isActive ? ' navItemActive' : ''}`}
     >
+      <span className="navIcon">{props.icon}</span>
       {props.label}
     </NavLink>
   );
@@ -16,9 +17,9 @@ function NavItem(props: { to: string; label: string }) {
 
 function SidebarSection(props: { label: string; children: React.ReactNode }) {
   return (
-    <div style={{ marginTop: 4 }}>
+    <div>
       <div className="sidebarSection">{props.label}</div>
-      <div className="stack" style={{ gap: 4 }}>
+      <div className="stack" style={{ gap: 2 }}>
         {props.children}
       </div>
     </div>
@@ -28,9 +29,9 @@ function SidebarSection(props: { label: string; children: React.ReactNode }) {
 function ServerSelector() {
   const { servers, serverId, setServerId } = useServer();
   return (
-    <div style={{ padding: '0 4px' }}>
+    <div className="serverSelector">
       <div className="label">Server</div>
-      <select className="input" style={{ fontSize: 12, padding: '6px 8px' }} value={serverId} onChange={(e) => setServerId(e.target.value)}>
+      <select className="input" value={serverId} onChange={(e) => setServerId(e.target.value)}>
         <option value="">Select server...</option>
         {servers.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
       </select>
@@ -53,48 +54,46 @@ function AppShellInner() {
 
   return (
     <div className="appShell">
-      <aside className="sidebar">
-        <div className="stack" style={{ gap: 4 }}>
-          <div style={{ padding: '4px 0 12px' }}>
-            <div className="label">ReforgedZ</div>
-            <div className="h2">Admin Panel</div>
-          </div>
+      <aside className="sidebar scroll">
+        <div className="sidebarBrand">
+          <div className="sidebarBrandName">ReforgedZ</div>
+          <div className="sidebarBrandTitle">Admin Panel</div>
+        </div>
 
-          <ServerSelector />
+        <ServerSelector />
 
-          <NavItem to="/" label="Home" />
+        <div className="stack" style={{ gap: 2 }}>
+          <NavItem to="/" label="Dashboard" icon="&#9632;" />
 
           {hasToolAccess('replay') ? (
-            <SidebarSection label="Replay">
-              <NavItem to="/replay" label="Replay Tool" />
+            <SidebarSection label="Tools">
+              <NavItem to="/replay" label="Replay Tool" icon="&#9654;" />
             </SidebarSection>
           ) : null}
 
           {showAdmin ? (
             <SidebarSection label="Admin">
-              {showPlayers ? <NavItem to="/players" label="Players" /> : null}
-              {showModeration ? <NavItem to="/moderation" label="Moderation" /> : null}
-              {showServer ? <NavItem to="/server" label="Server" /> : null}
+              {showPlayers ? <NavItem to="/players" label="Players" icon="&#9679;" /> : null}
+              {showModeration ? <NavItem to="/moderation" label="Moderation" icon="&#9888;" /> : null}
+              {showServer ? <NavItem to="/server" label="Server" icon="&#9881;" /> : null}
             </SidebarSection>
           ) : null}
 
           {(hasToolAccess('admin') || hasToolAccess('dev') || hasToolAccess('pii')) ? (
             <SidebarSection label="Management">
-              {hasToolAccess('pii') ? <NavItem to="/pii" label="PII" /> : null}
-              {hasToolAccess('admin') ? <NavItem to="/admin" label="Admin Management" /> : null}
-              {hasToolAccess('dev') ? <NavItem to="/dev" label="Dev" /> : null}
+              {hasToolAccess('pii') ? <NavItem to="/pii" label="PII Data" icon="&#128274;" /> : null}
+              {hasToolAccess('admin') ? <NavItem to="/admin" label="Users" icon="&#9734;" /> : null}
+              {hasToolAccess('dev') ? <NavItem to="/dev" label="Developer" icon="&#9998;" /> : null}
             </SidebarSection>
           ) : null}
         </div>
 
-        <div style={{ flex: 1 }} />
-
-        <button className="button buttonPrimary" onClick={onLogout}>
-          Log out
+        <button className="logoutBtn" onClick={onLogout}>
+          Sign out
         </button>
       </aside>
 
-      <main className="main">
+      <main className="main scroll">
         <Outlet />
       </main>
     </div>
