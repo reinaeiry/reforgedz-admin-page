@@ -9,7 +9,6 @@ const NAV_ITEMS: { to: string; label: string; icon: string; tool?: ToolName | To
   { to: '/players', label: 'Players', icon: '\u25CF', tool: ['players', 'playerLookup'] },
   { to: '/moderation', label: 'Moderation', icon: '\u26A0', tool: ['bans', 'mutes'] },
   { to: '/server', label: 'Server', icon: '\u2699', tool: ['events', 'health'] },
-  { to: '/pii', label: 'PII', icon: '\uD83D\uDD12', tool: 'pii' },
   { to: '/admin', label: 'Users', icon: '\u2606', tool: 'admin' },
   { to: '/dev', label: 'Dev', icon: '\u270E', tool: 'dev' },
 ];
@@ -25,22 +24,28 @@ function pageName(pathname: string): string {
   return item?.label ?? 'ReforgedZ';
 }
 
-// Split nav items into sections for dividers
+const NAV_SECTIONS: { label: string; routes: string[] }[] = [
+  { label: 'HOME', routes: ['/'] },
+  { label: 'TOOLS', routes: ['/replay'] },
+  { label: 'ADMIN', routes: ['/players', '/moderation', '/server'] },
+  { label: 'MGMT', routes: ['/admin', '/dev'] },
+];
+
 function RailNav() {
   const accessible = NAV_ITEMS.filter((n) => canAccess(n.tool));
-  const home = accessible.filter((n) => n.to === '/');
-  const tools = accessible.filter((n) => ['/replay'].includes(n.to));
-  const admin = accessible.filter((n) => ['/players', '/moderation', '/server'].includes(n.to));
-  const mgmt = accessible.filter((n) => ['/pii', '/admin', '/dev'].includes(n.to));
 
-  const sections = [home, tools, admin, mgmt].filter((s) => s.length > 0);
+  const sections = NAV_SECTIONS.map((s) => ({
+    label: s.label,
+    items: accessible.filter((n) => s.routes.includes(n.to)),
+  })).filter((s) => s.items.length > 0);
 
   return (
     <>
       {sections.map((section, si) => (
         <React.Fragment key={si}>
           {si > 0 && <div className="railDivider" />}
-          {section.map((n) => (
+          <div className="railSectionLabel">{section.label}</div>
+          {section.items.map((n) => (
             <NavLink
               key={n.to}
               to={n.to}
@@ -48,7 +53,7 @@ function RailNav() {
               className={({ isActive }) => `railItem${isActive ? ' railItemActive' : ''}`}
               data-tooltip={n.label}
             >
-              {n.icon}
+              {n.label}
             </NavLink>
           ))}
         </React.Fragment>

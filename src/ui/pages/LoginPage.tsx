@@ -47,7 +47,7 @@ export function LoginPage() {
         <div style={{ textAlign: 'center' }}>
           <div style={{
             width: 48, height: 48, borderRadius: 12,
-            background: 'linear-gradient(135deg, var(--cyan), #0ea5e9)',
+            background: 'linear-gradient(135deg, var(--cyan), #dc2626)',
             display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
             fontWeight: 900, fontSize: 18, color: '#000',
             boxShadow: '0 0 30px rgba(56,189,248,0.2)',

@@ -8,7 +8,6 @@ import { DevPage } from './pages/DevPage';
 import { PlayersPage } from './pages/PlayersPage';
 import { ModerationPage } from './pages/ModerationPage';
 import { ServerPage } from './pages/ServerPage';
-import { PiiPage } from './pages/PiiPage';
 import { AppShell } from './components/AppShell';
 import { getSession } from '../util/session';
 
@@ -40,7 +39,6 @@ export function App() {
         <Route path="/players" element={<PlayersPage />} />
         <Route path="/moderation" element={<ModerationPage />} />
         <Route path="/server" element={<ServerPage />} />
-        <Route path="/pii" element={<PiiPage />} />
         <Route path="/admin" element={<AdminPage />} />
         <Route path="/dev" element={<DevPage />} />
       </Route>
