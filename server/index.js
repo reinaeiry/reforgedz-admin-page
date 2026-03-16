@@ -2934,6 +2934,27 @@ app.get('/api/admin/pii', requireAuth, requireTool('pii'), asyncRoute(async (req
   res.json({ players: result, total: result.length });
 }));
 
+// ─── Shutoff Toggle ──────────────────────────────────────────────────────────
+
+app.get('/api/admin/shutoff', requireAuth, requireTool('health'), asyncRoute(async (req, res) => {
+  const serverId = String(req.query.serverId || '');
+  if (!serverId) { res.status(400).send('Missing serverId'); return; }
+  const safeId = sanitizeServerId(serverId);
+  const idx = (await readJsonOrNull(path.join(DATA_DIR, 'servers', safeId, 'index.json'))) || {};
+  res.json({ shutoff: !!idx.shutoff });
+}));
+
+app.post('/api/admin/shutoff', requireAuth, requireTool('health'), asyncRoute(async (req, res) => {
+  const serverId = String((req.body && req.body.serverId) || '');
+  const enabled = !!(req.body && req.body.enabled);
+  if (!serverId) { res.status(400).send('Missing serverId'); return; }
+  const safeId = sanitizeServerId(serverId);
+  const idxPath = path.join(DATA_DIR, 'servers', safeId, 'index.json');
+  const idx = (await readJsonOrNull(idxPath)) || {};
+  await writeJsonAtomic(idxPath, { ...idx, shutoff: enabled });
+  res.json({ ok: true, shutoff: enabled });
+}));
+
 // ─── End Admin Bridge ───────────────────────────────────────────────────────
 
 app.post('/api/replay/ingest', async (req, res) => {
@@ -2961,6 +2982,7 @@ app.post('/api/replay/ingest', async (req, res) => {
     }
 
     let commandsToSend = null;
+    let isShutoff = false;
 
     await withIngestLock(safeId, async () => {
       const receivedAt = Date.now();
@@ -2971,6 +2993,11 @@ app.post('/api/replay/ingest', async (req, res) => {
       // Exporter provides a per-run sessionId; we apply a stable offset per sessionId.
       const idxPath = path.join(serverDir, 'index.json');
       const prev = (await readJsonOrNull(idxPath)) || {};
+
+      if (prev.shutoff) {
+        isShutoff = true;
+        return;
+      }
 
       const normalizedPayload = { ...payload };
 
@@ -3297,6 +3324,10 @@ app.post('/api/replay/ingest', async (req, res) => {
       await updatePiiFromPayload(serverDir, normalizedPayload, receivedAt);
     });
 
+    if (isShutoff) {
+      res.json({ ok: true, shutoff: true });
+      return;
+    }
     res.json(commandsToSend ? { ok: true, commands: commandsToSend } : { ok: true });
   } catch (err) {
     // eslint-disable-next-line no-console

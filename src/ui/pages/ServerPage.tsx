@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { getEventLog, getServerHealth, sendGlobalMessage, type EventLogEntry, type ServerHealth } from '../../util/api';
+import { getEventLog, getServerHealth, getShutoff, setShutoff, sendGlobalMessage, type EventLogEntry, type ServerHealth } from '../../util/api';
 import { useServer } from '../ServerContext';
 
 const EVENT_TYPES = [
@@ -177,13 +177,19 @@ function HealthTab({ serverId }: { serverId: string }) {
   const [message, setMessage] = useState('');
   const [msgTitle, setMsgTitle] = useState('');
   const [msgSuccess, setMsgSuccess] = useState(false);
+  const [shutoff, setShutoffState] = useState(false);
+  const [shutoffBusy, setShutoffBusy] = useState(false);
 
   const refresh = useCallback(async () => {
     if (!serverId) return;
     setBusy(true); setError(null);
     try {
-      const data = await getServerHealth(serverId);
+      const [data, shutoffData] = await Promise.all([
+        getServerHealth(serverId),
+        getShutoff(serverId),
+      ]);
       setHealth(data);
+      setShutoffState(shutoffData.shutoff);
       setFpsHistory((p) => [...p.slice(-59), data.fps]);
       setPlayerHistory((p) => [...p.slice(-59), data.playerCount]);
     } catch (e) { setError(e instanceof Error ? e.message : 'Failed to get health'); }
@@ -198,6 +204,16 @@ function HealthTab({ serverId }: { serverId: string }) {
     const id = setInterval(refresh, 15000);
     return () => clearInterval(id);
   }, [serverId, autoRefresh, refresh]);
+
+  async function onToggleShutoff() {
+    if (!serverId) return;
+    setShutoffBusy(true); setError(null);
+    try {
+      const result = await setShutoff(serverId, !shutoff);
+      setShutoffState(result.shutoff);
+    } catch (e) { setError(e instanceof Error ? e.message : 'Failed to toggle shutoff'); }
+    finally { setShutoffBusy(false); }
+  }
 
   async function onSendMessage() {
     if ((!message.trim() && !msgTitle.trim()) || !serverId) return;
@@ -254,6 +270,27 @@ function HealthTab({ serverId }: { serverId: string }) {
             <button className="button buttonPrimary" disabled={busy || !serverId || (!message.trim() && !msgTitle.trim())} onClick={onSendMessage}>Send</button>
           </div>
           {msgSuccess ? <div className="success">Message sent!</div> : null}
+        </div>
+      </div>
+
+      <div className="card" style={{ borderLeft: `3px solid ${shutoff ? 'var(--red)' : 'var(--green)'}` }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
+          <div>
+            <div style={{ fontWeight: 700, color: 'var(--text-bright)', marginBottom: 2 }}>Data Export Shutoff</div>
+            <div className="muted" style={{ fontSize: 11 }}>
+              {shutoff
+                ? 'Data exports are OFF. The server component will stop sending data.'
+                : 'Data exports are ON. The server component is sending data normally.'}
+            </div>
+          </div>
+          <button
+            className={`button ${shutoff ? 'buttonSuccess' : 'buttonDanger'}`}
+            disabled={shutoffBusy || !serverId}
+            onClick={onToggleShutoff}
+            style={{ minWidth: 90 }}
+          >
+            {shutoff ? 'Enable' : 'Shut Off'}
+          </button>
         </div>
       </div>
     </div>

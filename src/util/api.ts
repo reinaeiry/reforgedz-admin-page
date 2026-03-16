@@ -765,6 +765,37 @@ export async function getPlayerProfile(serverId: string, playerUID: string): Pro
   return (await res.json()) as PlayerProfile;
 }
 
+// ─── Shutoff ─────────────────────────────────────────────────────────────────
+
+export async function getShutoff(serverId: string): Promise<{ shutoff: boolean }> {
+  const base = requireApiBaseUrl();
+  const session = getSession();
+  if (!session) throw new Error('Not authenticated');
+
+  const res = await fetch(`${base}/api/admin/shutoff?serverId=${encodeURIComponent(serverId)}`, {
+    headers: { Authorization: `Bearer ${session.token}` },
+  });
+  if (!res.ok) throw new Error((await res.text()) || `Failed to get shutoff status (${res.status})`);
+  return (await res.json()) as { shutoff: boolean };
+}
+
+export async function setShutoff(serverId: string, enabled: boolean): Promise<{ ok: true; shutoff: boolean }> {
+  const base = requireApiBaseUrl();
+  const session = getSession();
+  if (!session) throw new Error('Not authenticated');
+
+  const res = await fetch(`${base}/api/admin/shutoff`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${session.token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ serverId, enabled }),
+  });
+  if (!res.ok) throw new Error((await res.text()) || `Failed to set shutoff (${res.status})`);
+  return (await res.json()) as { ok: true; shutoff: boolean };
+}
+
 // ─── PII ─────────────────────────────────────────────────────────────────────
 
 export type PiiPlayer = {
