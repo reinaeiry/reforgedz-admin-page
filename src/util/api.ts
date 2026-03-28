@@ -175,6 +175,7 @@ export async function getReplayEvents(params: {
   untilTsMs?: number;
   limit?: number;
   tail?: boolean;
+  types?: string;
 }): Promise<IngestRecord[]> {
   const base = requireApiBaseUrl();
   const session = getSession();
@@ -188,6 +189,7 @@ export async function getReplayEvents(params: {
   if (typeof params.untilTsMs === 'number') qs.set('untilTsMs', String(params.untilTsMs));
   if (typeof params.limit === 'number') qs.set('limit', String(params.limit));
   if (params.tail) qs.set('tail', '1');
+  if (params.types) qs.set('types', params.types);
 
   const res = await fetch(`${base}/api/replay/events?${qs.toString()}`, {
     headers: {

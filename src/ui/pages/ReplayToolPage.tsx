@@ -457,18 +457,43 @@ export function ReplayToolPage() {
 
           // Pull a recent tail window so the tool immediately has context and the
           // user can scrub backwards (without waiting for live polling to catch up).
-          const initial = await getReplayEvents({
-            serverId: serverIdValue,
-            untilTsMs: r.maxTsMs,
-            limit: 5000,
-            tail: true,
-          }).catch(() => [] as IngestRecord[]);
+          // Also fetch all event-type records (kills, joins, etc.) across the full
+          // timeline so the scrubber dots and events panel are always populated.
+          const [initial, eventRecords] = await Promise.all([
+            getReplayEvents({
+              serverId: serverIdValue,
+              untilTsMs: r.maxTsMs,
+              limit: 5000,
+              tail: true,
+            }).catch(() => [] as IngestRecord[]),
+            getReplayEvents({
+              serverId: serverIdValue,
+              types: 'kill,death,aiKill,join,disconnect,restart,gmPing',
+              limit: 10000,
+              tail: true,
+            }).catch(() => [] as IngestRecord[]),
+          ]);
           if (!cancelled) {
-            setEvents(initial);
+            // Merge snapshot-heavy tail with event-only records (deduplicated).
+            const seen = new Set<string>();
+            const merged: IngestRecord[] = [];
+            for (const e of eventRecords) {
+              const k = getRecordKey(e);
+              if (seen.has(k)) continue;
+              seen.add(k);
+              merged.push(e);
+            }
+            for (const e of initial) {
+              const k = getRecordKey(e);
+              if (seen.has(k)) continue;
+              seen.add(k);
+              merged.push(e);
+            }
+            setEvents(merged);
 
             // Advance cursor to newest loaded event (fallback: a bit behind max)
             let lastTs: number | null = null;
-            for (const e of initial) {
+            for (const e of merged) {
               const p: any = (e as any).payload;
               if (p && typeof p.tsMs === 'number') {
                 if (lastTs === null || p.tsMs > lastTs) lastTs = p.tsMs;
@@ -2281,7 +2306,7 @@ export function ReplayToolPage() {
   }, [currentTsMs, live, serverId, toastTimeline]);
 
   return (
-    <div style={{ width: '100vw', height: '100vh', overflow: 'hidden' }}>
+    <div style={{ width: '100%', height: '100vh', overflow: 'hidden' }}>
       <div className="row" style={{ gap: 12, padding: 12, alignItems: 'center' }}>
         <div style={{ minWidth: 240, maxWidth: 520, flex: 1 }}>
           <select
@@ -2501,10 +2526,15 @@ export function ReplayToolPage() {
                               <div style={{ fontWeight: 700, marginBottom: 4 }}>
                                 {knownPlayers.find((x) => x.playerId === selectedPlayerId)?.name || `#${selectedPlayerId}`}
                               </div>
-                              <div className="muted" style={{ fontSize: 11, marginBottom: 6 }}>
+                              <div className="muted" style={{ fontSize: 11, marginBottom: 2 }}>
                                 {((selectedPlayerStateWithEquipmentCache as any).weapon && (selectedPlayerStateWithEquipmentCache as any).weapon.name)
                                   ? `Weapon: ${(selectedPlayerStateWithEquipmentCache as any).weapon.name}`
                                   : 'No weapon'}
+                              </div>
+                              <div className="muted" style={{ fontSize: 11, marginBottom: 6 }}>
+                                {(selectedPlayerStateWithEquipmentCache as any).inVehicle
+                                  ? `Vehicle: ${((selectedPlayerStateWithEquipmentCache as any).vehicle && (selectedPlayerStateWithEquipmentCache as any).vehicle.name) || 'Unknown'}`
+                                  : 'On foot'}
                               </div>
 
                               <details>

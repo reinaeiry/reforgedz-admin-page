@@ -38,7 +38,7 @@ const DATA_DIR = process.env.DATA_DIR || 'data';
 
 // Rolling retention for events.ndjson.
 // - Set RETENTION_MS=0 to disable compaction entirely.
-// - Default is 7 days.
+// - Default is 24 hours.
 const DEFAULT_RETENTION_MS = 24 * 60 * 60 * 1000;
 const RETENTION_MS = (() => {
   const raw = process.env.RETENTION_MS;
@@ -1312,6 +1312,7 @@ async function readNdjsonWindow(filePath, opts) {
   const untilTsMs = (opts && typeof opts.untilTsMs === 'number') ? opts.untilTsMs : null;
   const limit = (opts && typeof opts.limit === 'number') ? opts.limit : 5000;
   const tail = !!(opts && opts.tail);
+  const types = (opts && opts.types instanceof Set && opts.types.size > 0) ? opts.types : null;
 
   const out = [];
 
@@ -1361,6 +1362,7 @@ async function readNdjsonWindow(filePath, opts) {
 
         if (sinceTsMs !== null && tsMs < sinceTsMs) continue;
         if (untilTsMs !== null && tsMs > untilTsMs) continue;
+        if (types && !types.has(typeof payload.type === 'string' ? payload.type : '')) continue;
 
         out.push(obj);
         if (out.length >= limit) break;
@@ -1394,6 +1396,7 @@ async function readNdjsonWindow(filePath, opts) {
 
       if (sinceTsMs !== null && tsMs < sinceTsMs) continue;
       if (untilTsMs !== null && tsMs > untilTsMs) continue;
+      if (types && !types.has(typeof payload.type === 'string' ? payload.type : '')) continue;
 
       if (count < limit) {
         ring[count] = obj;
@@ -2045,20 +2048,27 @@ app.get('/api/replay/events', requireAuth, requireTool('replay'), asyncRoute(asy
   const untilTsMs = req.query.untilTsMs ? Number(req.query.untilTsMs) : null;
   const limit = req.query.limit ? Number(req.query.limit) : 5000;
   const tail = String(req.query.tail || '') === '1' || String(req.query.tail || '') === 'true';
+  const types = typeof req.query.types === 'string' && req.query.types.trim()
+    ? new Set(req.query.types.split(',').map((t) => t.trim()).filter(Boolean))
+    : null;
 
   const opts = {
     sinceTsMs: (sinceTsMs !== null && Number.isFinite(sinceTsMs)) ? sinceTsMs : null,
     untilTsMs: (untilTsMs !== null && Number.isFinite(untilTsMs)) ? untilTsMs : null,
     limit: (Number.isFinite(limit) && limit > 0) ? Math.min(limit, 20000) : 5000,
     tail,
+    types,
   };
 
   // Fast path: if the requested window is within our in-memory recent cache,
   // return it without scanning the entire NDJSON file.
-  const cached = tryReadReplayEventsFromCache(safeId, opts);
-  if (cached) {
-    res.json(cached);
-    return;
+  // Skip cache when type-filtering since the cache holds all types.
+  if (!types) {
+    const cached = tryReadReplayEventsFromCache(safeId, opts);
+    if (cached) {
+      res.json(cached);
+      return;
+    }
   }
 
   const eventsPath = path.join(DATA_DIR, 'servers', safeId, 'events.ndjson');
@@ -2788,11 +2798,18 @@ app.get('/api/admin/events', requireAuth, requireTool('events'), asyncRoute(asyn
     const serverDir = path.join(DATA_DIR, 'servers', safeId);
     const eventsPath = path.join(serverDir, 'events.ndjson');
     try {
+      const eventTypes = new Set(['kill', 'death', 'aiKill', 'join', 'disconnect']);
       const text = await fs.readFile(eventsPath, 'utf8');
       const lines = text.trim().split('\n').filter(Boolean);
-      records = lines.slice(-limit * 2).map((line) => {
-        try { return JSON.parse(line); } catch { return null; }
-      }).filter(Boolean);
+      // Scan from the end, collecting only event-type records until we have enough.
+      for (let i = lines.length - 1; i >= 0 && records.length < limit; i--) {
+        let obj;
+        try { obj = JSON.parse(lines[i]); } catch { continue; }
+        const t = obj && obj.payload && typeof obj.payload.type === 'string' ? obj.payload.type : '';
+        if (!eventTypes.has(t)) continue;
+        records.push(obj);
+      }
+      records.reverse();
     } catch { /* no events file yet */ }
   }
 
@@ -2801,7 +2818,6 @@ app.get('/api/admin/events', requireAuth, requireTool('events'), asyncRoute(asyn
     const t = r.payload && typeof r.payload.type === 'string' ? r.payload.type : '';
     if (!eventTypes.has(t)) return false;
     if (types && types.length > 0 && !types.includes(t)) return false;
-    // Filter by wall-clock receivedAt if sinceTsMs provided
     if (sinceReceivedAt !== null && Number.isFinite(sinceReceivedAt)) {
       const ra = typeof r.receivedAt === 'number' ? r.receivedAt : 0;
       if (ra < sinceReceivedAt) return false;
