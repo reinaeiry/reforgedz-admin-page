@@ -34,6 +34,13 @@ export type TownLabel = {
   pos: { x: number; y: number; z: number };
 };
 
+export type VehicleMarker = {
+  entityId: string;
+  pos: { x: number; y: number; z: number };
+  destroyed?: boolean;
+  occupied?: boolean;
+};
+
 export type ReplayMap3DProps = {
   players: PlayerMarker[];
   focusTarget: { x: number; y: number; z: number } | null;
@@ -44,6 +51,7 @@ export type ReplayMap3DProps = {
   trail?: Trail | null;
   deathMarkers?: Array<{ x: number; y: number; z: number }>;
   pingMarkers?: Array<{ x: number; y: number; z: number }>;
+  vehicleMarkers?: VehicleMarker[];
   terrain?: TerrainGrid | null;
   towns?: TownLabel[];
 };
@@ -80,6 +88,7 @@ export function ReplayMap3D(props: ReplayMap3DProps) {
   const trailRef = useRef<Trail | null>(null);
   const deathMarkersRef = useRef<Array<{ x: number; y: number; z: number }>>([]);
   const pingMarkersRef = useRef<Array<{ x: number; y: number; z: number }>>([]);
+  const vehicleMarkersRef = useRef<VehicleMarker[]>([]);
   const terrainRef = useRef<TerrainGrid | null>(null);
   const townsRef = useRef<TownLabel[]>([]);
 
@@ -128,6 +137,11 @@ export function ReplayMap3D(props: ReplayMap3DProps) {
     deathMarkersRef.current = Array.isArray(props.deathMarkers) ? props.deathMarkers : [];
     dirtyRef.current.death = true;
   }, [props.deathMarkers]);
+
+  useEffect(() => {
+    vehicleMarkersRef.current = Array.isArray(props.vehicleMarkers) ? props.vehicleMarkers : [];
+    dirtyRef.current.death = true; // reuse death dirty flag to trigger re-render
+  }, [props.vehicleMarkers]);
 
   useEffect(() => {
     pingMarkersRef.current = Array.isArray(props.pingMarkers) ? props.pingMarkers : [];
@@ -193,6 +207,9 @@ export function ReplayMap3D(props: ReplayMap3DProps) {
     const pingGroup = new THREE.Group();
     scene.add(pingGroup);
 
+    const vehicleGroup = new THREE.Group();
+    scene.add(vehicleGroup);
+
     const townGroup = new THREE.Group();
     scene.add(townGroup);
 
@@ -218,6 +235,8 @@ export function ReplayMap3D(props: ReplayMap3DProps) {
     const trailMat = new THREE.LineBasicMaterial({ color: 0xf9bc59, transparent: true, opacity: 0.35 });
     const deathMat = new THREE.LineBasicMaterial({ color: 0xff4a4a, transparent: true, opacity: 0.9 });
     const pingMat = new THREE.LineBasicMaterial({ color: 0xf9bc59, transparent: true, opacity: 0.95 });
+    const vehMat = new THREE.LineBasicMaterial({ color: 0x4adeff, transparent: true, opacity: 0.8 });
+    const vehDestroyedMat = new THREE.LineBasicMaterial({ color: 0x4adeff, transparent: true, opacity: 0.3 });
 
     const terrainMat = new THREE.MeshStandardMaterial({
       vertexColors: true,
@@ -248,6 +267,8 @@ export function ReplayMap3D(props: ReplayMap3DProps) {
 
     /** @type {Map<string, THREE.LineSegments>} */
     const pingMarkers = new Map<string, THREE.LineSegments>();
+
+    const vehicleMarkerMeshes = new Map<string, THREE.LineSegments>();
 
     let terrainMesh: THREE.Mesh | null = null;
     let terrainEdges: THREE.LineSegments | null = null;
@@ -654,6 +675,44 @@ export function ReplayMap3D(props: ReplayMap3DProps) {
       }
     }
 
+    function updateVehicleMarkers() {
+      const list = vehicleMarkersRef.current;
+      const seen = new Set<string>();
+      for (let i = 0; i < list.length; i++) {
+        const v = list[i];
+        const p = v.pos;
+        const key = v.entityId;
+        seen.add(key);
+
+        let seg = vehicleMarkerMeshes.get(key);
+        if (!seg) {
+          const s = 1.0;
+          const geom = new THREE.BufferGeometry();
+          // Diamond shape in XZ plane
+          const arr = new Float32Array([
+            0, 0, -s, s, 0, 0,
+            s, 0, 0, 0, 0, s,
+            0, 0, s, -s, 0, 0,
+            -s, 0, 0, 0, 0, -s,
+          ]);
+          geom.setAttribute('position', new THREE.BufferAttribute(arr, 3));
+          seg = new THREE.LineSegments(geom, v.destroyed ? vehDestroyedMat : vehMat);
+          vehicleMarkerMeshes.set(key, seg);
+          vehicleGroup.add(seg);
+        }
+
+        seg.material = v.destroyed ? vehDestroyedMat : vehMat;
+        seg.position.set(p.x, p.y + 0.1, p.z);
+      }
+
+      for (const [key, seg] of vehicleMarkerMeshes) {
+        if (seen.has(key)) continue;
+        vehicleGroup.remove(seg);
+        (seg.geometry as THREE.BufferGeometry).dispose();
+        vehicleMarkerMeshes.delete(key);
+      }
+    }
+
     function setCameraFromAngles() {
       const qYaw = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), controls.yaw);
       const qPitch = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), controls.pitch);
@@ -934,6 +993,7 @@ export function ReplayMap3D(props: ReplayMap3DProps) {
 
       if (dirty.death) {
         updateDeathMarkers();
+        updateVehicleMarkers();
         dirty.death = false;
       }
 
@@ -1087,6 +1147,12 @@ export function ReplayMap3D(props: ReplayMap3DProps) {
         (seg.geometry as THREE.BufferGeometry).dispose();
       }
 
+      for (const seg of vehicleMarkerMeshes.values()) {
+        (seg.geometry as THREE.BufferGeometry).dispose();
+      }
+
+      vehMat.dispose();
+      vehDestroyedMat.dispose();
       renderer.dispose();
     };
   }, []);

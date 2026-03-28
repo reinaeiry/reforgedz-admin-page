@@ -10,14 +10,19 @@ import {
   listServers,
   exportReplayEventToDiscord,
   sendReplayGmPing,
+  getReplayVehicles,
+  requestVehicleDetail,
+  pollVehicleDetail,
   type IngestRecord,
   type MapDescriptors,
   type MapTerrain,
   type ReplayStatus,
   type ReplayPlayer,
   type ServerInfo,
+  type VehicleIndexEntry,
+  type VehicleDetail,
 } from '../../util/api';
-import { ReplayMap3D, type NameTagOptions, type PlayerMarker, type TerrainGrid, type TownLabel, type Trail } from '../components/ReplayMap3D';
+import { ReplayMap3D, type NameTagOptions, type PlayerMarker, type TerrainGrid, type TownLabel, type Trail, type VehicleMarker } from '../components/ReplayMap3D';
 
 function coerceVec3(v: any): { x: number; y: number; z: number } | null {
   if (!v) return null;
@@ -294,6 +299,12 @@ export function ReplayToolPage() {
   const [showVehicleInTags, setShowVehicleInTags] = useState(true);
   const [showAimLines, setShowAimLines] = useState(true);
   const [showDeathMarkers, setShowDeathMarkers] = useState(true);
+  const [showVehicleMarkers, setShowVehicleMarkers] = useState(false);
+  const [vehicleIndex, setVehicleIndex] = useState<VehicleIndexEntry[]>([]);
+  const [vehiclePanelOpen, setVehiclePanelOpen] = useState(false);
+  const [selectedVehicleId, setSelectedVehicleId] = useState<string | null>(null);
+  const [vehicleDetailData, setVehicleDetailData] = useState<VehicleDetail | null>(null);
+  const [vehicleDetailLoading, setVehicleDetailLoading] = useState(false);
   const [enableTrails, setEnableTrails] = useState(true);
   const [trailSeconds, setTrailSeconds] = useState(20);
   const [toasts, setToasts] = useState<Array<{ id: string; kind: 'kill' | 'event'; title: string; subtitle: string; visible: boolean }>>([]);
@@ -975,6 +986,71 @@ export function ReplayToolPage() {
         backfillInFlightRef.current = false;
       });
   }, [events.length, live, loadedEventRange.minTsMs, range.maxTsMs, range.minTsMs, serverId]);
+
+  // Poll vehicle index when vehicle markers are enabled
+  useEffect(() => {
+    if (!serverId || !showVehicleMarkers) {
+      setVehicleIndex([]);
+      return;
+    }
+    const serverIdValue = serverId;
+    let cancelled = false;
+    let timer: number | null = null;
+
+    async function poll() {
+      try {
+        const data = await getReplayVehicles(serverIdValue);
+        if (!cancelled && Array.isArray(data.vehicles)) setVehicleIndex(data.vehicles);
+      } catch { /* ignore */ }
+      if (!cancelled) timer = window.setTimeout(poll, 30000);
+    }
+    poll();
+    return () => { cancelled = true; if (timer !== null) window.clearTimeout(timer); };
+  }, [serverId, showVehicleMarkers]);
+
+  // Request vehicle detail on selection
+  useEffect(() => {
+    if (!serverId || !selectedVehicleId) { setVehicleDetailData(null); return; }
+    const serverIdValue = serverId;
+    const entityId = selectedVehicleId;
+    let cancelled = false;
+
+    setVehicleDetailLoading(true);
+    setVehicleDetailData(null);
+
+    (async () => {
+      try {
+        const { requestId } = await requestVehicleDetail(serverIdValue, entityId);
+        // Poll for result (game server needs to respond on next ingest cycle)
+        for (let i = 0; i < 15; i++) {
+          if (cancelled) return;
+          await new Promise((r) => setTimeout(r, 1000));
+          if (cancelled) return;
+          const result = await pollVehicleDetail(serverIdValue, requestId);
+          if (result) {
+            if (!cancelled) setVehicleDetailData(result);
+            break;
+          }
+        }
+      } catch { /* ignore */ }
+      if (!cancelled) setVehicleDetailLoading(false);
+    })();
+
+    return () => { cancelled = true; };
+  }, [serverId, selectedVehicleId]);
+
+  const vehicleMarkers3D = useMemo((): VehicleMarker[] => {
+    if (!showVehicleMarkers) return [];
+    return vehicleIndex.map((v) => {
+      const p = coerceVec3(v.pos);
+      return {
+        entityId: v.entityId,
+        pos: p || { x: 0, y: 0, z: 0 },
+        destroyed: !!v.destroyed,
+        occupied: !!v.occupied,
+      };
+    }).filter((v) => v.pos.x !== 0 || v.pos.z !== 0);
+  }, [showVehicleMarkers, vehicleIndex]);
 
   const snapshots = useMemo(() => {
     const out: Array<{ tsMs: number; players: any[] }> = [];
@@ -2384,6 +2460,7 @@ export function ReplayToolPage() {
                 showAimLines={showAimLines}
                 trail={focusedTrail}
                 deathMarkers={visibleDeathMarkers}
+                vehicleMarkers={vehicleMarkers3D}
                 terrain={terrain}
                 towns={towns || undefined}
               />
@@ -2460,6 +2537,10 @@ export function ReplayToolPage() {
                           <label className="row" style={{ gap: 8, marginBottom: 6 }}>
                             <input type="checkbox" checked={showDeathMarkers} onChange={(e) => setShowDeathMarkers(e.target.checked)} />
                             <span className="muted" style={{ fontSize: 11 }}>Death markers</span>
+                          </label>
+                          <label className="row" style={{ gap: 8, marginBottom: 6 }}>
+                            <input type="checkbox" checked={showVehicleMarkers} onChange={(e) => { setShowVehicleMarkers(e.target.checked); if (e.target.checked) setVehiclePanelOpen(true); }} />
+                            <span className="muted" style={{ fontSize: 11 }}>Vehicles on map</span>
                           </label>
                           <label className="row" style={{ gap: 8, marginBottom: 6 }}>
                             <input type="checkbox" checked={enableTrails} onChange={(e) => setEnableTrails(e.target.checked)} />
@@ -2733,6 +2814,67 @@ export function ReplayToolPage() {
                   </div>
                 </div>
               </div>
+
+              {/* Vehicle panel */}
+              {showVehicleMarkers && vehiclePanelOpen ? (
+                <div style={{ position: 'absolute', bottom: 148, left: 12, width: 280, maxHeight: 320, display: 'flex', flexDirection: 'column' }}>
+                  <div className="card" style={{ padding: 10, background: 'rgba(0,0,0,0.55)', border: '1px solid rgba(255,255,255,0.14)', display: 'flex', flexDirection: 'column', overflow: 'hidden', maxHeight: '100%' }}>
+                    <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                      <div style={{ fontWeight: 800, fontSize: 12 }}>Vehicles ({vehicleIndex.length})</div>
+                      <button className="button" style={{ padding: '2px 8px', fontSize: 10 }} onClick={() => setVehiclePanelOpen(false)}>Hide</button>
+                    </div>
+
+                    {selectedVehicleId && (vehicleDetailLoading || vehicleDetailData) ? (
+                      <div style={{ borderBottom: '1px solid rgba(255,255,255,0.10)', paddingBottom: 8, marginBottom: 6 }}>
+                        <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
+                          <div style={{ fontWeight: 700, fontSize: 11 }}>{vehicleIndex.find((v) => v.entityId === selectedVehicleId)?.name || selectedVehicleId}</div>
+                          <button className="button" style={{ padding: '2px 6px', fontSize: 10 }} onClick={() => { setSelectedVehicleId(null); setVehicleDetailData(null); }}>Back</button>
+                        </div>
+                        {vehicleDetailLoading && !vehicleDetailData ? (
+                          <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>Loading inventory...</div>
+                        ) : vehicleDetailData ? (
+                          <div className="scroll" style={{ marginTop: 4, maxHeight: 180, overflow: 'auto', border: '1px solid rgba(255,255,255,0.10)', borderRadius: 6 }}>
+                            {vehicleDetailData.inventory.length === 0 ? (
+                              <div className="muted" style={{ padding: 8, fontSize: 11 }}>Empty.</div>
+                            ) : vehicleDetailData.inventory.map((it, idx) => (
+                              <div key={idx} style={{ padding: '3px 8px', borderBottom: '1px solid rgba(255,255,255,0.06)', fontSize: 11 }}>
+                                {it.name || it.prefab || 'Item'}
+                              </div>
+                            ))}
+                          </div>
+                        ) : null}
+                      </div>
+                    ) : null}
+
+                    <div className="scroll" style={{ flex: 1, minHeight: 0, overflow: 'auto' }}>
+                      {vehicleIndex.length === 0 ? (
+                        <div className="muted" style={{ fontSize: 11, padding: 8 }}>No vehicle data yet. Waiting for sync...</div>
+                      ) : vehicleIndex.map((v) => (
+                        <button
+                          key={v.entityId}
+                          className="button"
+                          style={{
+                            display: 'flex', alignItems: 'center', gap: 6, width: '100%', textAlign: 'left',
+                            padding: '4px 8px', fontSize: 11, borderBottom: '1px solid rgba(255,255,255,0.06)',
+                            background: selectedVehicleId === v.entityId ? 'rgba(74,222,255,0.12)' : 'transparent',
+                            opacity: v.destroyed ? 0.4 : 1,
+                          }}
+                          onClick={() => {
+                            setSelectedVehicleId(v.entityId);
+                            const p = coerceVec3(v.pos);
+                            if (p) { setFocusTarget(p); setFocusNonce((n) => n + 1); }
+                          }}
+                        >
+                          <span style={{ color: v.destroyed ? '#8a93a6' : v.occupied ? '#f9bc59' : '#4adeff', fontSize: 10 }}>&#9670;</span>
+                          <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{v.name || 'Vehicle'}</span>
+                          {v.occupied ? <span className="muted" style={{ fontSize: 9, flexShrink: 0 }}>IN USE</span> : null}
+                          {v.destroyed ? <span className="muted" style={{ fontSize: 9, flexShrink: 0 }}>WRECK</span> : null}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              ) : null}
 
               {/* Floating scrubber */}
               <div style={{ position: 'absolute', left: 12, right: 12, bottom: 12, display: 'flex', justifyContent: 'center' }}>

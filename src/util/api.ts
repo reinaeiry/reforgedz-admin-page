@@ -205,6 +205,68 @@ export async function getReplayEvents(params: {
   return (await res.json()) as IngestRecord[];
 }
 
+export interface VehicleIndexEntry {
+  entityId: string;
+  name: string;
+  prefab: string;
+  pos: { x: number; y: number; z: number } | number[];
+  destroyed: boolean;
+  occupied: boolean;
+}
+
+export interface VehicleIndex {
+  vehicles: VehicleIndexEntry[];
+  tsMs: number;
+  updatedAt: number;
+}
+
+export async function getReplayVehicles(serverId: string): Promise<VehicleIndex> {
+  const base = requireApiBaseUrl();
+  const session = getSession();
+  if (!session) throw new Error('Not authenticated');
+
+  const res = await fetch(`${base}/api/replay/vehicles?serverId=${encodeURIComponent(serverId)}`, {
+    headers: { Authorization: `Bearer ${session.token}` },
+  });
+  if (!res.ok) throw new Error(await res.text() || `Failed (${res.status})`);
+  return (await res.json()) as VehicleIndex;
+}
+
+export async function requestVehicleDetail(serverId: string, entityId: string): Promise<{ ok: boolean; requestId: string }> {
+  const base = requireApiBaseUrl();
+  const session = getSession();
+  if (!session) throw new Error('Not authenticated');
+
+  const res = await fetch(`${base}/api/replay/vehicleDetail`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${session.token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ serverId, entityId }),
+  });
+  if (!res.ok) throw new Error(await res.text() || `Failed (${res.status})`);
+  return (await res.json()) as { ok: boolean; requestId: string };
+}
+
+export interface VehicleDetail {
+  entityId: string;
+  requestId: string;
+  inventory: Array<{ name: string; prefab: string }>;
+  updatedAt: number;
+}
+
+export async function pollVehicleDetail(serverId: string, requestId: string): Promise<VehicleDetail | null> {
+  const base = requireApiBaseUrl();
+  const session = getSession();
+  if (!session) throw new Error('Not authenticated');
+
+  const res = await fetch(`${base}/api/replay/vehicleDetail?serverId=${encodeURIComponent(serverId)}&requestId=${encodeURIComponent(requestId)}`, {
+    headers: { Authorization: `Bearer ${session.token}` },
+  });
+  if (!res.ok) throw new Error(await res.text() || `Failed (${res.status})`);
+  const data = await res.json();
+  if (data.pending) return null;
+  return data as VehicleDetail;
+}
+
 export async function sendReplayGmPing(params: {
   serverId: string;
   tsMs: number;

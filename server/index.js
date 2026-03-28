@@ -2076,6 +2076,58 @@ app.get('/api/replay/events', requireAuth, requireTool('replay'), asyncRoute(asy
   res.json(items);
 }));
 
+app.get('/api/replay/vehicles', requireAuth, requireTool('replay'), asyncRoute(async (req, res) => {
+  const serverId = String(req.query.serverId || '');
+  if (!serverId) { res.status(400).send('Missing serverId'); return; }
+
+  const safeId = sanitizeServerId(serverId);
+  const serverDir = path.join(DATA_DIR, 'servers', safeId);
+  const data = await readJsonOrNull(path.join(serverDir, 'latestVehicles.json'));
+  res.json(data || { vehicles: [], tsMs: 0, updatedAt: 0 });
+}));
+
+app.post('/api/replay/vehicleDetail', requireAuth, requireTool('replay'), asyncRoute(async (req, res) => {
+  const { serverId, entityId } = (req.body && typeof req.body === 'object') ? req.body : {};
+  if (typeof serverId !== 'string' || !serverId) { res.status(400).send('Missing serverId'); return; }
+  if (typeof entityId !== 'string' || !entityId) { res.status(400).send('Missing entityId'); return; }
+
+  const safeId = sanitizeServerId(serverId);
+  const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const serverDir = path.join(DATA_DIR, 'servers', safeId);
+
+  await withIngestLock(safeId, async () => {
+    await ensureDir(serverDir);
+    const idxPath = path.join(serverDir, 'index.json');
+    const idx = (await readJsonOrNull(idxPath)) || {};
+    const pending = (idx.pendingCommands && typeof idx.pendingCommands === 'object' && !Array.isArray(idx.pendingCommands))
+      ? { ...idx.pendingCommands }
+      : {};
+
+    const existing = Array.isArray(pending.vehicleDetail) ? pending.vehicleDetail : [];
+    existing.push({ entityId, requestId });
+    pending.vehicleDetail = existing;
+
+    await writeJsonAtomic(idxPath, { ...idx, pendingCommands: pending });
+  });
+
+  res.json({ ok: true, requestId });
+}));
+
+app.get('/api/replay/vehicleDetail', requireAuth, requireTool('replay'), asyncRoute(async (req, res) => {
+  const serverId = String(req.query.serverId || '');
+  const requestId = String(req.query.requestId || '');
+  if (!serverId || !requestId) { res.status(400).send('Missing serverId or requestId'); return; }
+
+  const safeId = sanitizeServerId(serverId);
+  const detailPath = path.join(DATA_DIR, 'servers', safeId, `vehicleDetail-${requestId}.json`);
+  const data = await readJsonOrNull(detailPath);
+  if (!data) { res.json({ pending: true }); return; }
+
+  // Clean up after read
+  try { await fs.unlink(detailPath); } catch { /* ignore */ }
+  res.json(data);
+}));
+
 app.post('/api/replay/gmPing', requireAuth, requireTool('replay'), asyncRoute(async (req, res) => {
   const { serverId, tsMs, pos, title, reporterPlayerId } = (req.body && typeof req.body === 'object') ? req.body : {};
   if (typeof serverId !== 'string' || !serverId) {
@@ -3310,6 +3362,29 @@ app.post('/api/replay/ingest', async (req, res) => {
           mutes: Array.isArray(ev.mutes) ? ev.mutes : [],
           updatedAt: receivedAt,
         });
+      }
+
+      if (normalizedPayload && normalizedPayload.type === 'vehicleIndex') {
+        const ev = normalizedPayload.event && typeof normalizedPayload.event === 'object' ? normalizedPayload.event : {};
+        await writeJsonAtomic(path.join(serverDir, 'latestVehicles.json'), {
+          vehicles: Array.isArray(ev.vehicles) ? ev.vehicles : [],
+          tsMs: typeof tsMs === 'number' ? tsMs : 0,
+          updatedAt: receivedAt,
+        });
+      }
+
+      if (normalizedPayload && normalizedPayload.type === 'vehicleDetail') {
+        const ev = normalizedPayload.event && typeof normalizedPayload.event === 'object' ? normalizedPayload.event : {};
+        const reqId = typeof ev.requestId === 'string' ? ev.requestId : '';
+        const entityId = typeof ev.entityId === 'string' ? ev.entityId : '';
+        if (reqId) {
+          await writeJsonAtomic(path.join(serverDir, `vehicleDetail-${reqId}.json`), {
+            entityId,
+            requestId: reqId,
+            inventory: Array.isArray(ev.inventory) ? ev.inventory : [],
+            updatedAt: receivedAt,
+          });
+        }
       }
 
       // Enforce 24h rolling buffer.
