@@ -1339,6 +1339,16 @@ export function ReplayToolPage() {
   }, [events]);
 
   const presenceSeriesById = useMemo(() => {
+    // Collect restart timestamps — when a server restarts, all player IDs reset
+    // so all prior connections must be treated as disconnected.
+    const restartTimes: number[] = [];
+    for (const e of events) {
+      const p: any = e.payload;
+      if (!p || typeof p !== 'object') continue;
+      if (p.type === 'restart' && typeof p.tsMs === 'number') restartTimes.push(p.tsMs);
+    }
+    restartTimes.sort((a, b) => a - b);
+
     const map = new Map<number, Array<{ tsMs: number; type: 'join' | 'disconnect' }>>();
     for (const e of events) {
       const p: any = e.payload;
@@ -1355,6 +1365,23 @@ export function ReplayToolPage() {
       }
       arr.push({ tsMs: p.tsMs, type: p.type });
     }
+
+    // Inject synthetic disconnects at each restart for every player ID that was
+    // connected just before the restart — this prevents IDs from leaking across sessions.
+    for (const restartTs of restartTimes) {
+      for (const [, arr] of map) {
+        // Find last event before restartTs for this ID.
+        let lastBefore: { tsMs: number; type: 'join' | 'disconnect' } | null = null;
+        for (const ev of arr) {
+          if (ev.tsMs < restartTs) lastBefore = ev;
+          else break;
+        }
+        if (lastBefore && lastBefore.type === 'join') {
+          arr.push({ tsMs: restartTs, type: 'disconnect' });
+        }
+      }
+    }
+
     for (const arr of map.values()) arr.sort((a, b) => a.tsMs - b.tsMs);
     return map;
   }, [events]);
