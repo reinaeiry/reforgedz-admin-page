@@ -842,10 +842,14 @@ export function ReplayToolPage() {
   }, [live, range.maxTsMs, serverId]);
 
   const loadedEventRange = useMemo(() => {
+    // Only consider snapshot records for the loaded range — event-only records
+    // (kills, joins, etc.) span the full timeline but contain no position data,
+    // so they must not prevent the backfill system from loading snapshots.
     let minTs: number | null = null;
     let maxTs: number | null = null;
     for (const e of events) {
       const p: any = (e as any).payload;
+      if (!p || p.type !== 'snapshot') continue;
       const ts = p && typeof p.tsMs === 'number' ? p.tsMs : null;
       if (ts === null) continue;
       if (minTs === null || ts < minTs) minTs = ts;
@@ -1054,12 +1058,24 @@ export function ReplayToolPage() {
       const p = coerceVec3(v.pos);
       return {
         entityId: v.entityId,
+        name: v.name || '',
         pos: p || { x: 0, y: 0, z: 0 },
         destroyed: !!v.destroyed,
         occupied: !!v.occupied,
       };
     }).filter((v) => v.pos.x !== 0 || v.pos.z !== 0);
   }, [showVehicleMarkers, vehicleIndex]);
+
+  const handleVehicleClick = useCallback((entityId: string) => {
+    setSelectedVehicleId(entityId);
+    setVehiclePanelOpen(true);
+    setShowVehicleMarkers(true);
+    const v = vehicleIndex.find((x) => x.entityId === entityId);
+    if (v) {
+      const p = coerceVec3(v.pos);
+      if (p) { setFocusTarget(p); setFocusNonce((n) => n + 1); }
+    }
+  }, [vehicleIndex]);
 
   const snapshots = useMemo(() => {
     const out: Array<{ tsMs: number; players: any[] }> = [];
@@ -2482,6 +2498,7 @@ export function ReplayToolPage() {
                 trail={focusedTrail}
                 deathMarkers={visibleDeathMarkers}
                 vehicleMarkers={vehicleMarkers3D}
+                onVehicleClick={handleVehicleClick}
                 terrain={terrain}
                 towns={towns || undefined}
               />

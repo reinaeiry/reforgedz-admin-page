@@ -36,6 +36,7 @@ export type TownLabel = {
 
 export type VehicleMarker = {
   entityId: string;
+  name?: string;
   pos: { x: number; y: number; z: number };
   destroyed?: boolean;
   occupied?: boolean;
@@ -52,6 +53,7 @@ export type ReplayMap3DProps = {
   deathMarkers?: Array<{ x: number; y: number; z: number }>;
   pingMarkers?: Array<{ x: number; y: number; z: number }>;
   vehicleMarkers?: VehicleMarker[];
+  onVehicleClick?: (entityId: string) => void;
   terrain?: TerrainGrid | null;
   towns?: TownLabel[];
 };
@@ -89,6 +91,7 @@ export function ReplayMap3D(props: ReplayMap3DProps) {
   const deathMarkersRef = useRef<Array<{ x: number; y: number; z: number }>>([]);
   const pingMarkersRef = useRef<Array<{ x: number; y: number; z: number }>>([]);
   const vehicleMarkersRef = useRef<VehicleMarker[]>([]);
+  const onVehicleClickRef = useRef<((entityId: string) => void) | null>(null);
   const terrainRef = useRef<TerrainGrid | null>(null);
   const townsRef = useRef<TownLabel[]>([]);
 
@@ -140,8 +143,12 @@ export function ReplayMap3D(props: ReplayMap3DProps) {
 
   useEffect(() => {
     vehicleMarkersRef.current = Array.isArray(props.vehicleMarkers) ? props.vehicleMarkers : [];
-    dirtyRef.current.death = true; // reuse death dirty flag to trigger re-render
+    dirtyRef.current.death = true;
   }, [props.vehicleMarkers]);
+
+  useEffect(() => {
+    onVehicleClickRef.current = props.onVehicleClick || null;
+  }, [props.onVehicleClick]);
 
   useEffect(() => {
     pingMarkersRef.current = Array.isArray(props.pingMarkers) ? props.pingMarkers : [];
@@ -269,6 +276,8 @@ export function ReplayMap3D(props: ReplayMap3DProps) {
     const pingMarkers = new Map<string, THREE.LineSegments>();
 
     const vehicleMarkerMeshes = new Map<string, THREE.LineSegments>();
+    const vehicleLabelSprites = new Map<string, THREE.Sprite>();
+    const vehLabelOpts: NameTagOptions = { enabled: true, scale: 0.7, background: true };
 
     let terrainMesh: THREE.Mesh | null = null;
     let terrainEdges: THREE.LineSegments | null = null;
@@ -688,7 +697,6 @@ export function ReplayMap3D(props: ReplayMap3DProps) {
         if (!seg) {
           const s = 1.0;
           const geom = new THREE.BufferGeometry();
-          // Diamond shape in XZ plane
           const arr = new Float32Array([
             0, 0, -s, s, 0, 0,
             s, 0, 0, 0, 0, s,
@@ -703,6 +711,21 @@ export function ReplayMap3D(props: ReplayMap3DProps) {
 
         seg.material = v.destroyed ? vehDestroyedMat : vehMat;
         seg.position.set(p.x, p.y + 0.1, p.z);
+
+        // Vehicle name label
+        const label = v.name || '';
+        if (label) {
+          let sprite = vehicleLabelSprites.get(key);
+          if (!sprite) {
+            sprite = makeLabelSprite(label, vehLabelOpts);
+            setSpriteWorldScale(sprite, vehLabelOpts);
+            sprite.frustumCulled = false;
+            (sprite.material as THREE.SpriteMaterial).depthWrite = false;
+            vehicleLabelSprites.set(key, sprite);
+            vehicleGroup.add(sprite);
+          }
+          sprite.position.set(p.x, p.y + 2.5, p.z);
+        }
       }
 
       for (const [key, seg] of vehicleMarkerMeshes) {
@@ -710,6 +733,13 @@ export function ReplayMap3D(props: ReplayMap3DProps) {
         vehicleGroup.remove(seg);
         (seg.geometry as THREE.BufferGeometry).dispose();
         vehicleMarkerMeshes.delete(key);
+        const sprite = vehicleLabelSprites.get(key);
+        if (sprite) {
+          vehicleGroup.remove(sprite);
+          (sprite.material as THREE.SpriteMaterial).map?.dispose();
+          (sprite.material as THREE.SpriteMaterial).dispose();
+          vehicleLabelSprites.delete(key);
+        }
       }
     }
 
@@ -729,6 +759,28 @@ export function ReplayMap3D(props: ReplayMap3DProps) {
 
       if (document.pointerLockElement !== canvasEl) {
         canvasEl.requestPointerLock();
+      }
+    }
+
+    const raycaster = new THREE.Raycaster();
+    raycaster.params.Line = { threshold: 3 };
+    const mouseNdc = new THREE.Vector2();
+
+    function onCanvasClick(e: MouseEvent) {
+      if (e.button !== 0) return;
+      const cb = onVehicleClickRef.current;
+      if (!cb) return;
+      const rect = canvasEl.getBoundingClientRect();
+      mouseNdc.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+      mouseNdc.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+      raycaster.setFromCamera(mouseNdc, camera);
+
+      const hits = raycaster.intersectObjects(vehicleGroup.children, false);
+      if (hits.length > 0) {
+        const hit = hits[0].object;
+        for (const [key, seg] of vehicleMarkerMeshes) {
+          if (seg === hit) { cb(key); return; }
+        }
       }
     }
 
@@ -781,7 +833,7 @@ export function ReplayMap3D(props: ReplayMap3DProps) {
       // Negative deltaY = scroll up
       const direction = e.deltaY < 0 ? 1 : -1;
       const next = controls.speed + direction * Math.max(1, controls.speed * 0.1);
-      controls.speed = clamp(next, 1, 400);
+      controls.speed = clamp(next, 1, 1200);
     }
 
     function onKeyDown(e: KeyboardEvent) {
@@ -948,6 +1000,7 @@ export function ReplayMap3D(props: ReplayMap3DProps) {
     }
 
     canvasEl.addEventListener('contextmenu', onContextMenu);
+    canvasEl.addEventListener('click', onCanvasClick);
     canvasEl.addEventListener('mousedown', onMouseDown);
     window.addEventListener('mouseup', onMouseUp);
     document.addEventListener('pointerlockchange', onPointerLockChange);
@@ -1097,6 +1150,7 @@ export function ReplayMap3D(props: ReplayMap3DProps) {
       window.cancelAnimationFrame(raf);
 
       canvasEl.removeEventListener('contextmenu', onContextMenu);
+      canvasEl.removeEventListener('click', onCanvasClick);
       canvasEl.removeEventListener('mousedown', onMouseDown);
       window.removeEventListener('mouseup', onMouseUp);
       document.removeEventListener('pointerlockchange', onPointerLockChange);
@@ -1149,6 +1203,10 @@ export function ReplayMap3D(props: ReplayMap3DProps) {
 
       for (const seg of vehicleMarkerMeshes.values()) {
         (seg.geometry as THREE.BufferGeometry).dispose();
+      }
+      for (const sprite of vehicleLabelSprites.values()) {
+        (sprite.material as THREE.SpriteMaterial).map?.dispose();
+        (sprite.material as THREE.SpriteMaterial).dispose();
       }
 
       vehMat.dispose();
