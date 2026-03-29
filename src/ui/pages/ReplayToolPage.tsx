@@ -2404,8 +2404,8 @@ export function ReplayToolPage() {
   }, [currentTsMs, live, serverId, toastTimeline]);
 
   return (
-    <div style={{ width: '100%', height: '100%', overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
-      <div className="row" style={{ gap: 12, padding: 12, alignItems: 'center' }}>
+    <div style={{ width: '100%', height: '100%', overflow: 'hidden', position: 'relative' }}>
+      <div className="row" style={{ gap: 12, padding: 12, alignItems: 'center', flexShrink: 0 }}>
         <div style={{ minWidth: 240, maxWidth: 520, flex: 1 }}>
           <select
             className="input"
@@ -2464,15 +2464,14 @@ export function ReplayToolPage() {
       {serverId ? (
         <div
           style={{
-            position: 'relative',
             width: '100%',
-            flex: 1,
-            minHeight: 0,
+            height: 'calc(100vh - 104px)',
             padding: 12,
             boxSizing: 'border-box',
           }}
         >
-          <div className="card" style={{ width: '100%', height: '100%', padding: 0, overflow: 'hidden', position: 'relative' }}>
+          <div className="card" style={{ width: '100%', height: '100%', padding: 0, overflow: 'hidden' }}>
+            <div style={{ width: '100%', height: '100%', position: 'relative', overflow: 'hidden' }}>
               <ReplayMap3D
                 players={playerMarkers}
                 focusTarget={focusTarget}
@@ -3104,6 +3103,7 @@ export function ReplayToolPage() {
                   />
                 </div>
               </div>
+            </div>
           </div>
         </div>
       ) : null}
