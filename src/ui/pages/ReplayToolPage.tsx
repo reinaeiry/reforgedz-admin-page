@@ -2404,7 +2404,7 @@ export function ReplayToolPage() {
   }, [currentTsMs, live, serverId, toastTimeline]);
 
   return (
-    <div style={{ width: '100%', height: '100%', overflow: 'hidden' }}>
+    <div style={{ width: '100%', height: '100%', overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
       <div className="row" style={{ gap: 12, padding: 12, alignItems: 'center' }}>
         <div style={{ minWidth: 240, maxWidth: 520, flex: 1 }}>
           <select
@@ -2466,7 +2466,8 @@ export function ReplayToolPage() {
           style={{
             position: 'relative',
             width: '100%',
-            height: 'calc(100vh - 72px)',
+            flex: 1,
+            minHeight: 0,
             padding: 12,
             boxSizing: 'border-box',
           }}
@@ -2498,7 +2499,7 @@ export function ReplayToolPage() {
               ) : null}
 
               {/* Top-right toast popups (overlay above events panel) */}
-              <div style={{ position: 'absolute', top: 12, right: 350, width: 280, display: 'flex', flexDirection: 'column', gap: 8, pointerEvents: 'none', zIndex: 10 }}>
+              <div style={{ position: 'absolute', top: 12, right: 336, width: 260, display: 'flex', flexDirection: 'column', gap: 8, pointerEvents: 'none', zIndex: 10 }}>
                 {toasts.map((t) => (
                   <div
                     key={t.id}
@@ -2688,7 +2689,7 @@ export function ReplayToolPage() {
               </div>
 
               {/* Right panel — Events */}
-              <div style={{ position: 'absolute', top: 12, right: 18, bottom: 148, width: 320, display: 'flex', flexDirection: 'column' }}>
+              <div style={{ position: 'absolute', top: 12, right: 24, bottom: 148, width: 300, display: 'flex', flexDirection: 'column' }}>
                 <div className="card" style={{ padding: 10, background: 'rgba(0,0,0,0.55)', border: '1px solid rgba(255,255,255,0.14)', display: 'flex', flexDirection: 'column', overflow: 'hidden', maxHeight: '100%' }}>
                   <div style={{ flexShrink: 0 }}>
                     <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', gap: 8, flexWrap: 'nowrap' }}>
@@ -2959,15 +2960,18 @@ export function ReplayToolPage() {
                         />
                         <span className="muted" style={{ fontSize: 12 }}>Live</span>
                       </label>
+                    </div>
+                  </div>
 
-                      <div style={{ height: 16, width: 1, background: 'rgba(255,255,255,0.15)' }} />
-
-                      {/* Jump to wall-clock time */}
+                  {/* Jump-to-time + Zoom row */}
+                  <div className="row" style={{ gap: 10, alignItems: 'center', marginTop: 6, flexWrap: 'wrap' }}>
+                    <div className="row" style={{ gap: 6, alignItems: 'center' }}>
+                      <span className="muted" style={{ fontSize: 11 }}>Go to</span>
                       <input
                         className="input"
                         type="time"
                         step="1"
-                        style={{ width: 100, padding: '4px 6px', fontSize: 11 }}
+                        style={{ width: 110, padding: '4px 6px', fontSize: 11 }}
                         title="Jump to wall-clock time"
                         disabled={scrubber.disabled || !formatWallClock || !wallClockAnchor}
                         onChange={(e) => {
@@ -2985,18 +2989,20 @@ export function ReplayToolPage() {
                           setCurrentTsMs(clamped);
                         }}
                       />
+                    </div>
 
-                      {/* Zoom slider */}
-                      <div className="row" style={{ gap: 4, alignItems: 'center' }}>
-                        <span className="muted" style={{ fontSize: 10 }}>{scrubberZoom > 1 ? `${scrubberZoom.toFixed(0)}×` : '1×'}</span>
-                        <input
-                          type="range" min={1} max={48} step={1}
-                          value={scrubberZoom}
-                          onChange={(e) => setScrubberZoom(Number(e.target.value))}
-                          style={{ width: 60 }}
-                          title="Scrubber zoom level"
-                        />
-                      </div>
+                    <div style={{ height: 16, width: 1, background: 'rgba(255,255,255,0.12)' }} />
+
+                    <div className="row" style={{ gap: 6, alignItems: 'center' }}>
+                      <span className="muted" style={{ fontSize: 11 }}>Zoom</span>
+                      <input
+                        type="range" min={1} max={48} step={1}
+                        value={scrubberZoom}
+                        onChange={(e) => setScrubberZoom(Number(e.target.value))}
+                        style={{ width: 80 }}
+                        title="Scrubber zoom — narrow the visible time range"
+                      />
+                      <span className="muted" style={{ fontSize: 10, minWidth: 24 }}>{scrubberZoom > 1 ? `${scrubberZoom}×` : 'Full'}</span>
                     </div>
                   </div>
 

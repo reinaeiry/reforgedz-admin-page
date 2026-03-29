@@ -2842,11 +2842,10 @@ app.get('/api/admin/events', requireAuth, requireTool('events'), asyncRoute(asyn
   const limit = Math.min(Math.max(parseInt(req.query.limit || '200', 10) || 200, 1), 1000);
   const sinceReceivedAt = req.query.sinceTsMs ? Number(req.query.sinceTsMs) : null;
 
-  // Try in-memory cache first, fall back to disk.
-  const cached = tryReadReplayEventsFromCache(safeId, { tail: true, limit: limit * 2 });
-  let records = cached || [];
-
-  if (!cached) {
+  // Always scan from disk — the in-memory cache is snapshot-dominated and
+  // would return almost no event-type records in a small sample.
+  let records: any[] = [];
+  {
     const serverDir = path.join(DATA_DIR, 'servers', safeId);
     const eventsPath = path.join(serverDir, 'events.ndjson');
     try {
@@ -2865,7 +2864,7 @@ app.get('/api/admin/events', requireAuth, requireTool('events'), asyncRoute(asyn
     } catch { /* no events file yet */ }
   }
 
-  const eventTypes = new Set(['kill', 'death', 'aiKill', 'join', 'disconnect']);
+  const eventTypes = new Set(['kill', 'death', 'aiKill', 'join', 'disconnect', 'restart']);
   let filtered = records.filter((r) => {
     const t = r.payload && typeof r.payload.type === 'string' ? r.payload.type : '';
     if (!eventTypes.has(t)) return false;
