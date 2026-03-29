@@ -2844,7 +2844,7 @@ app.get('/api/admin/events', requireAuth, requireTool('events'), asyncRoute(asyn
 
   // Always scan from disk — the in-memory cache is snapshot-dominated and
   // would return almost no event-type records in a small sample.
-  let records: any[] = [];
+  let records = [];
   {
     const serverDir = path.join(DATA_DIR, 'servers', safeId);
     const eventsPath = path.join(serverDir, 'events.ndjson');
