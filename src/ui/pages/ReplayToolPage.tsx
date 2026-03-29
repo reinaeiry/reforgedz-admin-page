@@ -1,5 +1,5 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { useLocation } from 'react-router-dom';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
 import {
   getReplayEvents,
   getReplayMapTerrain,
@@ -254,9 +254,17 @@ function trimEventsToCap(list: IngestRecord[], cap: number, targetTsMs: number |
 
 export function ReplayToolPage() {
   const serverIdFromQuery = useQueryParam('serverId');
+  const navigate = useNavigate();
 
   const [servers, setServers] = useState<ServerInfo[]>([]);
-  const [selectedServerId, setSelectedServerId] = useState<string>('');
+  const [selectedServerId, setSelectedServerId] = useState<string>(serverIdFromQuery || '');
+
+  const selectServer = useCallback((id: string) => {
+    setSelectedServerId(id);
+    const params = new URLSearchParams(window.location.search);
+    if (id) { params.set('serverId', id); } else { params.delete('serverId'); }
+    navigate(`?${params.toString()}`, { replace: true });
+  }, [navigate]);
   const [serverStatuses, setServerStatuses] = useState<ReplayStatus[] | null>(null);
   const [serverStatusesError, setServerStatusesError] = useState<string | null>(null);
 
@@ -305,6 +313,7 @@ export function ReplayToolPage() {
   const [selectedVehicleId, setSelectedVehicleId] = useState<string | null>(null);
   const [vehicleDetailData, setVehicleDetailData] = useState<VehicleDetail | null>(null);
   const [vehicleDetailLoading, setVehicleDetailLoading] = useState(false);
+  const [scrubberZoom, setScrubberZoom] = useState(1); // 1 = full range, higher = zoomed in
   const [enableTrails, setEnableTrails] = useState(true);
   const [trailSeconds, setTrailSeconds] = useState(20);
   const [toasts, setToasts] = useState<Array<{ id: string; kind: 'kill' | 'event'; title: string; subtitle: string; visible: boolean }>>([]);
@@ -1793,18 +1802,31 @@ export function ReplayToolPage() {
   }, [currentTsMs, findBestPlayerPosAt, showDeathMarkers, sortedKillDeathEvents]);
 
   const scrubber = useMemo(() => {
-    const min = range.minTsMs;
-    const max = range.maxTsMs;
+    const absMin = range.minTsMs;
+    const absMax = range.maxTsMs;
     const cur = currentTsMs;
-    if (typeof min !== 'number' || typeof max !== 'number' || typeof cur !== 'number') {
+    if (typeof absMin !== 'number' || typeof absMax !== 'number' || typeof cur !== 'number') {
       return { min: 0, max: 100, value: 0, disabled: true };
     }
-    if (max <= min) {
-      return { min, max: min + 1, value: min, disabled: false };
+    if (absMax <= absMin) {
+      return { min: absMin, max: absMin + 1, value: absMin, disabled: false };
     }
 
-    return { min, max, value: Math.min(Math.max(cur, min), max), disabled: false };
-  }, [currentTsMs, range.maxTsMs, range.minTsMs]);
+    // Apply zoom: narrow the visible range around the current position
+    if (scrubberZoom > 1) {
+      const totalSpan = absMax - absMin;
+      const windowSpan = totalSpan / scrubberZoom;
+      const halfWindow = windowSpan / 2;
+      let zMin = cur - halfWindow;
+      let zMax = cur + halfWindow;
+      // Clamp to absolute range
+      if (zMin < absMin) { zMin = absMin; zMax = Math.min(absMax, absMin + windowSpan); }
+      if (zMax > absMax) { zMax = absMax; zMin = Math.max(absMin, absMax - windowSpan); }
+      return { min: zMin, max: zMax, value: Math.min(Math.max(cur, zMin), zMax), disabled: false };
+    }
+
+    return { min: absMin, max: absMax, value: Math.min(Math.max(cur, absMin), absMax), disabled: false };
+  }, [currentTsMs, range.maxTsMs, range.minTsMs, scrubberZoom]);
 
   const wallClockAnchor = useMemo(() => {
     let bestTs = -Infinity;
@@ -2382,14 +2404,14 @@ export function ReplayToolPage() {
   }, [currentTsMs, live, serverId, toastTimeline]);
 
   return (
-    <div style={{ width: '100%', height: '100vh', overflow: 'hidden' }}>
+    <div style={{ width: '100%', height: '100%', overflow: 'hidden' }}>
       <div className="row" style={{ gap: 12, padding: 12, alignItems: 'center' }}>
         <div style={{ minWidth: 240, maxWidth: 520, flex: 1 }}>
           <select
             className="input"
             value={selectedServerId}
             onChange={(e) => {
-              setSelectedServerId(e.target.value);
+              selectServer(e.target.value);
 
               // reset tool state when switching servers
               setPlayers([]);
@@ -2476,7 +2498,7 @@ export function ReplayToolPage() {
               ) : null}
 
               {/* Top-right toast popups (overlay above events panel) */}
-              <div style={{ position: 'absolute', top: 12, right: 362, width: 300, display: 'flex', flexDirection: 'column', gap: 8, pointerEvents: 'none', zIndex: 10 }}>
+              <div style={{ position: 'absolute', top: 12, right: 350, width: 280, display: 'flex', flexDirection: 'column', gap: 8, pointerEvents: 'none', zIndex: 10 }}>
                 {toasts.map((t) => (
                   <div
                     key={t.id}
@@ -2666,7 +2688,7 @@ export function ReplayToolPage() {
               </div>
 
               {/* Right panel — Events */}
-              <div style={{ position: 'absolute', top: 12, right: 12, bottom: 148, width: 340, display: 'flex', flexDirection: 'column' }}>
+              <div style={{ position: 'absolute', top: 12, right: 18, bottom: 148, width: 320, display: 'flex', flexDirection: 'column' }}>
                 <div className="card" style={{ padding: 10, background: 'rgba(0,0,0,0.55)', border: '1px solid rgba(255,255,255,0.14)', display: 'flex', flexDirection: 'column', overflow: 'hidden', maxHeight: '100%' }}>
                   <div style={{ flexShrink: 0 }}>
                     <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', gap: 8, flexWrap: 'nowrap' }}>
@@ -2937,6 +2959,44 @@ export function ReplayToolPage() {
                         />
                         <span className="muted" style={{ fontSize: 12 }}>Live</span>
                       </label>
+
+                      <div style={{ height: 16, width: 1, background: 'rgba(255,255,255,0.15)' }} />
+
+                      {/* Jump to wall-clock time */}
+                      <input
+                        className="input"
+                        type="time"
+                        step="1"
+                        style={{ width: 100, padding: '4px 6px', fontSize: 11 }}
+                        title="Jump to wall-clock time"
+                        disabled={scrubber.disabled || !formatWallClock || !wallClockAnchor}
+                        onChange={(e) => {
+                          if (!wallClockAnchor || !e.target.value) return;
+                          const parts = e.target.value.split(':').map(Number);
+                          if (parts.length < 2) return;
+                          const now = new Date();
+                          const target = new Date(now.getFullYear(), now.getMonth(), now.getDate(), parts[0], parts[1], parts[2] || 0);
+                          const epochMs = target.getTime();
+                          const tsMs = wallClockAnchor.tsMs + (epochMs - wallClockAnchor.receivedAt);
+                          if (!Number.isFinite(tsMs)) return;
+                          const clamped = Math.min(range.maxTsMs ?? tsMs, Math.max(range.minTsMs ?? tsMs, tsMs));
+                          setLive(false);
+                          setIsPlaying(false);
+                          setCurrentTsMs(clamped);
+                        }}
+                      />
+
+                      {/* Zoom slider */}
+                      <div className="row" style={{ gap: 4, alignItems: 'center' }}>
+                        <span className="muted" style={{ fontSize: 10 }}>{scrubberZoom > 1 ? `${scrubberZoom.toFixed(0)}×` : '1×'}</span>
+                        <input
+                          type="range" min={1} max={48} step={1}
+                          value={scrubberZoom}
+                          onChange={(e) => setScrubberZoom(Number(e.target.value))}
+                          style={{ width: 60 }}
+                          title="Scrubber zoom level"
+                        />
+                      </div>
                     </div>
                   </div>
 
@@ -3089,7 +3149,7 @@ export function ReplayToolPage() {
                   className="card"
                   style={{ textAlign: 'left', cursor: 'pointer', border: 'none' }}
                   onClick={() => {
-                    setSelectedServerId(st.serverId);
+                    selectServer(st.serverId);
 
                     setPlayers([]);
                     setSelectedPlayerId(null);

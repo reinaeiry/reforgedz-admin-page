@@ -9,6 +9,7 @@ const EVENT_TYPES = [
   { label: 'AI Kills', value: 'aiKill' },
   { label: 'Joins', value: 'join' },
   { label: 'Disconnects', value: 'disconnect' },
+  { label: 'Restarts', value: 'restart' },
 ];
 
 function formatEventSummary(entry: EventLogEntry): string {
@@ -40,6 +41,10 @@ function formatEventSummary(entry: EventLogEntry): string {
       const cause = (e.kickCause as string) ?? '';
       return `${name} disconnected${cause ? ` (${cause})` : ''}`;
     }
+    case 'restart': {
+      const reason = (e.reason as string) ?? '';
+      return reason === 'session_start' ? 'Server restarted' : `Server restart${reason ? ` (${reason})` : ''}`;
+    }
     default: return entry.type;
   }
 }
@@ -51,6 +56,7 @@ function typeTagClass(type: string): string {
     case 'aiKill': return 'tagAiKill';
     case 'join': return 'tagJoin';
     case 'disconnect': return 'tagDisconnect';
+    case 'restart': return 'tagDisconnect';
     default: return 'tagDisconnect';
   }
 }

@@ -2850,7 +2850,7 @@ app.get('/api/admin/events', requireAuth, requireTool('events'), asyncRoute(asyn
     const serverDir = path.join(DATA_DIR, 'servers', safeId);
     const eventsPath = path.join(serverDir, 'events.ndjson');
     try {
-      const eventTypes = new Set(['kill', 'death', 'aiKill', 'join', 'disconnect']);
+      const eventTypes = new Set(['kill', 'death', 'aiKill', 'join', 'disconnect', 'restart']);
       const text = await fs.readFile(eventsPath, 'utf8');
       const lines = text.trim().split('\n').filter(Boolean);
       // Scan from the end, collecting only event-type records until we have enough.
