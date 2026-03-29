@@ -1904,12 +1904,50 @@ export function ReplayToolPage() {
     return out;
   }, [currentTsMs, findPlayerStateAt, isConnectedAt, knownPlayers]);
 
+  const fetchSnapshotsFetchingRef = useRef<number | null>(null);
+
+  function fetchSnapshotsAroundTime(targetTsMs: number) {
+    if (!serverId) return;
+    // Debounce: skip if we already fetched for a nearby time recently.
+    const lastFetch = fetchSnapshotsFetchingRef.current;
+    if (lastFetch !== null && Math.abs(lastFetch - targetTsMs) < 15000) return;
+
+    const hasNearbySnapshot = events.some((e) => {
+      const p: any = (e as any).payload;
+      if (!p || p.type !== 'snapshot') return false;
+      const ts = typeof p.tsMs === 'number' ? p.tsMs : null;
+      return ts !== null && Math.abs(ts - targetTsMs) < 30000;
+    });
+    if (hasNearbySnapshot) return;
+
+    fetchSnapshotsFetchingRef.current = targetTsMs;
+    const serverIdValue = serverId;
+    getReplayEvents({
+      serverId: serverIdValue,
+      sinceTsMs: Math.max(0, targetTsMs - 120000),
+      untilTsMs: targetTsMs + 120000,
+      limit: 10000,
+    }).then((items) => {
+      if (items.length === 0) return;
+      setEvents((prev) => {
+        const seen = new Set<string>();
+        for (const e of prev.slice(-2000)) seen.add(getRecordKey(e));
+        const newItems = items.filter((e) => !seen.has(getRecordKey(e)));
+        if (newItems.length === 0) return prev;
+        return trimEventsToCap([...prev, ...newItems], 250000, targetTsMs);
+      });
+    }).catch(() => {}).finally(() => {
+      fetchSnapshotsFetchingRef.current = null;
+    });
+  }
+
   function jumpToEventTs(tsMs: number) {
     const offsetMs = Math.max(0, Math.floor(eventClickOffsetSeconds * 1000));
     const min = scrubber.disabled ? 0 : scrubber.min;
     const max = scrubber.disabled ? tsMs : scrubber.max;
     const next = Math.min(max, Math.max(min, tsMs - offsetMs));
     setCurrentTsMs(next);
+    fetchSnapshotsAroundTime(next);
   }
 
   const filteredPlayers = useMemo((): ReplayPlayer[] => {
@@ -3116,6 +3154,7 @@ export function ReplayToolPage() {
                       if (live) setLive(false);
                       if (isPlaying) setIsPlaying(false);
                       setCurrentTsMs(v);
+                      fetchSnapshotsAroundTime(v);
                     }}
                   />
                 </div>
