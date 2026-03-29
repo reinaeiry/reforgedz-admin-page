@@ -1861,24 +1861,52 @@ export function ReplayToolPage() {
     // player snapshot at-or-before t (prevents listing hundreds of historical players).
     const unknownPresenceMaxAgeMs = 30_000;
 
+    // Build name lookup from the snapshot closest to time t — player IDs are
+    // session-local (reset on server restart), so the global knownPlayers list
+    // may map an ID to the wrong name when viewing a past session.
+    const nameAtTime = new Map<number, string>();
+    {
+      // Find the snapshot closest to t.
+      let lo = 0;
+      let hi = snapshots.length - 1;
+      let idx = -1;
+      while (lo <= hi) {
+        const mid = (lo + hi) >> 1;
+        if (snapshots[mid].tsMs <= t) { idx = mid; lo = mid + 1; }
+        else { hi = mid - 1; }
+      }
+      if (idx >= 0) {
+        for (const pj of snapshots[idx].players) {
+          if (!pj || typeof pj !== 'object') continue;
+          const id = (pj as any).playerId;
+          const nm = typeof (pj as any).name === 'string' ? (pj as any).name.trim() : '';
+          if (typeof id === 'number' && nm) nameAtTime.set(id, nm);
+        }
+      }
+    }
+
     const out: ReplayPlayer[] = [];
     for (const p of knownPlayers) {
       const pid = p.playerId;
       const connected = isConnectedAt(pid, t);
       if (connected === true) {
-        out.push(p);
+        const name = nameAtTime.get(pid) || p.name;
+        out.push({ playerId: pid, name });
         continue;
       }
       if (connected === false) continue;
 
       const st = findPlayerStateAt(pid, t);
       if (!st) continue;
-      if ((t - st.tsMs) <= unknownPresenceMaxAgeMs) out.push(p);
+      if ((t - st.tsMs) <= unknownPresenceMaxAgeMs) {
+        const name = nameAtTime.get(pid) || p.name;
+        out.push({ playerId: pid, name });
+      }
     }
 
     out.sort((a, b) => a.name.localeCompare(b.name) || a.playerId - b.playerId);
     return out;
-  }, [currentTsMs, findPlayerStateAt, isConnectedAt, knownPlayers]);
+  }, [currentTsMs, findPlayerStateAt, isConnectedAt, knownPlayers, snapshots]);
 
   function jumpToEventTs(tsMs: number) {
     const offsetMs = Math.max(0, Math.floor(eventClickOffsetSeconds * 1000));
