@@ -1313,6 +1313,9 @@ async function readNdjsonWindow(filePath, opts) {
   const limit = (opts && typeof opts.limit === 'number') ? opts.limit : 5000;
   const tail = !!(opts && opts.tail);
   const types = (opts && opts.types instanceof Set && opts.types.size > 0) ? opts.types : null;
+  // Downsampling: skip snapshot records closer than sampleIntervalMs to the last emitted snapshot.
+  const sampleIntervalMs = (opts && typeof opts.sampleIntervalMs === 'number' && opts.sampleIntervalMs > 0) ? opts.sampleIntervalMs : 0;
+  let lastSnapshotTsMs = -Infinity;
 
   const out = [];
 
@@ -1363,6 +1366,10 @@ async function readNdjsonWindow(filePath, opts) {
         if (sinceTsMs !== null && tsMs < sinceTsMs) continue;
         if (untilTsMs !== null && tsMs > untilTsMs) continue;
         if (types && !types.has(typeof payload.type === 'string' ? payload.type : '')) continue;
+        if (sampleIntervalMs > 0 && typeof payload.type === 'string' && payload.type === 'snapshot') {
+          if (tsMs - lastSnapshotTsMs < sampleIntervalMs) continue;
+          lastSnapshotTsMs = tsMs;
+        }
 
         out.push(obj);
         if (out.length >= limit) break;
@@ -1397,6 +1404,10 @@ async function readNdjsonWindow(filePath, opts) {
       if (sinceTsMs !== null && tsMs < sinceTsMs) continue;
       if (untilTsMs !== null && tsMs > untilTsMs) continue;
       if (types && !types.has(typeof payload.type === 'string' ? payload.type : '')) continue;
+      if (sampleIntervalMs > 0 && typeof payload.type === 'string' && payload.type === 'snapshot') {
+        if (tsMs - lastSnapshotTsMs < sampleIntervalMs) continue;
+        lastSnapshotTsMs = tsMs;
+      }
 
       if (count < limit) {
         ring[count] = obj;
@@ -2052,18 +2063,19 @@ app.get('/api/replay/events', requireAuth, requireTool('replay'), asyncRoute(asy
     ? new Set(req.query.types.split(',').map((t) => t.trim()).filter(Boolean))
     : null;
 
+  const sampleIntervalMs = req.query.sampleIntervalMs ? Number(req.query.sampleIntervalMs) : 0;
+
   const opts = {
     sinceTsMs: (sinceTsMs !== null && Number.isFinite(sinceTsMs)) ? sinceTsMs : null,
     untilTsMs: (untilTsMs !== null && Number.isFinite(untilTsMs)) ? untilTsMs : null,
-    limit: (Number.isFinite(limit) && limit > 0) ? Math.min(limit, 20000) : 5000,
+    limit: (Number.isFinite(limit) && limit > 0) ? Math.min(limit, sampleIntervalMs > 0 ? 200000 : 20000) : 5000,
     tail,
     types,
+    sampleIntervalMs: (Number.isFinite(sampleIntervalMs) && sampleIntervalMs > 0) ? sampleIntervalMs : 0,
   };
 
-  // Fast path: if the requested window is within our in-memory recent cache,
-  // return it without scanning the entire NDJSON file.
-  // Skip cache when type-filtering since the cache holds all types.
-  if (!types) {
+  // Fast path: skip cache when downsampling or type-filtering.
+  if (!types && !sampleIntervalMs) {
     const cached = tryReadReplayEventsFromCache(safeId, opts);
     if (cached) {
       res.json(cached);
