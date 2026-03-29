@@ -1896,12 +1896,23 @@ export function ReplayToolPage() {
     // player snapshot at-or-before t (prevents listing hundreds of historical players).
     const unknownPresenceMaxAgeMs = 120_000;
 
-    // Build name lookup from the snapshot closest to time t — player IDs are
-    // session-local (reset on server restart), so the global knownPlayers list
-    // may map an ID to the wrong name when viewing a past session.
+    // Build name lookup for player IDs at time t. Player IDs are session-local
+    // (reset on server restart), so we must resolve names from events/snapshots
+    // in the same session, not the global knownPlayers list.
     const nameAtTime = new Map<number, string>();
     {
-      // Find the snapshot closest to t.
+      // 1. Names from join/disconnect events: find the last join/disconnect for each ID at-or-before t.
+      for (const e of events) {
+        const p: any = e.payload;
+        if (!p || typeof p !== 'object') continue;
+        if (p.type !== 'join' && p.type !== 'disconnect') continue;
+        if (typeof p.tsMs !== 'number' || p.tsMs > t) continue;
+        const ev: any = (p as any).event;
+        const id = ev && typeof ev.playerId === 'number' ? ev.playerId : null;
+        const nm = ev && typeof ev.name === 'string' ? ev.name.trim() : '';
+        if (id !== null && nm) nameAtTime.set(id, nm);
+      }
+      // 2. Names from snapshots near t (override with more accurate data).
       let lo = 0;
       let hi = snapshots.length - 1;
       let idx = -1;
@@ -1910,8 +1921,12 @@ export function ReplayToolPage() {
         if (snapshots[mid].tsMs <= t) { idx = mid; lo = mid + 1; }
         else { hi = mid - 1; }
       }
-      if (idx >= 0) {
-        for (const pj of snapshots[idx].players) {
+      // Check a few snapshots around the target for name data.
+      for (let i = Math.max(0, idx - 2); i <= Math.min(snapshots.length - 1, idx + 2); i++) {
+        if (i < 0) continue;
+        const s = snapshots[i];
+        if (Math.abs(s.tsMs - t) > 60000) continue;
+        for (const pj of s.players) {
           if (!pj || typeof pj !== 'object') continue;
           const id = (pj as any).playerId;
           const nm = typeof (pj as any).name === 'string' ? (pj as any).name.trim() : '';
