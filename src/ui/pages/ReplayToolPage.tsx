@@ -1666,8 +1666,20 @@ export function ReplayToolPage() {
     if (typeof t !== 'number') return [];
     if (playerSeriesById.size === 0) return [];
 
+    // Build time-aware names from join/disconnect events at-or-before t,
+    // so recycled player IDs show the correct name for the session.
     const nameById = new Map<number, string>();
-    for (const p of knownPlayers) nameById.set(p.playerId, p.name);
+    for (const e of events) {
+      const ep: any = e.payload;
+      if (!ep || typeof ep !== 'object') continue;
+      if (ep.type !== 'join' && ep.type !== 'disconnect') continue;
+      if (typeof ep.tsMs !== 'number' || ep.tsMs > t) continue;
+      const ev: any = (ep as any).event;
+      const id = ev && typeof ev.playerId === 'number' ? ev.playerId : null;
+      const nm = ev && typeof ev.name === 'string' ? ev.name.trim() : '';
+      if (id !== null && nm) nameById.set(id, nm);
+    }
+    for (const p of knownPlayers) { if (!nameById.has(p.playerId)) nameById.set(p.playerId, p.name); }
 
     const unknownPresenceMaxAgeMs = 120_000;
 
@@ -1722,7 +1734,7 @@ export function ReplayToolPage() {
       });
     }
     return out;
-  }, [currentTsMs, deadUntilByPlayerId, findBestPlayerPosAt, findPlayerStateAt, isConnectedAt, knownPlayers, playerSeriesById, selectedEventHighlightsByPlayerId, showVehicleInTags, terrain]);
+  }, [currentTsMs, deadUntilByPlayerId, events, findBestPlayerPosAt, findPlayerStateAt, isConnectedAt, knownPlayers, playerSeriesById, selectedEventHighlightsByPlayerId, showVehicleInTags, terrain]);
 
   const focusedTrail = useMemo((): Trail | null => {
     if (!enableTrails) return null;
