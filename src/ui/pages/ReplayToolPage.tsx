@@ -482,7 +482,7 @@ export function ReplayToolPage() {
             serverId: serverIdValue,
             limit: 200000,
             tail: true,
-            sampleIntervalMs: 10000,
+            sampleIntervalMs: 5000,
           }).catch(() => [] as IngestRecord[]);
           if (!cancelled) {
             setEvents(allHistory);
@@ -1338,16 +1338,20 @@ export function ReplayToolPage() {
     return out;
   }, [events]);
 
-  const presenceSeriesById = useMemo(() => {
-    // Collect restart timestamps — when a server restarts, all player IDs reset
-    // so all prior connections must be treated as disconnected.
-    const restartTimes: number[] = [];
+  // Restart timestamps — session boundaries where player IDs recycle.
+  const restartTimes = useMemo(() => {
+    const times: number[] = [];
     for (const e of events) {
       const p: any = e.payload;
       if (!p || typeof p !== 'object') continue;
-      if (p.type === 'restart' && typeof p.tsMs === 'number') restartTimes.push(p.tsMs);
+      if (p.type === 'restart' && typeof p.tsMs === 'number') times.push(p.tsMs);
     }
-    restartTimes.sort((a, b) => a - b);
+    times.sort((a, b) => a - b);
+    return times;
+  }, [events]);
+
+  const presenceSeriesById = useMemo(() => {
+    const restartTimes_ = restartTimes;
 
     const map = new Map<number, Array<{ tsMs: number; type: 'join' | 'disconnect' }>>();
     for (const e of events) {
@@ -1371,7 +1375,7 @@ export function ReplayToolPage() {
 
     // At each restart, any player ID that was "joined" before the restart must be
     // synthetically disconnected — player IDs recycle across sessions.
-    for (const restartTs of restartTimes) {
+    for (const restartTs of restartTimes_) {
       for (const [, arr] of map) {
         // Binary search for last event before restartTs.
         let lo = 0;
@@ -1392,9 +1396,23 @@ export function ReplayToolPage() {
       }
     }
     return map;
-  }, [events]);
+  }, [events, restartTimes]);
 
   const findPlayerStateAt = useMemo(() => {
+    // Helper: check if a restart boundary exists between two timestamps.
+    const hasRestartBetween = (fromTs: number, toTs: number): boolean => {
+      // Binary search for first restart >= fromTs
+      let lo = 0;
+      let hi = restartTimes.length - 1;
+      let idx = restartTimes.length;
+      while (lo <= hi) {
+        const mid = (lo + hi) >> 1;
+        if (restartTimes[mid] >= fromTs) { idx = mid; hi = mid - 1; }
+        else { lo = mid + 1; }
+      }
+      return idx < restartTimes.length && restartTimes[idx] <= toTs;
+    };
+
     return (playerId: number, tsMs: number): { tsMs: number; player: any } | null => {
       const series = playerSeriesById.get(playerId);
       if (!series || series.length === 0) return null;
@@ -1414,9 +1432,15 @@ export function ReplayToolPage() {
         }
       }
       if (idx < 0) return null;
-      return series[idx];
+
+      // Reject if there's a restart between the snapshot and the target time —
+      // the player ID was recycled and this snapshot belongs to a different player.
+      const entry = series[idx];
+      if (hasRestartBetween(entry.tsMs, tsMs)) return null;
+
+      return entry;
     };
-  }, [playerSeriesById]);
+  }, [playerSeriesById, restartTimes]);
 
   const findPlayerEquipSampleAtOrBefore = useMemo(() => {
     return (playerId: number, tsMs: number, maxAgeMs: number): { tsMs: number; inventory?: any[]; attachments?: any[]; weapon?: any } | null => {
@@ -1881,12 +1905,6 @@ export function ReplayToolPage() {
     };
   }, [wallClockAnchor]);
 
-  const attachedPlayerName = useMemo(() => {
-    if (attachedPlayerId === null) return null;
-    const p = knownPlayers.find((x) => x.playerId === attachedPlayerId);
-    return p ? p.name : String(attachedPlayerId);
-  }, [attachedPlayerId, knownPlayers]);
-
   const playersAtTime = useMemo((): ReplayPlayer[] => {
     const t = currentTsMs;
     if (typeof t !== 'number' || !Number.isFinite(t)) return [];
@@ -1965,6 +1983,14 @@ export function ReplayToolPage() {
     const next = Math.min(max, Math.max(min, tsMs - offsetMs));
     setCurrentTsMs(next);
   }
+
+  const attachedPlayerName = useMemo(() => {
+    if (attachedPlayerId === null) return null;
+    const timeP = playersAtTime.find((x) => x.playerId === attachedPlayerId);
+    if (timeP) return timeP.name;
+    const p = knownPlayers.find((x) => x.playerId === attachedPlayerId);
+    return p ? p.name : String(attachedPlayerId);
+  }, [attachedPlayerId, knownPlayers, playersAtTime]);
 
   const filteredPlayers = useMemo((): ReplayPlayer[] => {
     const q = playerSearch.trim().toLowerCase();
@@ -2697,7 +2723,7 @@ export function ReplayToolPage() {
                           {selectedPlayerStateWithEquipmentCache ? (
                             <div style={{ fontSize: 12 }}>
                               <div style={{ fontWeight: 700, marginBottom: 4 }}>
-                                {knownPlayers.find((x) => x.playerId === selectedPlayerId)?.name || `#${selectedPlayerId}`}
+                                {playersAtTime.find((x) => x.playerId === selectedPlayerId)?.name || knownPlayers.find((x) => x.playerId === selectedPlayerId)?.name || `#${selectedPlayerId}`}
                               </div>
                               <div className="muted" style={{ fontSize: 11, marginBottom: 2 }}>
                                 {((selectedPlayerStateWithEquipmentCache as any).weapon && (selectedPlayerStateWithEquipmentCache as any).weapon.name)
