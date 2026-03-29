@@ -2472,8 +2472,7 @@ export function ReplayToolPage() {
             boxSizing: 'border-box',
           }}
         >
-          <div className="card" style={{ width: '100%', height: '100%', padding: 0, overflow: 'hidden' }}>
-            <div style={{ width: '100%', height: '100%', position: 'relative' }}>
+          <div className="card" style={{ width: '100%', height: '100%', padding: 0, overflow: 'hidden', position: 'relative' }}>
               <ReplayMap3D
                 players={playerMarkers}
                 focusTarget={focusTarget}
@@ -2499,7 +2498,7 @@ export function ReplayToolPage() {
               ) : null}
 
               {/* Top-right toast popups (overlay above events panel) */}
-              <div style={{ position: 'absolute', top: 12, right: 304, width: 260, display: 'flex', flexDirection: 'column', gap: 8, pointerEvents: 'none', zIndex: 10 }}>
+              <div style={{ position: 'absolute', top: 12, right: 304, width: 240, display: 'flex', flexDirection: 'column', gap: 8, pointerEvents: 'none', zIndex: 10 }}>
                 {toasts.map((t) => (
                   <div
                     key={t.id}
@@ -2689,7 +2688,7 @@ export function ReplayToolPage() {
               </div>
 
               {/* Right panel — Events */}
-              <div style={{ position: 'absolute', top: 12, right: 0, bottom: 148, width: 280, marginRight: 12, display: 'flex', flexDirection: 'column' }}>
+              <div style={{ position: 'absolute', top: 12, right: 12, bottom: 148, width: 280, display: 'flex', flexDirection: 'column' }}>
                 <div className="card" style={{ padding: 10, background: 'rgba(0,0,0,0.55)', border: '1px solid rgba(255,255,255,0.14)', display: 'flex', flexDirection: 'column', overflow: 'hidden', maxHeight: '100%' }}>
                   <div style={{ flexShrink: 0 }}>
                     <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', gap: 8, flexWrap: 'nowrap' }}>
@@ -2963,47 +2962,41 @@ export function ReplayToolPage() {
                     </div>
                   </div>
 
-                  {/* Jump-to-time + Zoom row */}
-                  <div className="row" style={{ gap: 10, alignItems: 'center', marginTop: 8, paddingTop: 8, borderTop: '1px solid rgba(255,255,255,0.10)', flexWrap: 'wrap' }}>
-                    <div className="row" style={{ gap: 6, alignItems: 'center' }}>
-                      <span style={{ fontSize: 11, color: 'var(--text-bright, #e6edf3)' }}>Go to</span>
-                      <input
-                        className="input"
-                        type="time"
-                        step="1"
-                        style={{ width: 110, padding: '4px 6px', fontSize: 11 }}
-                        title="Jump to wall-clock time"
-                        disabled={scrubber.disabled || !formatWallClock || !wallClockAnchor}
-                        onChange={(e) => {
-                          if (!wallClockAnchor || !e.target.value) return;
-                          const parts = e.target.value.split(':').map(Number);
-                          if (parts.length < 2) return;
-                          const now = new Date();
-                          const target = new Date(now.getFullYear(), now.getMonth(), now.getDate(), parts[0], parts[1], parts[2] || 0);
-                          const epochMs = target.getTime();
-                          const tsMs = wallClockAnchor.tsMs + (epochMs - wallClockAnchor.receivedAt);
-                          if (!Number.isFinite(tsMs)) return;
-                          const clamped = Math.min(range.maxTsMs ?? tsMs, Math.max(range.minTsMs ?? tsMs, tsMs));
-                          setLive(false);
-                          setIsPlaying(false);
-                          setCurrentTsMs(clamped);
-                        }}
-                      />
-                    </div>
-
-                    <div style={{ height: 16, width: 1, background: 'rgba(255,255,255,0.12)' }} />
-
-                    <div className="row" style={{ gap: 6, alignItems: 'center' }}>
-                      <span style={{ fontSize: 11, color: 'var(--text-bright, #e6edf3)' }}>Zoom</span>
-                      <input
-                        type="range" min={1} max={48} step={1}
-                        value={scrubberZoom}
-                        onChange={(e) => setScrubberZoom(Number(e.target.value))}
-                        style={{ width: 100 }}
-                        title="Scrubber zoom — narrow the visible time range"
-                      />
-                      <span style={{ fontSize: 11, color: 'var(--text-bright, #e6edf3)', minWidth: 30 }}>{scrubberZoom > 1 ? `${scrubberZoom}×` : 'Full'}</span>
-                    </div>
+                  {/* Jump-to-time + Zoom */}
+                  <div style={{ display: 'flex', gap: 12, alignItems: 'center', marginTop: 8, paddingTop: 8, borderTop: '1px solid rgba(255,255,255,0.10)' }}>
+                    <span style={{ fontSize: 11, fontWeight: 700, color: '#e6edf3' }}>Go to</span>
+                    <input
+                      className="input"
+                      type="time"
+                      step="1"
+                      style={{ width: 110, padding: '4px 6px', fontSize: 11 }}
+                      title="Jump to wall-clock time"
+                      disabled={scrubber.disabled || !wallClockAnchor}
+                      onChange={(e) => {
+                        if (!wallClockAnchor || !e.target.value) return;
+                        const parts = e.target.value.split(':').map(Number);
+                        if (parts.length < 2) return;
+                        const now = new Date();
+                        const target = new Date(now.getFullYear(), now.getMonth(), now.getDate(), parts[0], parts[1], parts[2] || 0);
+                        const epochMs = target.getTime();
+                        const tsMs = wallClockAnchor.tsMs + (epochMs - wallClockAnchor.receivedAt);
+                        if (!Number.isFinite(tsMs)) return;
+                        const clamped = Math.min(range.maxTsMs ?? tsMs, Math.max(range.minTsMs ?? tsMs, tsMs));
+                        setLive(false);
+                        setIsPlaying(false);
+                        setCurrentTsMs(clamped);
+                      }}
+                    />
+                    <div style={{ height: 16, width: 1, background: 'rgba(255,255,255,0.15)', flexShrink: 0 }} />
+                    <span style={{ fontSize: 11, fontWeight: 700, color: '#e6edf3' }}>Zoom</span>
+                    <input
+                      type="range" min={1} max={48} step={1}
+                      value={scrubberZoom}
+                      onChange={(e) => setScrubberZoom(Number(e.target.value))}
+                      style={{ width: 100, flexShrink: 0 }}
+                      title="Scrubber zoom — narrow the visible time range"
+                    />
+                    <span style={{ fontSize: 11, fontWeight: 700, color: '#e6edf3', minWidth: 30 }}>{scrubberZoom > 1 ? `${scrubberZoom}×` : 'Full'}</span>
                   </div>
 
                   {showEventTimeline ? (
@@ -3111,7 +3104,6 @@ export function ReplayToolPage() {
                   />
                 </div>
               </div>
-            </div>
           </div>
         </div>
       ) : null}
