@@ -1366,23 +1366,31 @@ export function ReplayToolPage() {
       arr.push({ tsMs: p.tsMs, type: p.type });
     }
 
-    // Inject synthetic disconnects at each restart for every player ID that was
-    // connected just before the restart — this prevents IDs from leaking across sessions.
+    // Sort first, then inject synthetic disconnects at restart boundaries.
+    for (const arr of map.values()) arr.sort((a, b) => a.tsMs - b.tsMs);
+
+    // At each restart, any player ID that was "joined" before the restart must be
+    // synthetically disconnected — player IDs recycle across sessions.
     for (const restartTs of restartTimes) {
       for (const [, arr] of map) {
-        // Find last event before restartTs for this ID.
-        let lastBefore: { tsMs: number; type: 'join' | 'disconnect' } | null = null;
-        for (const ev of arr) {
-          if (ev.tsMs < restartTs) lastBefore = ev;
-          else break;
+        // Binary search for last event before restartTs.
+        let lo = 0;
+        let hi = arr.length - 1;
+        let idx = -1;
+        while (lo <= hi) {
+          const mid = (lo + hi) >> 1;
+          if (arr[mid].tsMs < restartTs) { idx = mid; lo = mid + 1; }
+          else { hi = mid - 1; }
         }
-        if (lastBefore && lastBefore.type === 'join') {
-          arr.push({ tsMs: restartTs, type: 'disconnect' });
+        if (idx >= 0 && arr[idx].type === 'join') {
+          // Only inject if there isn't already a disconnect/join at exactly restartTs.
+          const nextIdx = idx + 1;
+          if (nextIdx >= arr.length || arr[nextIdx].tsMs > restartTs) {
+            arr.splice(nextIdx, 0, { tsMs: restartTs, type: 'disconnect' });
+          }
         }
       }
     }
-
-    for (const arr of map.values()) arr.sort((a, b) => a.tsMs - b.tsMs);
     return map;
   }, [events]);
 
@@ -1637,7 +1645,7 @@ export function ReplayToolPage() {
     const nameById = new Map<number, string>();
     for (const p of knownPlayers) nameById.set(p.playerId, p.name);
 
-    const unknownPresenceMaxAgeMs = 30_000;
+    const unknownPresenceMaxAgeMs = 120_000;
 
     const out: PlayerMarker[] = [];
     for (const p of knownPlayers) {
@@ -1886,7 +1894,7 @@ export function ReplayToolPage() {
     // Primary signal: join/disconnect presence timeline.
     // Fallback: if presence is unknown (no join/disconnect seen), include only if we have a recent
     // player snapshot at-or-before t (prevents listing hundreds of historical players).
-    const unknownPresenceMaxAgeMs = 30_000;
+    const unknownPresenceMaxAgeMs = 120_000;
 
     // Build name lookup from the snapshot closest to time t — player IDs are
     // session-local (reset on server restart), so the global knownPlayers list
