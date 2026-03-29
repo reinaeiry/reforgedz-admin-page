@@ -2885,6 +2885,8 @@ app.get('/api/admin/events', requireAuth, requireTool('events'), asyncRoute(asyn
     event: r.payload.event || {},
   }));
 
+  // Return newest first for display
+  result.reverse();
   res.json(result);
 }));
 
