@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   type AdminEntry,
   type AdminManagerSnapshot,
@@ -7,12 +7,12 @@ import {
   deleteAdmin,
   getAdminManagerSnapshot,
   renameAdmin,
-  runAdminBackfill,
   toggleAdminOnServer,
 } from '../../util/api';
 
 const GUID_RE = /^[0-9a-fA-F-]{36}$/;
 const SESSION_KEY = 'gm.snapshot.v1';
+const REVALIDATE_INTERVAL_MS = 30 * 1000;
 
 function toggleKey(guid: string, pteroId: string): string {
   return `${guid}:${pteroId}`;
@@ -36,7 +36,7 @@ function saveCachedSnapshot(s: AdminManagerSnapshot | null): void {
   }
 }
 
-function formatTime(ms: number | null): string {
+function formatTime(ms: number | null | undefined): string {
   if (!ms) return 'never';
   const diff = Date.now() - ms;
   const s = Math.floor(diff / 1000);
@@ -68,11 +68,9 @@ function buildServerGroups(servers: ReforgerServer[]): ServerGroup[] {
 export function AdminManagerPage() {
   const cached = loadCachedSnapshot();
   const [snapshot, setSnapshot] = useState<AdminManagerSnapshot | null>(cached);
-  const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
   const [search, setSearch] = useState('');
-  const [pendingToggles, setPendingToggles] = useState<Set<string>>(new Set());
 
   const [showAdd, setShowAdd] = useState(false);
   const [newGuid, setNewGuid] = useState('');
@@ -81,30 +79,28 @@ export function AdminManagerPage() {
   const [editingGuid, setEditingGuid] = useState<string | null>(null);
   const [editingName, setEditingName] = useState('');
 
-  const [showBackfill, setShowBackfill] = useState(false);
-  const [bfUseBm, setBfUseBm] = useState<boolean>(!!cached?.bmAvailable);
-  const [bfBusy, setBfBusy] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const snapshotRef = useRef<AdminManagerSnapshot | null>(cached);
+  snapshotRef.current = snapshot;
 
-  async function refresh(force = false): Promise<void> {
-    setBusy(true);
-    setError(null);
+  async function revalidate(force = false): Promise<void> {
     try {
-      const sinceVersion = !force && snapshot?.version ? snapshot.version : undefined;
+      const sinceVersion = !force && snapshotRef.current?.version ? snapshotRef.current.version : undefined;
       const s = await getAdminManagerSnapshot({ force, sinceVersion });
       if (s) {
         setSnapshot(s);
         saveCachedSnapshot(s);
       }
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to load');
-    } finally {
-      setBusy(false);
+      // Silent on background errors. First-load failures still surface via the empty state.
+      if (force) setError(e instanceof Error ? e.message : 'Failed to load');
     }
   }
 
   useEffect(() => {
-    // Always revalidate on mount, but the cached snapshot is already rendered.
-    refresh(false);
+    revalidate(false);
+    const t = setInterval(() => revalidate(false), REVALIDATE_INTERVAL_MS);
+    return () => clearInterval(t);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -140,8 +136,8 @@ export function AdminManagerPage() {
       setNewGuid('');
       setNewName('');
       setShowAdd(false);
-      await refresh();
-      setInfo('Admin added to roster. Click the dots to grant access on each server.');
+      await revalidate(true);
+      setInfo('Admin added to roster. Tick a server dot to grant access.');
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to add');
     } finally {
@@ -161,7 +157,7 @@ export function AdminManagerPage() {
       await renameAdmin(guid, name);
       setEditingGuid(null);
       setEditingName('');
-      await refresh();
+      await revalidate(true);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to rename');
     } finally {
@@ -182,7 +178,7 @@ export function AdminManagerPage() {
       const result = await deleteAdmin(admin.guid);
       const removed = result.results.filter((r) => r.removed).length;
       setInfo(`Removed from ${removed}/${result.results.length} servers.`);
-      await refresh();
+      await revalidate(true);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to delete');
     } finally {
@@ -190,10 +186,10 @@ export function AdminManagerPage() {
     }
   }
 
-  async function onToggle(guid: string, pteroId: string, present: boolean): Promise<void> {
-    if (!snapshot) return;
-    const key = toggleKey(guid, pteroId);
-    setPendingToggles((p) => new Set(p).add(key));
+  // Fire-and-forget toggle: flip the dot locally immediately, send the request in the
+  // background. Server serializes per-server via withIngestLock so rapid clicks queue
+  // safely. On error we resync from the source of truth instead of guessing.
+  function onToggle(guid: string, pteroId: string, present: boolean): void {
     setSnapshot((prev) => {
       if (!prev) return prev;
       return {
@@ -203,44 +199,16 @@ export function AdminManagerPage() {
         ),
       };
     });
-    try {
-      await toggleAdminOnServer(guid, pteroId, present);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to update server');
-      setSnapshot((prev) => {
-        if (!prev) return prev;
-        return {
-          ...prev,
-          admins: prev.admins.map((a) =>
-            a.guid === guid ? { ...a, presence: { ...a.presence, [pteroId]: !present } } : a,
-          ),
-        };
-      });
-    } finally {
-      setPendingToggles((p) => {
-        const n = new Set(p);
-        n.delete(key);
-        return n;
-      });
-    }
+    void (async () => {
+      try {
+        await toggleAdminOnServer(guid, pteroId, present);
+      } catch (e) {
+        setError(e instanceof Error ? e.message : 'Failed to update server');
+        await revalidate(true);
+      }
+    })();
   }
 
-  async function onRunBackfill(): Promise<void> {
-    setBfBusy(true);
-    setError(null);
-    try {
-      const r = await runAdminBackfill(bfUseBm);
-      setInfo(`Backfill: resolved ${r.resolved}, unknown ${r.unknown} of ${r.total} GUIDs.`);
-      setShowBackfill(false);
-      await refresh();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Backfill failed');
-    } finally {
-      setBfBusy(false);
-    }
-  }
-
-  // Index server -> region for quick lookup in the dot cells
   const regionByPteroId = useMemo<Record<string, 'EU' | 'NA' | 'unknown'>>(() => {
     const m: Record<string, 'EU' | 'NA' | 'unknown'> = {};
     for (const s of orderedServers) m[s.pteroId] = s.region;
@@ -254,9 +222,9 @@ export function AdminManagerPage() {
           <h1 className="h1">GM Management</h1>
           {snapshot?.dryRun ? <span className="gm-dryrun">Dry run</span> : null}
           <span className="spacer" />
-          <button className="btn" onClick={() => refresh(true)} disabled={busy}>{busy ? '...' : 'Refresh'}</button>
-          <button className="btn" onClick={() => setShowBackfill(true)} disabled={busy}>Backfill names</button>
-          <button className="btn" onClick={() => setShowAdd((v) => !v)}>{showAdd ? 'Cancel' : '+ Add admin'}</button>
+          <button className="button" onClick={() => setShowAdd((v) => !v)} disabled={busy}>
+            {showAdd ? 'Cancel' : '+ Add admin'}
+          </button>
         </div>
 
         <div className="gm-banner">
@@ -281,38 +249,11 @@ export function AdminManagerPage() {
                   <input className="input" value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="NattiKitten" />
                 </div>
                 <div style={{ alignSelf: 'end' }}>
-                  <button className="btn" onClick={onAdd} disabled={busy || !newGuidValid}>Add</button>
+                  <button className="buttonPrimary button" onClick={onAdd} disabled={busy || !newGuidValid}>Add</button>
                 </div>
               </div>
               <div style={{ fontSize: 11, color: 'var(--text-dim)' }}>
-                Adding here only registers the admin in the central roster. Use the dots in the matrix to grant access on each server.
-              </div>
-            </div>
-          </div>
-        ) : null}
-
-        {showBackfill ? (
-          <div className="card">
-            <div className="stack" style={{ gap: 10 }}>
-              <div style={{ fontWeight: 700, color: 'var(--text-bright)' }}>Backfill names</div>
-              <div style={{ fontSize: 12, color: 'var(--text-dim)' }}>
-                Walks local PII and snapshot data to map known GUIDs to display names. Manually-entered names are not overwritten.
-              </div>
-              <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, opacity: snapshot?.bmAvailable ? 1 : 0.5 }}>
-                <input
-                  type="checkbox"
-                  checked={bfUseBm && !!snapshot?.bmAvailable}
-                  disabled={!snapshot?.bmAvailable}
-                  onChange={(e) => setBfUseBm(e.target.checked)}
-                />
-                Also try BattleMetrics for unknowns
-                {snapshot?.bmAvailable
-                  ? ' (queries reforgerUUID via /players/match)'
-                  : ' — set BATTLEMETRICS_API_KEY in .env to enable'}
-              </label>
-              <div className="row" style={{ gap: 10 }}>
-                <button className="btn" onClick={onRunBackfill} disabled={bfBusy}>{bfBusy ? 'Running...' : 'Run backfill'}</button>
-                <button className="btn" onClick={() => setShowBackfill(false)} disabled={bfBusy}>Cancel</button>
+                Adding here only registers the admin in the central roster. Use the dots in the matrix to grant access on each server. Names are auto-resolved from local activity and BattleMetrics in the background.
               </div>
             </div>
           </div>
@@ -332,7 +273,7 @@ export function AdminManagerPage() {
         <div className="gm-toolbar">
           <input className="input gm-search" placeholder="Search by name or GUID" value={search} onChange={(e) => setSearch(e.target.value)} />
           <span className="gm-meta">
-            {filteredAdmins.length} of {snapshot?.admins.length || 0} admins · {orderedServers.length} server{orderedServers.length === 1 ? '' : 's'} · last sync {formatTime(snapshot?.lastSyncAt || null)}
+            {filteredAdmins.length} of {snapshot?.admins.length || 0} admins · {orderedServers.length} server{orderedServers.length === 1 ? '' : 's'} · synced {formatTime(snapshot?.lastSyncAt || null)}
           </span>
         </div>
 
@@ -396,14 +337,13 @@ export function AdminManagerPage() {
                     <td><span className="gm-guid">{a.guid}</span></td>
                     {orderedServers.map((s) => {
                       const on = !!a.presence[s.pteroId];
-                      const pending = pendingToggles.has(toggleKey(a.guid, s.pteroId));
                       const region = regionByPteroId[s.pteroId] || 'unknown';
                       return (
                         <td key={s.pteroId} className={`gm-col-server ${region.toLowerCase()}`}>
                           <button
                             type="button"
-                            className={`gm-dot ${on ? 'on' : ''} ${pending ? 'pending' : ''}`}
-                            disabled={!s.sshConfigured || pending}
+                            className={`gm-dot ${on ? 'on' : ''}`}
+                            disabled={!s.sshConfigured}
                             onClick={() => onToggle(a.guid, s.pteroId, !on)}
                             aria-label={on ? `Remove ${a.displayName} from ${s.tag}` : `Grant ${a.displayName} access on ${s.tag}`}
                             title={on ? `Click to remove from ${s.tag}` : `Click to grant on ${s.tag}`}

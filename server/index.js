@@ -2832,6 +2832,9 @@ async function getAdminsSnapshot({ force = false } = {}) {
   adminsCache.building = buildAdminsSnapshot()
     .then((data) => {
       adminsCache = { data, builtAt: Date.now(), version: adminsCache.version + 1, building: null };
+      // Kick off auto-backfill in the background if we found unknowns and BM is available.
+      const hasUnknowns = data.admins.some((a) => !a.displayName || a.displayName === '?');
+      if (hasUnknowns) maybeAutoBackfill();
       return data;
     })
     .catch((err) => {
@@ -2840,6 +2843,68 @@ async function getAdminsSnapshot({ force = false } = {}) {
     });
   const data = await adminsCache.building;
   return { data, builtAt: adminsCache.builtAt, version: adminsCache.version, fromCache: false };
+}
+
+let autoBackfillInFlight = false;
+let autoBackfillLastRunAt = 0;
+const AUTO_BACKFILL_MIN_INTERVAL_MS = 10 * 60 * 1000;
+
+async function runBackfillCascade(useBattleMetrics) {
+  const servers = await listReforgerServers();
+  const state = await readAdminMgrState();
+  const reads = await Promise.all(servers.map((s) => readServerAdmins(s, state.configOverrides)));
+  const allGuids = new Set();
+  for (const r of reads) for (const g of r.admins) allGuids.add(g);
+  for (const g of Object.keys(state.admins || {})) allGuids.add(g);
+
+  const { piiByGuid, snapByGuid } = await adminMgrLoadLocalNameSources();
+
+  let resolved = 0;
+  let unknown = 0;
+
+  for (const guid of allGuids) {
+    const existing = state.admins[guid];
+    if (existing && existing.displayName && existing.displayName !== '?' && existing.source === 'manual') {
+      continue;
+    }
+    let name = '';
+    let source = 'unknown';
+    if (piiByGuid.has(guid)) { name = piiByGuid.get(guid).name; source = 'pii'; }
+    else if (snapByGuid.has(guid)) { name = snapByGuid.get(guid); source = 'snapshot'; }
+    else if (useBattleMetrics) {
+      const r = await adminMgrFetchBmName(guid);
+      if (r) { name = r; source = 'battlemetrics'; }
+    }
+    if (name) {
+      state.admins[guid] = { ...(existing || {}), displayName: name, source, updatedAt: Date.now() };
+      resolved++;
+    } else {
+      state.admins[guid] = { ...(existing || {}), displayName: existing?.displayName || '?', source: existing?.source || 'unknown', updatedAt: Date.now() };
+      unknown++;
+    }
+  }
+
+  state.lastBackfillAt = Date.now();
+  await writeAdminMgrState(state);
+  return { resolved, unknown, total: allGuids.size };
+}
+
+function maybeAutoBackfill() {
+  if (autoBackfillInFlight) return;
+  if (Date.now() - autoBackfillLastRunAt < AUTO_BACKFILL_MIN_INTERVAL_MS) return;
+  autoBackfillInFlight = true;
+  autoBackfillLastRunAt = Date.now();
+  (async () => {
+    try {
+      const r = await runBackfillCascade(adminMgrBmAvailable());
+      console.log(`[adminmgr] auto-backfill: resolved ${r.resolved}, unknown ${r.unknown} of ${r.total}`);
+      invalidateAdminsCache();
+    } catch (e) {
+      console.warn(`[adminmgr] auto-backfill failed: ${e.message}`);
+    } finally {
+      autoBackfillInFlight = false;
+    }
+  })();
 }
 
 async function adminMgrLoadLocalNameSources() {
@@ -3059,64 +3124,10 @@ app.delete('/api/adminmgr/admin/:guid', requireAuth, requireTool('gmManagement')
 }));
 
 app.post('/api/adminmgr/backfill', requireAuth, requireTool('gmManagement'), asyncRoute(async (req, res) => {
-  const useBattleMetrics = !!req.body?.useBattleMetrics;
-
-  const servers = await listReforgerServers();
-  const state = await readAdminMgrState();
-  const reads = await Promise.all(servers.map((s) => readServerAdmins(s, state.configOverrides)));
-
-  const allGuids = new Set();
-  for (const r of reads) for (const g of r.admins) allGuids.add(g);
-  for (const g of Object.keys(state.admins || {})) allGuids.add(g);
-
-  const { piiByGuid, snapByGuid } = await adminMgrLoadLocalNameSources();
-
-  let resolved = 0;
-  let unknown = 0;
-
-  for (const guid of allGuids) {
-    const existing = state.admins[guid];
-    if (existing && existing.displayName && existing.displayName !== '?' && existing.source === 'manual') {
-      continue;
-    }
-
-    let name = '';
-    let source = 'unknown';
-
-    if (piiByGuid.has(guid)) {
-      name = piiByGuid.get(guid).name;
-      source = 'pii';
-    } else if (snapByGuid.has(guid)) {
-      name = snapByGuid.get(guid);
-      source = 'snapshot';
-    } else if (useBattleMetrics) {
-      const r = await adminMgrFetchBmName(guid);
-      if (r) { name = r; source = 'battlemetrics'; }
-    }
-
-    if (name) {
-      state.admins[guid] = {
-        ...(existing || {}),
-        displayName: name,
-        source,
-        updatedAt: Date.now(),
-      };
-      resolved++;
-    } else {
-      state.admins[guid] = {
-        ...(existing || {}),
-        displayName: existing?.displayName || '?',
-        source: existing?.source || 'unknown',
-        updatedAt: Date.now(),
-      };
-      unknown++;
-    }
-  }
-
-  state.lastBackfillAt = Date.now();
-  await writeAdminMgrState(state);
+  const useBattleMetrics = req.body?.useBattleMetrics === undefined ? adminMgrBmAvailable() : !!req.body.useBattleMetrics;
+  const r = await runBackfillCascade(useBattleMetrics);
   invalidateAdminsCache();
-  res.json({ ok: true, resolved, unknown, total: allGuids.size, bmAvailable: adminMgrBmAvailable() });
+  res.json({ ok: true, ...r, bmAvailable: adminMgrBmAvailable() });
 }));
 
 app.get('/api/dev/servers', requireAuth, requireTool('dev'), asyncRoute(async (req, res) => {
@@ -4143,6 +4154,9 @@ const server = app.listen(PORT, () => {
     getAdminsSnapshot()
       .then(({ data }) => console.log(`[adminmgr] cache warmed: ${data.admins.length} admins, ${data.servers.length} servers`))
       .catch((e) => console.warn(`[adminmgr] cache warm failed: ${e.message}`));
+
+    // Periodic name resolution so newly-spotted admins get filled in without user action.
+    setInterval(() => maybeAutoBackfill(), 30 * 60 * 1000);
   }
 });
 
