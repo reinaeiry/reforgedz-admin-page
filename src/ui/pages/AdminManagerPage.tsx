@@ -29,12 +29,21 @@ function formatTime(ms: number | null): string {
   return `${Math.floor(h / 24)}d ago`;
 }
 
-function sourceTag(s: AdminEntry['source']): string {
-  if (s === 'pii') return 'pii';
-  if (s === 'snapshot') return 'snap';
-  if (s === 'battlemetrics') return 'bm';
-  if (s === 'manual') return 'manual';
-  return '';
+function isUnknown(a: AdminEntry): boolean {
+  return !a.displayName || a.displayName === '?';
+}
+
+type ServerGroup = { region: 'EU' | 'NA' | 'unknown'; label: string; servers: ReforgerServer[] };
+
+function buildServerGroups(servers: ReforgerServer[]): ServerGroup[] {
+  const eu = servers.filter((s) => s.region === 'EU').sort((a, b) => a.tag.localeCompare(b.tag));
+  const na = servers.filter((s) => s.region === 'NA').sort((a, b) => a.tag.localeCompare(b.tag));
+  const other = servers.filter((s) => s.region !== 'EU' && s.region !== 'NA');
+  const groups: ServerGroup[] = [];
+  if (eu.length) groups.push({ region: 'EU', label: 'Europe', servers: eu });
+  if (na.length) groups.push({ region: 'NA', label: 'North America', servers: na });
+  if (other.length) groups.push({ region: 'unknown', label: 'Other', servers: other });
+  return groups;
 }
 
 export function AdminManagerPage() {
@@ -73,6 +82,15 @@ export function AdminManagerPage() {
     refresh();
   }, []);
 
+  const groups = useMemo<ServerGroup[]>(
+    () => buildServerGroups(snapshot?.servers || []),
+    [snapshot?.servers],
+  );
+  const orderedServers = useMemo<ReforgerServer[]>(
+    () => groups.flatMap((g) => g.servers),
+    [groups],
+  );
+
   const filteredAdmins: AdminEntry[] = useMemo(() => {
     if (!snapshot) return [];
     const q = search.trim().toLowerCase();
@@ -97,7 +115,7 @@ export function AdminManagerPage() {
       setNewName('');
       setShowAdd(false);
       await refresh();
-      setInfo('Admin added to roster. Tick the server checkboxes to grant access.');
+      setInfo('Admin added to roster. Click the dots to grant access on each server.');
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to add');
     } finally {
@@ -127,7 +145,7 @@ export function AdminManagerPage() {
 
   async function onDelete(admin: AdminEntry): Promise<void> {
     const presentCount = Object.values(admin.presence).filter(Boolean).length;
-    const label = admin.displayName === '?' ? admin.guid : `${admin.displayName} (${admin.guid})`;
+    const label = isUnknown(admin) ? admin.guid : `${admin.displayName} (${admin.guid})`;
     const ok = window.confirm(
       `Remove ${label} from all ${presentCount} server config${presentCount === 1 ? '' : 's'}?`,
     );
@@ -150,7 +168,6 @@ export function AdminManagerPage() {
     if (!snapshot) return;
     const key = toggleKey(guid, pteroId);
     setPendingToggles((p) => new Set(p).add(key));
-
     setSnapshot((prev) => {
       if (!prev) return prev;
       return {
@@ -160,7 +177,6 @@ export function AdminManagerPage() {
         ),
       };
     });
-
     try {
       await toggleAdminOnServer(guid, pteroId, present);
     } catch (e) {
@@ -198,29 +214,28 @@ export function AdminManagerPage() {
     }
   }
 
-  const servers: ReforgerServer[] = snapshot?.servers || [];
+  // Index server -> region for quick lookup in the dot cells
+  const regionByPteroId = useMemo<Record<string, 'EU' | 'NA' | 'unknown'>>(() => {
+    const m: Record<string, 'EU' | 'NA' | 'unknown'> = {};
+    for (const s of orderedServers) m[s.pteroId] = s.region;
+    return m;
+  }, [orderedServers]);
 
   return (
     <div className="container">
       <div className="stack">
-        <div className="row" style={{ alignItems: 'center', gap: 12 }}>
-          <h1 className="h1" style={{ flex: 1, margin: 0 }}>GM Management</h1>
-          {snapshot?.dryRun ? (
-            <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: 1.5, color: '#f1c40f', border: '1px solid #f1c40f', padding: '4px 10px', borderRadius: 4 }}>
-              DRY RUN
-            </span>
-          ) : null}
+        <div className="gm-page-head">
+          <h1 className="h1">GM Management</h1>
+          {snapshot?.dryRun ? <span className="gm-dryrun">Dry run</span> : null}
+          <span className="spacer" />
           <button className="btn" onClick={refresh} disabled={busy}>{busy ? '...' : 'Refresh'}</button>
           <button className="btn" onClick={() => setShowBackfill(true)} disabled={busy}>Backfill names</button>
           <button className="btn" onClick={() => setShowAdd((v) => !v)}>{showAdd ? 'Cancel' : '+ Add admin'}</button>
         </div>
 
-        <div className="card" style={{ background: 'rgba(241,196,15,0.06)', borderColor: 'rgba(241,196,15,0.2)' }}>
-          <div style={{ fontSize: 12, color: 'var(--text-dim)' }}>
-            Reforger loads its admin list at startup. Toggling a server here writes to the live config but does not
-            kick existing players or grant access to currently-connected ones &mdash; restart each affected server to
-            apply changes in-game.
-          </div>
+        <div className="gm-banner">
+          Reforger loads its admin list at startup. Toggling a server here writes to the live config but does not
+          kick existing players or grant access to currently-connected ones &mdash; restart each affected server to apply changes in-game.
         </div>
 
         {error ? <div className="error">{error}</div> : null}
@@ -244,7 +259,7 @@ export function AdminManagerPage() {
                 </div>
               </div>
               <div style={{ fontSize: 11, color: 'var(--text-dim)' }}>
-                Adding here only registers the admin in the central roster. Use the checkboxes to grant access on each server.
+                Adding here only registers the admin in the central roster. Use the dots in the matrix to grant access on each server.
               </div>
             </div>
           </div>
@@ -270,9 +285,9 @@ export function AdminManagerPage() {
         ) : null}
 
         {snapshot?.errors && snapshot.errors.length > 0 ? (
-          <div className="card" style={{ borderColor: 'rgba(231,76,60,0.3)' }}>
-            <div style={{ fontWeight: 700, color: '#e74c3c', marginBottom: 6 }}>Read errors</div>
-            <ul style={{ margin: 0, paddingLeft: 20, fontSize: 11, color: 'var(--text-dim)' }}>
+          <div className="gm-errors">
+            <div className="gm-errors-title">Read errors</div>
+            <ul>
               {snapshot.errors.map((e) => (
                 <li key={e.pteroId}>{e.tag || e.pteroId}: {e.error}</li>
               ))}
@@ -280,76 +295,104 @@ export function AdminManagerPage() {
           </div>
         ) : null}
 
-        <div className="row" style={{ gap: 10, alignItems: 'center' }}>
-          <input className="input" placeholder="Search by name or GUID" value={search} onChange={(e) => setSearch(e.target.value)} style={{ flex: 1 }} />
-          <div style={{ fontSize: 11, color: 'var(--text-dim)' }}>
-            {filteredAdmins.length} of {snapshot?.admins.length || 0} admins &middot; {servers.length} server{servers.length === 1 ? '' : 's'} &middot; last sync {formatTime(snapshot?.lastSyncAt || null)}
-          </div>
+        <div className="gm-toolbar">
+          <input className="input gm-search" placeholder="Search by name or GUID" value={search} onChange={(e) => setSearch(e.target.value)} />
+          <span className="gm-meta">
+            {filteredAdmins.length} of {snapshot?.admins.length || 0} admins · {orderedServers.length} server{orderedServers.length === 1 ? '' : 's'} · last sync {formatTime(snapshot?.lastSyncAt || null)}
+          </span>
         </div>
 
-        <div className="card" style={{ padding: 0, overflowX: 'auto' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+        <div className="gm-table-wrap scroll">
+          <table className="gm-table">
             <thead>
-              <tr style={{ background: 'var(--bg-raised)' }}>
-                <th style={{ textAlign: 'left', padding: '8px 10px', position: 'sticky', left: 0, background: 'var(--bg-raised)' }}>Name</th>
-                <th style={{ textAlign: 'left', padding: '8px 10px' }}>GUID</th>
-                {servers.map((s) => (
-                  <th key={s.pteroId} style={{ textAlign: 'center', padding: '8px 6px', minWidth: 60 }}>
-                    <div style={{ fontWeight: 700 }}>{s.tag || s.name.slice(0, 8)}</div>
-                    <div style={{ fontSize: 10, color: 'var(--text-dim)', fontWeight: 400 }}>{s.region}</div>
+              <tr className="gm-region-row">
+                <th className="gm-sticky" colSpan={2} />
+                {groups.map((g) => (
+                  <th key={g.region} colSpan={g.servers.length}>
+                    <span className={`gm-region-pill ${g.region.toLowerCase()}`}>{g.label}</span>
                   </th>
                 ))}
-                <th style={{ padding: '8px 10px' }}></th>
+                <th />
+              </tr>
+              <tr className="gm-server-row">
+                <th className="gm-sticky">Name</th>
+                <th>GUID</th>
+                {orderedServers.map((s) => (
+                  <th key={s.pteroId} className={`gm-col-server ${s.region.toLowerCase()}`}>
+                    <span className="gm-tag">{s.tag}</span>
+                  </th>
+                ))}
+                <th />
               </tr>
             </thead>
             <tbody>
               {filteredAdmins.length === 0 ? (
                 <tr>
-                  <td colSpan={2 + servers.length + 1} style={{ padding: 24, textAlign: 'center', color: 'var(--text-dim)' }}>
+                  <td colSpan={3 + orderedServers.length} className="gm-empty">
                     {snapshot ? 'No admins found.' : 'Loading...'}
                   </td>
                 </tr>
               ) : null}
               {filteredAdmins.map((a) => {
-                const isEditing = editingGuid === a.guid;
+                const editing = editingGuid === a.guid;
+                const unknown = isUnknown(a);
                 return (
-                  <tr key={a.guid} style={{ borderTop: '1px solid var(--border)' }}>
-                    <td style={{ padding: '8px 10px', position: 'sticky', left: 0, background: 'var(--bg)' }}>
-                      {isEditing ? (
-                        <div className="row" style={{ gap: 4 }}>
-                          <input className="input" value={editingName} onChange={(e) => setEditingName(e.target.value)} autoFocus style={{ padding: '4px 6px', fontSize: 12 }} />
-                          <button className="btn" onClick={() => onRename(a.guid)} disabled={busy}>Save</button>
-                          <button className="btn" onClick={() => { setEditingGuid(null); setEditingName(''); }}>Cancel</button>
+                  <tr key={a.guid}>
+                    <td className="gm-sticky">
+                      {editing ? (
+                        <div className="gm-rename-row">
+                          <input
+                            value={editingName}
+                            autoFocus
+                            onChange={(e) => setEditingName(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') onRename(a.guid);
+                              if (e.key === 'Escape') { setEditingGuid(null); setEditingName(''); }
+                            }}
+                          />
+                          <button className="gm-icon-btn" onClick={() => onRename(a.guid)} disabled={busy}>save</button>
+                          <button className="gm-icon-btn" onClick={() => { setEditingGuid(null); setEditingName(''); }}>cancel</button>
                         </div>
+                      ) : unknown ? (
+                        <span className="gm-unknown">Unknown</span>
                       ) : (
-                        <div className="row" style={{ gap: 6, alignItems: 'center' }}>
-                          <span style={{ fontWeight: 600, color: a.displayName === '?' ? 'var(--text-dim)' : 'var(--text-bright)' }}>
-                            {a.displayName}
-                          </span>
-                          {sourceTag(a.source) ? (
-                            <span style={{ fontSize: 9, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: 1 }}>{sourceTag(a.source)}</span>
-                          ) : null}
-                          <button className="btn" style={{ padding: '2px 6px', fontSize: 10 }} onClick={() => { setEditingGuid(a.guid); setEditingName(a.displayName === '?' ? '' : a.displayName); }}>edit</button>
-                        </div>
+                        <span className="gm-name">{a.displayName}</span>
                       )}
                     </td>
-                    <td style={{ padding: '8px 10px', fontFamily: 'monospace', color: 'var(--text-dim)', fontSize: 11 }}>{a.guid}</td>
-                    {servers.map((s) => {
-                      const checked = !!a.presence[s.pteroId];
+                    <td><span className="gm-guid">{a.guid}</span></td>
+                    {orderedServers.map((s) => {
+                      const on = !!a.presence[s.pteroId];
                       const pending = pendingToggles.has(toggleKey(a.guid, s.pteroId));
+                      const region = regionByPteroId[s.pteroId] || 'unknown';
                       return (
-                        <td key={s.pteroId} style={{ textAlign: 'center', padding: '8px 6px', opacity: pending ? 0.4 : 1 }}>
-                          <input
-                            type="checkbox"
-                            checked={checked}
-                            disabled={pending || !s.sshConfigured}
-                            onChange={(e) => onToggle(a.guid, s.pteroId, e.target.checked)}
+                        <td key={s.pteroId} className={`gm-col-server ${region.toLowerCase()}`}>
+                          <button
+                            type="button"
+                            className={`gm-dot ${on ? 'on' : ''} ${pending ? 'pending' : ''}`}
+                            disabled={!s.sshConfigured || pending}
+                            onClick={() => onToggle(a.guid, s.pteroId, !on)}
+                            aria-label={on ? `Remove ${a.displayName} from ${s.tag}` : `Grant ${a.displayName} access on ${s.tag}`}
+                            title={on ? `Click to remove from ${s.tag}` : `Click to grant on ${s.tag}`}
                           />
                         </td>
                       );
                     })}
-                    <td style={{ padding: '8px 10px', textAlign: 'right' }}>
-                      <button className="btn" style={{ padding: '4px 10px', fontSize: 11, color: '#e74c3c' }} onClick={() => onDelete(a)} disabled={busy}>delete</button>
+                    <td>
+                      <div className="gm-actions">
+                        <button
+                          className="gm-icon-btn"
+                          onClick={() => {
+                            setEditingGuid(a.guid);
+                            setEditingName(unknown ? '' : a.displayName);
+                          }}
+                          disabled={busy || editing}
+                        >
+                          edit
+                        </button>
+                        <button className="gm-icon-btn danger" onClick={() => onDelete(a)} disabled={busy}>
+                          delete
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 );
