@@ -10,7 +10,7 @@ const NAV_ITEMS: { to: string; label: string; icon: string; tool?: ToolName | To
   { to: '/moderation', label: 'Moderation', icon: '\u26A0', tool: ['bans', 'mutes'] },
   { to: '/server', label: 'Server', icon: '\u2699', tool: ['events', 'health'] },
   { to: '/admin', label: 'Users', icon: '\u2606', tool: 'admin' },
-  { to: '/admins', label: 'Admins', icon: '♔', tool: 'admin' },
+  { to: '/admins', label: 'GM Management', icon: '♔', tool: 'admin' },
   { to: '/dev', label: 'Dev', icon: '\u270E', tool: 'dev' },
 ];
 

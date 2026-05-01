@@ -204,7 +204,7 @@ export function AdminManagerPage() {
     <div className="container">
       <div className="stack">
         <div className="row" style={{ alignItems: 'center', gap: 12 }}>
-          <h1 className="h1" style={{ flex: 1, margin: 0 }}>Admin Management</h1>
+          <h1 className="h1" style={{ flex: 1, margin: 0 }}>GM Management</h1>
           {snapshot?.dryRun ? (
             <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: 1.5, color: '#f1c40f', border: '1px solid #f1c40f', padding: '4px 10px', borderRadius: 4 }}>
               DRY RUN
