@@ -16,6 +16,7 @@ export type SessionClaims = {
     health?: boolean;
     playerLookup?: boolean;
     pii?: boolean;
+    gmManagement?: boolean;
   };
 };
 
@@ -71,12 +72,17 @@ export function getSessionClaims(): SessionClaims | null {
   }
 }
 
-export type ToolName = 'replay' | 'admin' | 'dev' | 'players' | 'bans' | 'mutes' | 'events' | 'health' | 'playerLookup' | 'pii';
+export type ToolName = 'replay' | 'admin' | 'dev' | 'players' | 'bans' | 'mutes' | 'events' | 'health' | 'playerLookup' | 'pii' | 'gmManagement';
 
 export function hasToolAccess(tool: ToolName): boolean {
   const c = getSessionClaims();
   if (!c) return false;
   const tools = c.tools;
   if (!tools || typeof tools !== 'object') return tool === 'replay';
-  return !!(tools as Record<string, unknown>)[tool];
+  const t = tools as Record<string, unknown>;
+  if (t[tool]) return true;
+  // Backward compat: tools added after a user logged in won't be on their JWT.
+  // Treat unset gmManagement as inheriting from admin so existing admins keep access.
+  if (tool === 'gmManagement' && t.gmManagement === undefined && t.admin) return true;
+  return false;
 }

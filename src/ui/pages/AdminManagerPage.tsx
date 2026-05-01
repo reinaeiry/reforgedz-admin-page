@@ -12,9 +12,28 @@ import {
 } from '../../util/api';
 
 const GUID_RE = /^[0-9a-fA-F-]{36}$/;
+const SESSION_KEY = 'gm.snapshot.v1';
 
 function toggleKey(guid: string, pteroId: string): string {
   return `${guid}:${pteroId}`;
+}
+
+function loadCachedSnapshot(): AdminManagerSnapshot | null {
+  try {
+    const raw = sessionStorage.getItem(SESSION_KEY);
+    return raw ? (JSON.parse(raw) as AdminManagerSnapshot) : null;
+  } catch {
+    return null;
+  }
+}
+
+function saveCachedSnapshot(s: AdminManagerSnapshot | null): void {
+  try {
+    if (s) sessionStorage.setItem(SESSION_KEY, JSON.stringify(s));
+    else sessionStorage.removeItem(SESSION_KEY);
+  } catch {
+    // ignore quota errors
+  }
 }
 
 function formatTime(ms: number | null): string {
@@ -47,7 +66,8 @@ function buildServerGroups(servers: ReforgerServer[]): ServerGroup[] {
 }
 
 export function AdminManagerPage() {
-  const [snapshot, setSnapshot] = useState<AdminManagerSnapshot | null>(null);
+  const cached = loadCachedSnapshot();
+  const [snapshot, setSnapshot] = useState<AdminManagerSnapshot | null>(cached);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
@@ -62,15 +82,19 @@ export function AdminManagerPage() {
   const [editingName, setEditingName] = useState('');
 
   const [showBackfill, setShowBackfill] = useState(false);
-  const [bfUseBm, setBfUseBm] = useState(false);
+  const [bfUseBm, setBfUseBm] = useState<boolean>(!!cached?.bmAvailable);
   const [bfBusy, setBfBusy] = useState(false);
 
-  async function refresh(): Promise<void> {
+  async function refresh(force = false): Promise<void> {
     setBusy(true);
     setError(null);
     try {
-      const s = await getAdminManagerSnapshot();
-      setSnapshot(s);
+      const sinceVersion = !force && snapshot?.version ? snapshot.version : undefined;
+      const s = await getAdminManagerSnapshot({ force, sinceVersion });
+      if (s) {
+        setSnapshot(s);
+        saveCachedSnapshot(s);
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to load');
     } finally {
@@ -79,7 +103,9 @@ export function AdminManagerPage() {
   }
 
   useEffect(() => {
-    refresh();
+    // Always revalidate on mount, but the cached snapshot is already rendered.
+    refresh(false);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const groups = useMemo<ServerGroup[]>(
@@ -228,7 +254,7 @@ export function AdminManagerPage() {
           <h1 className="h1">GM Management</h1>
           {snapshot?.dryRun ? <span className="gm-dryrun">Dry run</span> : null}
           <span className="spacer" />
-          <button className="btn" onClick={refresh} disabled={busy}>{busy ? '...' : 'Refresh'}</button>
+          <button className="btn" onClick={() => refresh(true)} disabled={busy}>{busy ? '...' : 'Refresh'}</button>
           <button className="btn" onClick={() => setShowBackfill(true)} disabled={busy}>Backfill names</button>
           <button className="btn" onClick={() => setShowAdd((v) => !v)}>{showAdd ? 'Cancel' : '+ Add admin'}</button>
         </div>
@@ -272,9 +298,17 @@ export function AdminManagerPage() {
               <div style={{ fontSize: 12, color: 'var(--text-dim)' }}>
                 Walks local PII and snapshot data to map known GUIDs to display names. Manually-entered names are not overwritten.
               </div>
-              <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12 }}>
-                <input type="checkbox" checked={bfUseBm} onChange={(e) => setBfUseBm(e.target.checked)} />
-                Also try BattleMetrics for unknowns (slower, may not match Reforger GUIDs)
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, opacity: snapshot?.bmAvailable ? 1 : 0.5 }}>
+                <input
+                  type="checkbox"
+                  checked={bfUseBm && !!snapshot?.bmAvailable}
+                  disabled={!snapshot?.bmAvailable}
+                  onChange={(e) => setBfUseBm(e.target.checked)}
+                />
+                Also try BattleMetrics for unknowns
+                {snapshot?.bmAvailable
+                  ? ' (queries reforgerUUID via /players/match)'
+                  : ' — set BATTLEMETRICS_API_KEY in .env to enable'}
               </label>
               <div className="row" style={{ gap: 10 }}>
                 <button className="btn" onClick={onRunBackfill} disabled={bfBusy}>{bfBusy ? 'Running...' : 'Run backfill'}</button>

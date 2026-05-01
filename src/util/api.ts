@@ -390,6 +390,7 @@ export type ToolAccess = {
   events: boolean;
   health: boolean;
   playerLookup: boolean;
+  gmManagement: boolean;
 };
 
 export type AdminUser = {
@@ -920,6 +921,10 @@ export type AdminManagerSnapshot = {
   lastBackfillAt: number | null;
   lastSyncAt: number | null;
   dryRun: boolean;
+  bmAvailable?: boolean;
+  builtAt?: number;
+  version?: number;
+  fromCache?: boolean;
 };
 
 function authHeaders(): HeadersInit {
@@ -935,9 +940,14 @@ export async function getAdminManagerServers(): Promise<{ servers: ReforgerServe
   return (await res.json()) as { servers: ReforgerServer[]; dryRun: boolean };
 }
 
-export async function getAdminManagerSnapshot(): Promise<AdminManagerSnapshot> {
+export async function getAdminManagerSnapshot(opts?: { force?: boolean; sinceVersion?: number }): Promise<AdminManagerSnapshot | null> {
   const base = requireApiBaseUrl();
-  const res = await fetch(`${base}/api/adminmgr/admins`, { headers: authHeaders() });
+  const qs = new URLSearchParams();
+  if (opts?.force) qs.set('force', '1');
+  if (opts?.sinceVersion) qs.set('since', String(opts.sinceVersion));
+  const url = `${base}/api/adminmgr/admins${qs.toString() ? '?' + qs.toString() : ''}`;
+  const res = await fetch(url, { headers: authHeaders() });
+  if (res.status === 304) return null;
   if (!res.ok) throw new Error((await res.text()) || `Failed to load admins (${res.status})`);
   return (await res.json()) as AdminManagerSnapshot;
 }

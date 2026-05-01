@@ -1091,6 +1091,7 @@ function normalizeTools(tools) {
     health: t.health !== undefined ? !!t.health : admin,
     playerLookup: t.playerLookup !== undefined ? !!t.playerLookup : admin,
     pii: t.pii !== undefined ? !!t.pii : admin,
+    gmManagement: t.gmManagement !== undefined ? !!t.gmManagement : admin,
   };
 }
 
@@ -1179,6 +1180,9 @@ function requireTool(tool) {
     }
 
     if (tools[tool]) return next();
+    // Backward compat: tools added after a user logged in won't be on their JWT.
+    // Treat unset gmManagement as inheriting from admin so existing admins keep access.
+    if (tool === 'gmManagement' && tools.gmManagement === undefined && tools.admin) return next();
     res.status(403).send('Forbidden');
   };
 }
@@ -2453,6 +2457,8 @@ const ADMIN_MGR_CONFIG_BASENAME = process.env.ADMIN_MANAGER_CONFIG_BASENAME || '
 const ADMIN_MGR_CONFIG_FIELD = process.env.ADMIN_MANAGER_CONFIG_FIELD || 'game.admins';
 const ADMIN_MGR_VOLUMES_ROOT = (process.env.ADMIN_MANAGER_VOLUMES_ROOT || '/var/lib/pterodactyl/volumes').replace(/\/+$/, '');
 const ADMIN_MGR_STATE_PATH = path.join(DATA_DIR, 'adminManager.json');
+const ADMIN_MGR_BM_TOKEN = process.env.BATTLEMETRICS_API_KEY || '';
+const ADMIN_MGR_CACHE_TTL_MS = 5 * 60 * 1000;
 
 // NA box is not directly reachable; SSH connects to EU box and bounces over.
 // Mirrors the pattern in reforgedz-dotnet/sync.js.
@@ -2714,24 +2720,126 @@ function adminMgrIsValidPteroId(s) {
 }
 
 async function adminMgrFetchBmName(guid) {
+  if (!ADMIN_MGR_BM_TOKEN) return null;
   const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), 5000);
+  const timer = setTimeout(() => ctrl.abort(), 8000);
   try {
-    const url = `https://api.battlemetrics.com/players?filter%5Bsearch%5D=${encodeURIComponent(guid)}&page%5Bsize%5D=5`;
-    const res = await fetch(url, { signal: ctrl.signal });
+    const res = await fetch('https://api.battlemetrics.com/players/match', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${ADMIN_MGR_BM_TOKEN}`,
+      },
+      body: JSON.stringify({
+        data: [{ type: 'identifier', attributes: { type: 'reforgerUUID', identifier: guid } }],
+      }),
+      signal: ctrl.signal,
+    });
     if (!res.ok) return null;
-    const data = await res.json();
-    const list = Array.isArray(data?.data) ? data.data : [];
-    for (const p of list) {
-      const name = p?.attributes?.name;
-      if (typeof name === 'string' && name) return name;
-    }
-    return null;
+    const json = await res.json();
+    const player = (Array.isArray(json?.data) ? json.data : [])[0];
+    const name = player?.attributes?.name;
+    return typeof name === 'string' && name ? name : null;
   } catch {
     return null;
   } finally {
     clearTimeout(timer);
   }
+}
+
+function adminMgrBmAvailable() {
+  return !!ADMIN_MGR_BM_TOKEN;
+}
+
+let adminsCache = { data: null, builtAt: 0, version: 0, building: null };
+
+function invalidateAdminsCache() {
+  adminsCache = { ...adminsCache, builtAt: 0 };
+}
+
+async function buildAdminsSnapshot() {
+  const servers = await listReforgerServers();
+  const state = await readAdminMgrState();
+
+  const reads = await Promise.all(
+    servers.map(async (s) => ({ server: s, ...(await readServerAdmins(s, state.configOverrides)) }))
+  );
+
+  const guidMap = new Map();
+  for (const r of reads) {
+    for (const guid of r.admins) {
+      let entry = guidMap.get(guid);
+      if (!entry) {
+        const cached = state.admins[guid] || {};
+        entry = {
+          guid,
+          displayName: typeof cached.displayName === 'string' && cached.displayName ? cached.displayName : '?',
+          source: cached.source || 'unknown',
+          presence: {},
+        };
+        guidMap.set(guid, entry);
+      }
+      entry.presence[r.server.pteroId] = true;
+    }
+  }
+  for (const [guid, c] of Object.entries(state.admins || {})) {
+    if (!guidMap.has(guid)) {
+      guidMap.set(guid, {
+        guid,
+        displayName: typeof c.displayName === 'string' && c.displayName ? c.displayName : '?',
+        source: c.source || 'manual',
+        presence: {},
+      });
+    }
+  }
+
+  const admins = Array.from(guidMap.values()).sort((a, b) => {
+    const aKey = (a.displayName === '?' ? 'zzz' : '') + a.displayName.toLowerCase();
+    const bKey = (b.displayName === '?' ? 'zzz' : '') + b.displayName.toLowerCase();
+    return aKey.localeCompare(bKey);
+  });
+
+  const enriched = servers.map((s) => ({
+    ...s,
+    configPath: configPathFor(s, state.configOverrides),
+    sshConfigured: !!adminMgrSshHostForRegion(s.region)?.host,
+  }));
+
+  const errors = reads
+    .filter((r) => !r.ok)
+    .map((r) => ({ pteroId: r.server.pteroId, tag: r.server.tag, error: r.error }));
+
+  return {
+    servers: enriched,
+    admins,
+    errors,
+    lastBackfillAt: state.lastBackfillAt,
+    lastSyncAt: state.lastSyncAt,
+    dryRun: adminMgrIsDryRun(),
+    bmAvailable: adminMgrBmAvailable(),
+  };
+}
+
+async function getAdminsSnapshot({ force = false } = {}) {
+  const now = Date.now();
+  if (!force && adminsCache.data && (now - adminsCache.builtAt) < ADMIN_MGR_CACHE_TTL_MS) {
+    return { data: adminsCache.data, builtAt: adminsCache.builtAt, version: adminsCache.version, fromCache: true };
+  }
+  if (adminsCache.building) {
+    const data = await adminsCache.building;
+    return { data, builtAt: adminsCache.builtAt, version: adminsCache.version, fromCache: false };
+  }
+  adminsCache.building = buildAdminsSnapshot()
+    .then((data) => {
+      adminsCache = { data, builtAt: Date.now(), version: adminsCache.version + 1, building: null };
+      return data;
+    })
+    .catch((err) => {
+      adminsCache.building = null;
+      throw err;
+    });
+  const data = await adminsCache.building;
+  return { data, builtAt: adminsCache.builtAt, version: adminsCache.version, fromCache: false };
 }
 
 async function adminMgrLoadLocalNameSources() {
@@ -2785,7 +2893,7 @@ async function readServerAdmins(server, overrides) {
   }
 }
 
-app.get('/api/adminmgr/servers', requireAuth, requireTool('admin'), asyncRoute(async (req, res) => {
+app.get('/api/adminmgr/servers', requireAuth, requireTool('gmManagement'), asyncRoute(async (req, res) => {
   if (!ADMIN_MGR_PTERO_URL || !ADMIN_MGR_PTERO_KEY) {
     res.status(503).json({ error: 'pterodactyl_not_configured' });
     return;
@@ -2800,77 +2908,27 @@ app.get('/api/adminmgr/servers', requireAuth, requireTool('admin'), asyncRoute(a
   res.json({ servers: enriched, dryRun: adminMgrIsDryRun() });
 }));
 
-app.get('/api/adminmgr/dryrun', requireAuth, requireTool('admin'), (req, res) => {
-  res.json({ enabled: adminMgrIsDryRun() });
+app.get('/api/adminmgr/dryrun', requireAuth, requireTool('gmManagement'), (req, res) => {
+  res.json({ enabled: adminMgrIsDryRun(), bmAvailable: adminMgrBmAvailable() });
 });
 
-app.get('/api/adminmgr/admins', requireAuth, requireTool('admin'), asyncRoute(async (req, res) => {
+app.get('/api/adminmgr/admins', requireAuth, requireTool('gmManagement'), asyncRoute(async (req, res) => {
   if (!ADMIN_MGR_PTERO_URL || !ADMIN_MGR_PTERO_KEY) {
     res.status(503).json({ error: 'pterodactyl_not_configured' });
     return;
   }
-  const servers = await listReforgerServers();
-  const state = await readAdminMgrState();
+  const force = req.query.force === '1';
+  const clientVersion = parseInt(String(req.query.since || '0'), 10) || 0;
+  const { data, builtAt, version, fromCache } = await getAdminsSnapshot({ force });
 
-  const reads = await Promise.all(
-    servers.map(async (s) => ({ server: s, ...(await readServerAdmins(s, state.configOverrides)) }))
-  );
-
-  const guidMap = new Map();
-  for (const r of reads) {
-    for (const guid of r.admins) {
-      let entry = guidMap.get(guid);
-      if (!entry) {
-        const cached = state.admins[guid] || {};
-        entry = {
-          guid,
-          displayName: typeof cached.displayName === 'string' && cached.displayName ? cached.displayName : '?',
-          source: cached.source || 'unknown',
-          presence: {},
-        };
-        guidMap.set(guid, entry);
-      }
-      entry.presence[r.server.pteroId] = true;
-    }
+  if (clientVersion && clientVersion === version) {
+    res.status(304).json({ unchanged: true, builtAt, version });
+    return;
   }
-  for (const [guid, c] of Object.entries(state.admins || {})) {
-    if (!guidMap.has(guid)) {
-      guidMap.set(guid, {
-        guid,
-        displayName: typeof c.displayName === 'string' && c.displayName ? c.displayName : '?',
-        source: c.source || 'manual',
-        presence: {},
-      });
-    }
-  }
-
-  const admins = Array.from(guidMap.values()).sort((a, b) => {
-    const aKey = (a.displayName === '?' ? 'zzz' : '') + a.displayName.toLowerCase();
-    const bKey = (b.displayName === '?' ? 'zzz' : '') + b.displayName.toLowerCase();
-    return aKey.localeCompare(bKey);
-  });
-
-  const enriched = servers.map((s) => ({
-    ...s,
-    configPath: configPathFor(s, state.configOverrides),
-    sshConfigured: !!adminMgrSshHostForRegion(s.region)?.host,
-  }));
-
-  const errors = reads
-    .filter((r) => !r.ok)
-    .map((r) => ({ pteroId: r.server.pteroId, tag: r.server.tag, error: r.error }));
-
-  res.json({
-    servers: enriched,
-    admins,
-    errors,
-    lastBackfillAt: state.lastBackfillAt,
-    lastSyncAt: state.lastSyncAt,
-    dryRun: adminMgrIsDryRun(),
-  });
+  res.json({ ...data, builtAt, version, fromCache });
 }));
 
-app.post('/api/adminmgr/toggle', requireAuth, requireTool('admin'), asyncRoute(async (req, res) => {
+app.post('/api/adminmgr/toggle', requireAuth, requireTool('gmManagement'), asyncRoute(async (req, res) => {
   const guid = String(req.body?.guid || '').trim();
   const pteroId = String(req.body?.pteroId || '').trim();
   const present = !!req.body?.present;
@@ -2913,12 +2971,13 @@ app.post('/api/adminmgr/toggle', requireAuth, requireTool('admin'), asyncRoute(a
     const cur = await readAdminMgrState();
     cur.lastSyncAt = Date.now();
     await writeAdminMgrState(cur);
+    invalidateAdminsCache();
   }
 
   res.json({ ok: true, ...result, dryRun: adminMgrIsDryRun() });
 }));
 
-app.post('/api/adminmgr/admin', requireAuth, requireTool('admin'), asyncRoute(async (req, res) => {
+app.post('/api/adminmgr/admin', requireAuth, requireTool('gmManagement'), asyncRoute(async (req, res) => {
   const guid = String(req.body?.guid || '').trim();
   const displayName = typeof req.body?.displayName === 'string' ? req.body.displayName.trim().slice(0, 64) : '';
   if (!adminMgrIsValidGuid(guid)) { res.status(400).json({ error: 'invalid_guid' }); return; }
@@ -2932,10 +2991,11 @@ app.post('/api/adminmgr/admin', requireAuth, requireTool('admin'), asyncRoute(as
     updatedAt: Date.now(),
   };
   await writeAdminMgrState(state);
+  invalidateAdminsCache();
   res.json({ ok: true });
 }));
 
-app.put('/api/adminmgr/admin/:guid', requireAuth, requireTool('admin'), asyncRoute(async (req, res) => {
+app.put('/api/adminmgr/admin/:guid', requireAuth, requireTool('gmManagement'), asyncRoute(async (req, res) => {
   const guid = String(req.params.guid || '').trim();
   const displayName = typeof req.body?.displayName === 'string' ? req.body.displayName.trim().slice(0, 64) : '';
   if (!adminMgrIsValidGuid(guid)) { res.status(400).json({ error: 'invalid_guid' }); return; }
@@ -2949,10 +3009,11 @@ app.put('/api/adminmgr/admin/:guid', requireAuth, requireTool('admin'), asyncRou
     updatedAt: Date.now(),
   };
   await writeAdminMgrState(state);
+  invalidateAdminsCache();
   res.json({ ok: true });
 }));
 
-app.delete('/api/adminmgr/admin/:guid', requireAuth, requireTool('admin'), asyncRoute(async (req, res) => {
+app.delete('/api/adminmgr/admin/:guid', requireAuth, requireTool('gmManagement'), asyncRoute(async (req, res) => {
   const guid = String(req.params.guid || '').trim();
   if (!adminMgrIsValidGuid(guid)) { res.status(400).json({ error: 'invalid_guid' }); return; }
 
@@ -2985,6 +3046,7 @@ app.delete('/api/adminmgr/admin/:guid', requireAuth, requireTool('admin'), async
   delete state.admins[guid];
   state.lastSyncAt = Date.now();
   await writeAdminMgrState(state);
+  invalidateAdminsCache();
 
   const summary = removals.map((r) => ({
     pteroId: r.server.pteroId,
@@ -2996,7 +3058,7 @@ app.delete('/api/adminmgr/admin/:guid', requireAuth, requireTool('admin'), async
   res.json({ ok: true, results: summary, dryRun: adminMgrIsDryRun() });
 }));
 
-app.post('/api/adminmgr/backfill', requireAuth, requireTool('admin'), asyncRoute(async (req, res) => {
+app.post('/api/adminmgr/backfill', requireAuth, requireTool('gmManagement'), asyncRoute(async (req, res) => {
   const useBattleMetrics = !!req.body?.useBattleMetrics;
 
   const servers = await listReforgerServers();
@@ -3053,7 +3115,8 @@ app.post('/api/adminmgr/backfill', requireAuth, requireTool('admin'), asyncRoute
 
   state.lastBackfillAt = Date.now();
   await writeAdminMgrState(state);
-  res.json({ ok: true, resolved, unknown, total: allGuids.size });
+  invalidateAdminsCache();
+  res.json({ ok: true, resolved, unknown, total: allGuids.size, bmAvailable: adminMgrBmAvailable() });
 }));
 
 app.get('/api/dev/servers', requireAuth, requireTool('dev'), asyncRoute(async (req, res) => {
@@ -4074,6 +4137,13 @@ const server = app.listen(PORT, () => {
   console.log(`[reforgedz] admin server listening on :${PORT}`);
   // eslint-disable-next-line no-console
   console.log(`[reforgedz] ingest keys loaded: ${ingestKeyMap.size}`);
+
+  // Pre-warm the admin-manager cache so the first page open is instant.
+  if (ADMIN_MGR_PTERO_URL && ADMIN_MGR_PTERO_KEY) {
+    getAdminsSnapshot()
+      .then(({ data }) => console.log(`[adminmgr] cache warmed: ${data.admins.length} admins, ${data.servers.length} servers`))
+      .catch((e) => console.warn(`[adminmgr] cache warm failed: ${e.message}`));
+  }
 });
 
 server.on('error', (err) => {

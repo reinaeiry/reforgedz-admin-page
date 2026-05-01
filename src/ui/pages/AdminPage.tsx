@@ -15,11 +15,15 @@ const TOOL_GROUPS = [
     { key: 'health' as const, label: 'Health' },
     { key: 'playerLookup' as const, label: 'Lookup' },
   ]},
+  { label: 'MGMT', tools: [
+    { key: 'gmManagement' as const, label: 'GM Management' },
+  ]},
 ];
 
 const DEFAULT_TOOLS: ToolAccess = {
   replay: true, admin: false, dev: false,
   players: false, bans: false, mutes: false, events: false, health: false, playerLookup: false,
+  gmManagement: false,
 };
 
 function toolCount(tools: Partial<ToolAccess>): number {
@@ -57,6 +61,7 @@ export function AdminPage() {
         replay: !!u.tools?.replay, admin: !!u.tools?.admin, dev: !!u.tools?.dev,
         players: !!u.tools?.players, bans: !!u.tools?.bans, mutes: !!u.tools?.mutes,
         events: !!u.tools?.events, health: !!u.tools?.health, playerLookup: !!u.tools?.playerLookup,
+        gmManagement: !!u.tools?.gmManagement,
       };
       await updateUserTools(u.username, { ...c, [key]: !c[key] });
       await refresh();
