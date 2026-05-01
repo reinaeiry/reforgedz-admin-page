@@ -891,3 +891,128 @@ export async function getPiiPlayers(serverId: string): Promise<PiiResponse> {
   if (!res.ok) throw new Error((await res.text()) || `Failed to get PII data (${res.status})`);
   return (await res.json()) as PiiResponse;
 }
+
+// ─── Admin Manager ───────────────────────────────────────────────────────────
+
+export type ReforgerServer = {
+  pteroId: string;
+  volumeUuid: string;
+  name: string;
+  tag: string;
+  node: string;
+  region: 'EU' | 'NA' | 'unknown';
+  ip: string | null;
+  configPath: string;
+  sshConfigured: boolean;
+};
+
+export type AdminEntry = {
+  guid: string;
+  displayName: string;
+  source: 'pii' | 'snapshot' | 'battlemetrics' | 'manual' | 'unknown';
+  presence: Record<string, boolean>;
+};
+
+export type AdminManagerSnapshot = {
+  servers: ReforgerServer[];
+  admins: AdminEntry[];
+  errors: { pteroId: string; tag: string; error: string }[];
+  lastBackfillAt: number | null;
+  lastSyncAt: number | null;
+  dryRun: boolean;
+};
+
+function authHeaders(): HeadersInit {
+  const session = getSession();
+  if (!session) throw new Error('Not authenticated');
+  return { Authorization: `Bearer ${session.token}` };
+}
+
+export async function getAdminManagerServers(): Promise<{ servers: ReforgerServer[]; dryRun: boolean }> {
+  const base = requireApiBaseUrl();
+  const res = await fetch(`${base}/api/adminmgr/servers`, { headers: authHeaders() });
+  if (!res.ok) throw new Error((await res.text()) || `Failed to list servers (${res.status})`);
+  return (await res.json()) as { servers: ReforgerServer[]; dryRun: boolean };
+}
+
+export async function getAdminManagerSnapshot(): Promise<AdminManagerSnapshot> {
+  const base = requireApiBaseUrl();
+  const res = await fetch(`${base}/api/adminmgr/admins`, { headers: authHeaders() });
+  if (!res.ok) throw new Error((await res.text()) || `Failed to load admins (${res.status})`);
+  return (await res.json()) as AdminManagerSnapshot;
+}
+
+export async function getAdminManagerDryRun(): Promise<{ enabled: boolean }> {
+  const base = requireApiBaseUrl();
+  const res = await fetch(`${base}/api/adminmgr/dryrun`, { headers: authHeaders() });
+  if (!res.ok) throw new Error((await res.text()) || `Failed to get dry-run state (${res.status})`);
+  return (await res.json()) as { enabled: boolean };
+}
+
+export async function addAdminToCache(guid: string, displayName?: string): Promise<void> {
+  const base = requireApiBaseUrl();
+  const res = await fetch(`${base}/api/adminmgr/admin`, {
+    method: 'POST',
+    headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ guid, displayName: displayName || '' }),
+  });
+  if (!res.ok) throw new Error((await res.text()) || `Failed to add admin (${res.status})`);
+}
+
+export async function renameAdmin(guid: string, displayName: string): Promise<void> {
+  const base = requireApiBaseUrl();
+  const res = await fetch(`${base}/api/adminmgr/admin/${encodeURIComponent(guid)}`, {
+    method: 'PUT',
+    headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ displayName }),
+  });
+  if (!res.ok) throw new Error((await res.text()) || `Failed to rename admin (${res.status})`);
+}
+
+export type AdminDeleteResult = {
+  ok: true;
+  results: { pteroId: string; tag: string; removed: boolean; error: string | null }[];
+  dryRun: boolean;
+};
+
+export async function deleteAdmin(guid: string): Promise<AdminDeleteResult> {
+  const base = requireApiBaseUrl();
+  const res = await fetch(`${base}/api/adminmgr/admin/${encodeURIComponent(guid)}`, {
+    method: 'DELETE',
+    headers: authHeaders(),
+  });
+  if (!res.ok) throw new Error((await res.text()) || `Failed to delete admin (${res.status})`);
+  return (await res.json()) as AdminDeleteResult;
+}
+
+export type AdminToggleResult = {
+  ok: true;
+  changed: boolean;
+  present: boolean;
+  count: number;
+  dryRun: boolean;
+};
+
+export async function toggleAdminOnServer(guid: string, pteroId: string, present: boolean): Promise<AdminToggleResult> {
+  const base = requireApiBaseUrl();
+  const res = await fetch(`${base}/api/adminmgr/toggle`, {
+    method: 'POST',
+    headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ guid, pteroId, present }),
+  });
+  if (!res.ok) throw new Error((await res.text()) || `Failed to toggle admin (${res.status})`);
+  return (await res.json()) as AdminToggleResult;
+}
+
+export type BackfillResult = { ok: true; resolved: number; unknown: number; total: number };
+
+export async function runAdminBackfill(useBattleMetrics: boolean): Promise<BackfillResult> {
+  const base = requireApiBaseUrl();
+  const res = await fetch(`${base}/api/adminmgr/backfill`, {
+    method: 'POST',
+    headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ useBattleMetrics }),
+  });
+  if (!res.ok) throw new Error((await res.text()) || `Backfill failed (${res.status})`);
+  return (await res.json()) as BackfillResult;
+}

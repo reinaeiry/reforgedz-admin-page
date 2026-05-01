@@ -7,6 +7,7 @@ import { createReadStream } from 'node:fs';
 import dotenv from 'dotenv';
 import express from 'express';
 import compression from 'compression';
+import { Client as SshClient } from 'ssh2';
 
 import { createCanvas } from '@napi-rs/canvas';
 import gifenc from 'gifenc';
@@ -2435,6 +2436,624 @@ app.delete('/api/admin/users/:username', requireAuth, requireTool('admin'), asyn
   delete users[uname];
   await writeJsonAtomic(USERS_PATH, { users });
   res.json({ ok: true });
+}));
+
+// ============================================================
+// Admin Manager
+//   Centralised UI for adding/removing Reforger admin GUIDs
+//   across every Pterodactyl game server (one config file per
+//   server). Auto-discovers servers from Pterodactyl, edits the
+//   game.admins list via SSH, and backfills display names from
+//   local PII / snapshot caches.
+// ============================================================
+
+const ADMIN_MGR_PTERO_URL = (process.env.PTERODACTYL_PANEL_URL || '').replace(/\/+$/, '');
+const ADMIN_MGR_PTERO_KEY = process.env.PTERODACTYL_CLIENT_API_KEY || '';
+const ADMIN_MGR_CONFIG_BASENAME = process.env.ADMIN_MANAGER_CONFIG_BASENAME || 'config.json';
+const ADMIN_MGR_CONFIG_FIELD = process.env.ADMIN_MANAGER_CONFIG_FIELD || 'game.admins';
+const ADMIN_MGR_VOLUMES_ROOT = (process.env.ADMIN_MANAGER_VOLUMES_ROOT || '/var/lib/pterodactyl/volumes').replace(/\/+$/, '');
+const ADMIN_MGR_STATE_PATH = path.join(DATA_DIR, 'adminManager.json');
+
+// NA box is not directly reachable; SSH connects to EU box and bounces over.
+// Mirrors the pattern in reforgedz-dotnet/sync.js.
+const ADMIN_MGR_NA_VIA_EU = process.env.ADMIN_MANAGER_NA_VIA_EU !== '0';
+
+function adminMgrIsDryRun() {
+  return process.env.ADMIN_MANAGER_DRY_RUN === '1';
+}
+
+function adminMgrSshHostForRegion(region) {
+  if (region === 'EU' || (region === 'NA' && ADMIN_MGR_NA_VIA_EU)) {
+    return {
+      host: process.env.GAME_SERVER_EU_HOST || '',
+      port: parseInt(process.env.GAME_SERVER_EU_PORT || '22', 10),
+      user: process.env.GAME_SERVER_EU_USER || 'root',
+    };
+  }
+  if (region === 'NA') {
+    return {
+      host: process.env.GAME_SERVER_NA_HOST || '',
+      port: parseInt(process.env.GAME_SERVER_NA_PORT || '22', 10),
+      user: process.env.GAME_SERVER_NA_USER || 'root',
+    };
+  }
+  return null;
+}
+
+function adminMgrWrapForRegion(region, command) {
+  if (region === 'NA' && ADMIN_MGR_NA_VIA_EU) {
+    const naHost = process.env.GAME_SERVER_NA_HOST || '';
+    const naPort = parseInt(process.env.GAME_SERVER_NA_PORT || '22', 10);
+    const naUser = process.env.GAME_SERVER_NA_USER || 'root';
+    if (!naHost) throw new Error('na_host_not_configured');
+    const innerEscaped = String(command).replace(/'/g, `'\\''`);
+    return `ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 -p ${naPort} ${naUser}@${naHost} '${innerEscaped}'`;
+  }
+  return command;
+}
+
+async function pteroFetch(endpoint) {
+  if (!ADMIN_MGR_PTERO_URL || !ADMIN_MGR_PTERO_KEY) {
+    throw new Error('pterodactyl_not_configured');
+  }
+  const url = endpoint.startsWith('http') ? endpoint : `${ADMIN_MGR_PTERO_URL}${endpoint}`;
+  const res = await fetch(url, {
+    headers: {
+      'Authorization': `Bearer ${ADMIN_MGR_PTERO_KEY}`,
+      'Accept': 'application/json',
+      'Content-Type': 'application/json',
+    },
+  });
+  if (!res.ok) throw new Error(`pterodactyl_${res.status}`);
+  return res.json();
+}
+
+function isReforgerGameServer(name) {
+  const n = String(name || '');
+  if (!n) return false;
+  if (n.includes('.net') || n.includes('.com')) return false;
+  return /\[(EU\d+|NA\d+|DEV[-_][A-Z0-9]+)\]/i.test(n);
+}
+
+function adminMgrRegionFor(name, node) {
+  const m = String(name || '').match(/\[([A-Z]+)/i);
+  if (m) {
+    const tag = m[1].toUpperCase();
+    if (tag === 'EU') return 'EU';
+    if (tag === 'NA') return 'NA';
+  }
+  const nd = String(node || '').toLowerCase();
+  if (nd.startsWith('ger')) return 'EU';
+  if (nd.startsWith('nj')) return 'NA';
+  return 'unknown';
+}
+
+function adminMgrShortTag(name) {
+  const m = String(name || '').match(/\[([^\]]+)\]/);
+  return m ? m[1] : '';
+}
+
+async function listReforgerServers() {
+  const out = [];
+  let endpoint = '/api/client?per_page=50';
+  let safety = 10;
+  while (endpoint && safety-- > 0) {
+    const data = await pteroFetch(endpoint);
+    const items = Array.isArray(data?.data) ? data.data : [];
+    for (const srv of items) {
+      const a = srv?.attributes;
+      if (!a) continue;
+      if (!isReforgerGameServer(a.name)) continue;
+      const region = adminMgrRegionFor(a.name, a.node);
+      if (region === 'unknown') continue;
+      const allocs = a.relationships?.allocations?.data || [];
+      const def = allocs.find((x) => x.attributes?.is_default) || allocs[0];
+      const ip = def
+        ? `${def.attributes.ip_alias || def.attributes.ip}:${def.attributes.port}`
+        : null;
+      out.push({
+        pteroId: a.identifier,
+        volumeUuid: a.uuid,
+        name: a.name,
+        tag: adminMgrShortTag(a.name),
+        node: a.node,
+        region,
+        ip,
+      });
+    }
+    const nextLink = data?.links?.next || data?.meta?.pagination?.links?.next || null;
+    if (!nextLink) break;
+    try {
+      const u = new URL(nextLink);
+      endpoint = u.pathname + u.search;
+    } catch {
+      break;
+    }
+  }
+  out.sort((a, b) => (a.tag || a.name).localeCompare(b.tag || b.name));
+  return out;
+}
+
+async function readAdminMgrState() {
+  const obj = await readJsonOrNull(ADMIN_MGR_STATE_PATH);
+  const admins = obj && typeof obj === 'object' && obj.admins && typeof obj.admins === 'object'
+    ? obj.admins : {};
+  const overrides = obj && typeof obj === 'object' && obj.configOverrides && typeof obj.configOverrides === 'object'
+    ? obj.configOverrides : {};
+  return {
+    admins,
+    configOverrides: overrides,
+    lastBackfillAt: typeof obj?.lastBackfillAt === 'number' ? obj.lastBackfillAt : null,
+    lastSyncAt: typeof obj?.lastSyncAt === 'number' ? obj.lastSyncAt : null,
+  };
+}
+
+async function writeAdminMgrState(state) {
+  await writeJsonAtomic(ADMIN_MGR_STATE_PATH, state);
+}
+
+function configPathFor(server, overrides) {
+  const override = overrides && typeof overrides === 'object' ? overrides[server.pteroId] : null;
+  const basename = (typeof override === 'string' && override) || ADMIN_MGR_CONFIG_BASENAME;
+  return `${ADMIN_MGR_VOLUMES_ROOT}/${server.volumeUuid}/${basename}`;
+}
+
+function adminMgrShellEscape(s) {
+  return `'${String(s).replace(/'/g, "'\\''")}'`;
+}
+
+function adminMgrGetPrivateKey() {
+  const b64 = process.env.SSH_PRIVATE_KEY_B64 || '';
+  if (!b64) return null;
+  try { return Buffer.from(b64, 'base64'); }
+  catch { return null; }
+}
+
+function adminMgrGetAtPath(obj, dotPath) {
+  if (!obj || !dotPath) return undefined;
+  return String(dotPath).split('.').reduce((o, k) => (o == null ? o : o[k]), obj);
+}
+
+function adminMgrSetAtPath(obj, dotPath, value) {
+  const keys = String(dotPath).split('.');
+  const last = keys.pop();
+  let cur = obj;
+  for (const k of keys) {
+    if (cur[k] == null || typeof cur[k] !== 'object' || Array.isArray(cur[k])) cur[k] = {};
+    cur = cur[k];
+  }
+  cur[last] = value;
+}
+
+function sshExecCapture(host, port, user, command) {
+  return new Promise((resolve, reject) => {
+    const key = adminMgrGetPrivateKey();
+    if (!key) return reject(new Error('ssh_key_missing'));
+    if (!host) return reject(new Error('ssh_host_missing'));
+    const conn = new SshClient();
+    let settled = false;
+    const finish = (err, val) => {
+      if (settled) return;
+      settled = true;
+      try { conn.end(); } catch { /* ignore */ }
+      if (err) reject(err); else resolve(val);
+    };
+    const timer = setTimeout(() => finish(new Error('ssh_timeout')), 30000);
+    conn.on('ready', () => {
+      conn.exec(command, (err, stream) => {
+        if (err) { clearTimeout(timer); return finish(err); }
+        let stdout = '';
+        let stderr = '';
+        stream.on('close', (code) => {
+          clearTimeout(timer);
+          if (code === 0) finish(null, stdout);
+          else finish(new Error(`ssh_exit_${code}: ${stderr.trim().slice(0, 200) || 'no stderr'}`));
+        });
+        stream.on('data', (d) => { stdout += d.toString('utf8'); });
+        stream.stderr.on('data', (d) => { stderr += d.toString('utf8'); });
+      });
+    });
+    conn.on('error', (err) => { clearTimeout(timer); finish(err); });
+    conn.connect({
+      host,
+      port,
+      username: user,
+      privateKey: key,
+      readyTimeout: 10000,
+      hostVerifier: () => true,
+    });
+  });
+}
+
+async function sshReadFile(region, remotePath) {
+  const conn = adminMgrSshHostForRegion(region);
+  if (!conn?.host) throw new Error('ssh_host_not_configured');
+  const inner = `if [ -f ${adminMgrShellEscape(remotePath)} ]; then base64 ${adminMgrShellEscape(remotePath)}; fi`;
+  const cmd = adminMgrWrapForRegion(region, inner);
+  const stdout = await sshExecCapture(conn.host, conn.port, conn.user, cmd);
+  if (!stdout || !stdout.trim()) return null;
+  let text;
+  try {
+    text = Buffer.from(stdout, 'base64').toString('utf8');
+  } catch {
+    throw new Error('config_b64_decode_failed');
+  }
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new Error('config_parse_failed');
+  }
+}
+
+async function sshWriteFile(region, remotePath, jsonObj) {
+  const conn = adminMgrSshHostForRegion(region);
+  if (!conn?.host) throw new Error('ssh_host_not_configured');
+  const jsonText = JSON.stringify(jsonObj, null, 2);
+  const b64 = Buffer.from(jsonText, 'utf8').toString('base64');
+  if (adminMgrIsDryRun()) {
+    console.log(`[adminmgr DRY RUN] ${region}: would write ${remotePath} (${jsonText.length} bytes)`);
+    return;
+  }
+  const dir = remotePath.replace(/\/[^/]+$/, '');
+  const tmp = `${remotePath}.tmp.adminmgr`;
+  const inner = [
+    `mkdir -p ${adminMgrShellEscape(dir)}`,
+    `printf %s ${adminMgrShellEscape(b64)} | base64 -d > ${adminMgrShellEscape(tmp)}`,
+    `mv ${adminMgrShellEscape(tmp)} ${adminMgrShellEscape(remotePath)}`,
+  ].join(' && ');
+  const cmd = adminMgrWrapForRegion(region, inner);
+  await sshExecCapture(conn.host, conn.port, conn.user, cmd);
+}
+
+function adminMgrIsValidGuid(s) {
+  return typeof s === 'string' && /^[0-9a-fA-F-]{36}$/.test(s);
+}
+
+function adminMgrIsValidPteroId(s) {
+  return typeof s === 'string' && /^[a-f0-9]{1,32}$/i.test(s);
+}
+
+async function adminMgrFetchBmName(guid) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 5000);
+  try {
+    const url = `https://api.battlemetrics.com/players?filter%5Bsearch%5D=${encodeURIComponent(guid)}&page%5Bsize%5D=5`;
+    const res = await fetch(url, { signal: ctrl.signal });
+    if (!res.ok) return null;
+    const data = await res.json();
+    const list = Array.isArray(data?.data) ? data.data : [];
+    for (const p of list) {
+      const name = p?.attributes?.name;
+      if (typeof name === 'string' && name) return name;
+    }
+    return null;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function adminMgrLoadLocalNameSources() {
+  const piiByGuid = new Map();
+  const snapByGuid = new Map();
+  let serverDirs = [];
+  try {
+    serverDirs = await fs.readdir(path.join(DATA_DIR, 'servers'));
+  } catch {
+    return { piiByGuid, snapByGuid };
+  }
+  for (const safeId of serverDirs) {
+    const dir = path.join(DATA_DIR, 'servers', safeId);
+    const pii = await readJsonOrNull(path.join(dir, 'pii.json'));
+    if (pii && typeof pii === 'object') {
+      for (const [uid, rec] of Object.entries(pii)) {
+        if (!rec || typeof rec !== 'object') continue;
+        const names = Array.isArray(rec.names) ? rec.names : [];
+        const lastName = names.length > 0 ? names[names.length - 1] : '';
+        const lastSeen = typeof rec.lastSeen === 'number' ? rec.lastSeen : 0;
+        if (!lastName) continue;
+        const cur = piiByGuid.get(uid);
+        if (!cur || lastSeen > cur.lastSeen) piiByGuid.set(uid, { name: lastName, lastSeen });
+      }
+    }
+    const snap = await readJsonOrNull(path.join(dir, 'latestSnapshot.json'));
+    const players = snap && Array.isArray(snap.players) ? snap.players : [];
+    for (const p of players) {
+      if (!p || typeof p !== 'object') continue;
+      const uid = typeof p.identityId === 'string' ? p.identityId : '';
+      const name = typeof p.name === 'string' ? p.name : '';
+      if (uid && name && !snapByGuid.has(uid)) snapByGuid.set(uid, name);
+    }
+  }
+  return { piiByGuid, snapByGuid };
+}
+
+async function readServerAdmins(server, overrides) {
+  const conn = adminMgrSshHostForRegion(server.region);
+  if (!conn?.host) return { ok: false, error: 'ssh_host_not_configured', admins: [] };
+  const remotePath = configPathFor(server, overrides);
+  try {
+    const cfg = await sshReadFile(server.region, remotePath);
+    if (!cfg) return { ok: false, error: 'config_not_found', admins: [] };
+    const list = adminMgrGetAtPath(cfg, ADMIN_MGR_CONFIG_FIELD);
+    const admins = Array.isArray(list) ? list.filter((g) => typeof g === 'string' && g) : [];
+    return { ok: true, admins };
+  } catch (e) {
+    console.error(`[adminmgr] read failed for ${server.tag || server.pteroId} (${remotePath}): ${e.message}`);
+    return { ok: false, error: e.message || 'read_failed', admins: [] };
+  }
+}
+
+app.get('/api/adminmgr/servers', requireAuth, requireTool('admin'), asyncRoute(async (req, res) => {
+  if (!ADMIN_MGR_PTERO_URL || !ADMIN_MGR_PTERO_KEY) {
+    res.status(503).json({ error: 'pterodactyl_not_configured' });
+    return;
+  }
+  const servers = await listReforgerServers();
+  const state = await readAdminMgrState();
+  const enriched = servers.map((s) => ({
+    ...s,
+    configPath: configPathFor(s, state.configOverrides),
+    sshConfigured: !!adminMgrSshHostForRegion(s.region)?.host,
+  }));
+  res.json({ servers: enriched, dryRun: adminMgrIsDryRun() });
+}));
+
+app.get('/api/adminmgr/dryrun', requireAuth, requireTool('admin'), (req, res) => {
+  res.json({ enabled: adminMgrIsDryRun() });
+});
+
+app.get('/api/adminmgr/admins', requireAuth, requireTool('admin'), asyncRoute(async (req, res) => {
+  if (!ADMIN_MGR_PTERO_URL || !ADMIN_MGR_PTERO_KEY) {
+    res.status(503).json({ error: 'pterodactyl_not_configured' });
+    return;
+  }
+  const servers = await listReforgerServers();
+  const state = await readAdminMgrState();
+
+  const reads = await Promise.all(
+    servers.map(async (s) => ({ server: s, ...(await readServerAdmins(s, state.configOverrides)) }))
+  );
+
+  const guidMap = new Map();
+  for (const r of reads) {
+    for (const guid of r.admins) {
+      let entry = guidMap.get(guid);
+      if (!entry) {
+        const cached = state.admins[guid] || {};
+        entry = {
+          guid,
+          displayName: typeof cached.displayName === 'string' && cached.displayName ? cached.displayName : '?',
+          source: cached.source || 'unknown',
+          presence: {},
+        };
+        guidMap.set(guid, entry);
+      }
+      entry.presence[r.server.pteroId] = true;
+    }
+  }
+  for (const [guid, c] of Object.entries(state.admins || {})) {
+    if (!guidMap.has(guid)) {
+      guidMap.set(guid, {
+        guid,
+        displayName: typeof c.displayName === 'string' && c.displayName ? c.displayName : '?',
+        source: c.source || 'manual',
+        presence: {},
+      });
+    }
+  }
+
+  const admins = Array.from(guidMap.values()).sort((a, b) => {
+    const aKey = (a.displayName === '?' ? 'zzz' : '') + a.displayName.toLowerCase();
+    const bKey = (b.displayName === '?' ? 'zzz' : '') + b.displayName.toLowerCase();
+    return aKey.localeCompare(bKey);
+  });
+
+  const enriched = servers.map((s) => ({
+    ...s,
+    configPath: configPathFor(s, state.configOverrides),
+    sshConfigured: !!adminMgrSshHostForRegion(s.region)?.host,
+  }));
+
+  const errors = reads
+    .filter((r) => !r.ok)
+    .map((r) => ({ pteroId: r.server.pteroId, tag: r.server.tag, error: r.error }));
+
+  res.json({
+    servers: enriched,
+    admins,
+    errors,
+    lastBackfillAt: state.lastBackfillAt,
+    lastSyncAt: state.lastSyncAt,
+    dryRun: adminMgrIsDryRun(),
+  });
+}));
+
+app.post('/api/adminmgr/toggle', requireAuth, requireTool('admin'), asyncRoute(async (req, res) => {
+  const guid = String(req.body?.guid || '').trim();
+  const pteroId = String(req.body?.pteroId || '').trim();
+  const present = !!req.body?.present;
+
+  if (!adminMgrIsValidGuid(guid)) { res.status(400).json({ error: 'invalid_guid' }); return; }
+  if (!adminMgrIsValidPteroId(pteroId)) { res.status(400).json({ error: 'invalid_pteroId' }); return; }
+
+  const servers = await listReforgerServers();
+  const server = servers.find((s) => s.pteroId === pteroId);
+  if (!server) { res.status(404).json({ error: 'server_not_found' }); return; }
+
+  const conn = adminMgrSshHostForRegion(server.region);
+  if (!conn?.host) { res.status(503).json({ error: 'ssh_host_not_configured' }); return; }
+
+  const state = await readAdminMgrState();
+  const remotePath = configPathFor(server, state.configOverrides);
+
+  let result = { changed: false, present, count: 0 };
+  await withIngestLock(`adminmgr:${pteroId}`, async () => {
+    const cfg = await sshReadFile(server.region, remotePath);
+    if (!cfg) throw new Error('config_not_found');
+    const current = adminMgrGetAtPath(cfg, ADMIN_MGR_CONFIG_FIELD);
+    const list = Array.isArray(current) ? current.filter((g) => typeof g === 'string') : [];
+    const has = list.includes(guid);
+
+    let nextList = list;
+    let changed = false;
+    if (present && !has) { nextList = [...list, guid]; changed = true; }
+    else if (!present && has) { nextList = list.filter((g) => g !== guid); changed = true; }
+
+    if (changed) {
+      adminMgrSetAtPath(cfg, ADMIN_MGR_CONFIG_FIELD, nextList);
+      await sshWriteFile(server.region, remotePath, cfg);
+      console.log(`[adminmgr] ${present ? 'added' : 'removed'} ${guid} on ${server.tag || server.pteroId}`);
+    }
+    result = { changed, present, count: nextList.length };
+  });
+
+  if (result.changed) {
+    const cur = await readAdminMgrState();
+    cur.lastSyncAt = Date.now();
+    await writeAdminMgrState(cur);
+  }
+
+  res.json({ ok: true, ...result, dryRun: adminMgrIsDryRun() });
+}));
+
+app.post('/api/adminmgr/admin', requireAuth, requireTool('admin'), asyncRoute(async (req, res) => {
+  const guid = String(req.body?.guid || '').trim();
+  const displayName = typeof req.body?.displayName === 'string' ? req.body.displayName.trim().slice(0, 64) : '';
+  if (!adminMgrIsValidGuid(guid)) { res.status(400).json({ error: 'invalid_guid' }); return; }
+
+  const state = await readAdminMgrState();
+  const existing = state.admins[guid] || {};
+  state.admins[guid] = {
+    ...existing,
+    displayName: displayName || existing.displayName || '?',
+    source: displayName ? 'manual' : (existing.source || 'manual'),
+    updatedAt: Date.now(),
+  };
+  await writeAdminMgrState(state);
+  res.json({ ok: true });
+}));
+
+app.put('/api/adminmgr/admin/:guid', requireAuth, requireTool('admin'), asyncRoute(async (req, res) => {
+  const guid = String(req.params.guid || '').trim();
+  const displayName = typeof req.body?.displayName === 'string' ? req.body.displayName.trim().slice(0, 64) : '';
+  if (!adminMgrIsValidGuid(guid)) { res.status(400).json({ error: 'invalid_guid' }); return; }
+  if (!displayName) { res.status(400).json({ error: 'invalid_displayName' }); return; }
+
+  const state = await readAdminMgrState();
+  state.admins[guid] = {
+    ...(state.admins[guid] || {}),
+    displayName,
+    source: 'manual',
+    updatedAt: Date.now(),
+  };
+  await writeAdminMgrState(state);
+  res.json({ ok: true });
+}));
+
+app.delete('/api/adminmgr/admin/:guid', requireAuth, requireTool('admin'), asyncRoute(async (req, res) => {
+  const guid = String(req.params.guid || '').trim();
+  if (!adminMgrIsValidGuid(guid)) { res.status(400).json({ error: 'invalid_guid' }); return; }
+
+  const servers = await listReforgerServers();
+  const state = await readAdminMgrState();
+
+  const removals = await Promise.all(servers.map(async (server) => {
+    const conn = adminMgrSshHostForRegion(server.region);
+    if (!conn?.host) return { server, removed: false, error: 'ssh_host_not_configured' };
+    const remotePath = configPathFor(server, state.configOverrides);
+    try {
+      let removed = false;
+      await withIngestLock(`adminmgr:${server.pteroId}`, async () => {
+        const cfg = await sshReadFile(server.region, remotePath);
+        if (!cfg) return;
+        const list = adminMgrGetAtPath(cfg, ADMIN_MGR_CONFIG_FIELD);
+        if (!Array.isArray(list) || !list.includes(guid)) return;
+        const next = list.filter((g) => g !== guid);
+        adminMgrSetAtPath(cfg, ADMIN_MGR_CONFIG_FIELD, next);
+        await sshWriteFile(server.region, remotePath, cfg);
+        removed = true;
+      });
+      return { server, removed };
+    } catch (e) {
+      console.error(`[adminmgr] delete failed on ${server.tag || server.pteroId}: ${e.message}`);
+      return { server, removed: false, error: e.message || 'failed' };
+    }
+  }));
+
+  delete state.admins[guid];
+  state.lastSyncAt = Date.now();
+  await writeAdminMgrState(state);
+
+  const summary = removals.map((r) => ({
+    pteroId: r.server.pteroId,
+    tag: r.server.tag,
+    removed: r.removed,
+    error: r.error || null,
+  }));
+  console.log(`[adminmgr] deleted ${guid}: removed from ${summary.filter((s) => s.removed).length}/${servers.length} servers`);
+  res.json({ ok: true, results: summary, dryRun: adminMgrIsDryRun() });
+}));
+
+app.post('/api/adminmgr/backfill', requireAuth, requireTool('admin'), asyncRoute(async (req, res) => {
+  const useBattleMetrics = !!req.body?.useBattleMetrics;
+
+  const servers = await listReforgerServers();
+  const state = await readAdminMgrState();
+  const reads = await Promise.all(servers.map((s) => readServerAdmins(s, state.configOverrides)));
+
+  const allGuids = new Set();
+  for (const r of reads) for (const g of r.admins) allGuids.add(g);
+  for (const g of Object.keys(state.admins || {})) allGuids.add(g);
+
+  const { piiByGuid, snapByGuid } = await adminMgrLoadLocalNameSources();
+
+  let resolved = 0;
+  let unknown = 0;
+
+  for (const guid of allGuids) {
+    const existing = state.admins[guid];
+    if (existing && existing.displayName && existing.displayName !== '?' && existing.source === 'manual') {
+      continue;
+    }
+
+    let name = '';
+    let source = 'unknown';
+
+    if (piiByGuid.has(guid)) {
+      name = piiByGuid.get(guid).name;
+      source = 'pii';
+    } else if (snapByGuid.has(guid)) {
+      name = snapByGuid.get(guid);
+      source = 'snapshot';
+    } else if (useBattleMetrics) {
+      const r = await adminMgrFetchBmName(guid);
+      if (r) { name = r; source = 'battlemetrics'; }
+    }
+
+    if (name) {
+      state.admins[guid] = {
+        ...(existing || {}),
+        displayName: name,
+        source,
+        updatedAt: Date.now(),
+      };
+      resolved++;
+    } else {
+      state.admins[guid] = {
+        ...(existing || {}),
+        displayName: existing?.displayName || '?',
+        source: existing?.source || 'unknown',
+        updatedAt: Date.now(),
+      };
+      unknown++;
+    }
+  }
+
+  state.lastBackfillAt = Date.now();
+  await writeAdminMgrState(state);
+  res.json({ ok: true, resolved, unknown, total: allGuids.size });
 }));
 
 app.get('/api/dev/servers', requireAuth, requireTool('dev'), asyncRoute(async (req, res) => {

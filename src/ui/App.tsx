@@ -4,6 +4,7 @@ import { LoginPage } from './pages/LoginPage';
 import { ReplayToolPage } from './pages/ReplayToolPage';
 import { HomePage } from './pages/HomePage';
 import { AdminPage } from './pages/AdminPage';
+import { AdminManagerPage } from './pages/AdminManagerPage';
 import { DevPage } from './pages/DevPage';
 import { PlayersPage } from './pages/PlayersPage';
 import { ModerationPage } from './pages/ModerationPage';
@@ -40,6 +41,7 @@ export function App() {
         <Route path="/moderation" element={<ModerationPage />} />
         <Route path="/server" element={<ServerPage />} />
         <Route path="/admin" element={<AdminPage />} />
+        <Route path="/admins" element={<AdminManagerPage />} />
         <Route path="/dev" element={<DevPage />} />
       </Route>
 
