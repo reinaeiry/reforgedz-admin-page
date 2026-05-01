@@ -2753,12 +2753,89 @@ function adminMgrBmAvailable() {
 
 let adminsCache = { data: null, builtAt: 0, version: 0, building: null };
 
+let serversListCache = { data: null, builtAt: 0 };
+const SERVERS_LIST_TTL_MS = 5 * 60 * 1000;
+
+async function listReforgerServersCached(force = false) {
+  const now = Date.now();
+  if (!force && serversListCache.data && (now - serversListCache.builtAt) < SERVERS_LIST_TTL_MS) {
+    return serversListCache.data;
+  }
+  const data = await listReforgerServers();
+  serversListCache = { data, builtAt: now };
+  return data;
+}
+
 function invalidateAdminsCache() {
   adminsCache = { ...adminsCache, builtAt: 0 };
 }
 
+function bumpAdminsCacheVersion() {
+  adminsCache.builtAt = Date.now();
+  adminsCache.version = adminsCache.version + 1;
+}
+
+function applyCacheToggle(pteroId, guid, present) {
+  if (!adminsCache.data) return;
+  let changed = false;
+  const admins = adminsCache.data.admins.map((a) => {
+    if (a.guid !== guid) return a;
+    if (!!a.presence[pteroId] === present) return a;
+    changed = true;
+    return { ...a, presence: { ...a.presence, [pteroId]: present } };
+  });
+  if (!changed) return;
+  adminsCache.data = { ...adminsCache.data, admins, lastSyncAt: Date.now() };
+  bumpAdminsCacheVersion();
+}
+
+function applyCacheUpsertAdmin(guid, fields) {
+  if (!adminsCache.data) return;
+  const idx = adminsCache.data.admins.findIndex((a) => a.guid === guid);
+  let admins;
+  if (idx === -1) {
+    admins = [
+      {
+        guid,
+        displayName: fields.displayName || '?',
+        source: fields.source || 'unknown',
+        presence: {},
+      },
+      ...adminsCache.data.admins,
+    ];
+  } else {
+    admins = adminsCache.data.admins.map((a, i) => (i === idx ? { ...a, ...fields } : a));
+  }
+  adminsCache.data = { ...adminsCache.data, admins };
+  bumpAdminsCacheVersion();
+}
+
+function applyCacheDeleteAdmin(guid) {
+  if (!adminsCache.data) return;
+  const before = adminsCache.data.admins.length;
+  const admins = adminsCache.data.admins.filter((a) => a.guid !== guid);
+  if (admins.length === before) return;
+  adminsCache.data = { ...adminsCache.data, admins, lastSyncAt: Date.now() };
+  bumpAdminsCacheVersion();
+}
+
+function applyCacheNameResolutions(updates) {
+  if (!adminsCache.data || updates.size === 0) return;
+  let changed = false;
+  const admins = adminsCache.data.admins.map((a) => {
+    const u = updates.get(a.guid);
+    if (!u) return a;
+    if (u.displayName === a.displayName && u.source === a.source) return a;
+    changed = true;
+    return { ...a, ...u };
+  });
+  if (!changed) return;
+  adminsCache.data = { ...adminsCache.data, admins, lastBackfillAt: Date.now() };
+  bumpAdminsCacheVersion();
+}
+
 async function buildAdminsSnapshot() {
-  const servers = await listReforgerServers();
+  const servers = await listReforgerServersCached();
   const state = await readAdminMgrState();
 
   const reads = await Promise.all(
@@ -2850,7 +2927,7 @@ let autoBackfillLastRunAt = 0;
 const AUTO_BACKFILL_MIN_INTERVAL_MS = 10 * 60 * 1000;
 
 async function runBackfillCascade(useBattleMetrics) {
-  const servers = await listReforgerServers();
+  const servers = await listReforgerServersCached();
   const state = await readAdminMgrState();
   const reads = await Promise.all(servers.map((s) => readServerAdmins(s, state.configOverrides)));
   const allGuids = new Set();
@@ -2861,6 +2938,7 @@ async function runBackfillCascade(useBattleMetrics) {
 
   let resolved = 0;
   let unknown = 0;
+  const cacheUpdates = new Map();
 
   for (const guid of allGuids) {
     const existing = state.admins[guid];
@@ -2877,6 +2955,7 @@ async function runBackfillCascade(useBattleMetrics) {
     }
     if (name) {
       state.admins[guid] = { ...(existing || {}), displayName: name, source, updatedAt: Date.now() };
+      cacheUpdates.set(guid, { displayName: name, source });
       resolved++;
     } else {
       state.admins[guid] = { ...(existing || {}), displayName: existing?.displayName || '?', source: existing?.source || 'unknown', updatedAt: Date.now() };
@@ -2886,6 +2965,7 @@ async function runBackfillCascade(useBattleMetrics) {
 
   state.lastBackfillAt = Date.now();
   await writeAdminMgrState(state);
+  applyCacheNameResolutions(cacheUpdates);
   return { resolved, unknown, total: allGuids.size };
 }
 
@@ -2898,7 +2978,6 @@ function maybeAutoBackfill() {
     try {
       const r = await runBackfillCascade(adminMgrBmAvailable());
       console.log(`[adminmgr] auto-backfill: resolved ${r.resolved}, unknown ${r.unknown} of ${r.total}`);
-      invalidateAdminsCache();
     } catch (e) {
       console.warn(`[adminmgr] auto-backfill failed: ${e.message}`);
     } finally {
@@ -2963,7 +3042,7 @@ app.get('/api/adminmgr/servers', requireAuth, requireTool('gmManagement'), async
     res.status(503).json({ error: 'pterodactyl_not_configured' });
     return;
   }
-  const servers = await listReforgerServers();
+  const servers = await listReforgerServersCached();
   const state = await readAdminMgrState();
   const enriched = servers.map((s) => ({
     ...s,
@@ -3001,42 +3080,50 @@ app.post('/api/adminmgr/toggle', requireAuth, requireTool('gmManagement'), async
   if (!adminMgrIsValidGuid(guid)) { res.status(400).json({ error: 'invalid_guid' }); return; }
   if (!adminMgrIsValidPteroId(pteroId)) { res.status(400).json({ error: 'invalid_pteroId' }); return; }
 
-  const servers = await listReforgerServers();
+  const servers = await listReforgerServersCached();
   const server = servers.find((s) => s.pteroId === pteroId);
   if (!server) { res.status(404).json({ error: 'server_not_found' }); return; }
 
   const conn = adminMgrSshHostForRegion(server.region);
   if (!conn?.host) { res.status(503).json({ error: 'ssh_host_not_configured' }); return; }
 
+  // Optimistic cache update so revalidating clients see the change before SSH finishes.
+  applyCacheToggle(pteroId, guid, present);
+
   const state = await readAdminMgrState();
   const remotePath = configPathFor(server, state.configOverrides);
 
   let result = { changed: false, present, count: 0 };
-  await withIngestLock(`adminmgr:${pteroId}`, async () => {
-    const cfg = await sshReadFile(server.region, remotePath);
-    if (!cfg) throw new Error('config_not_found');
-    const current = adminMgrGetAtPath(cfg, ADMIN_MGR_CONFIG_FIELD);
-    const list = Array.isArray(current) ? current.filter((g) => typeof g === 'string') : [];
-    const has = list.includes(guid);
+  try {
+    await withIngestLock(`adminmgr:${pteroId}`, async () => {
+      const cfg = await sshReadFile(server.region, remotePath);
+      if (!cfg) throw new Error('config_not_found');
+      const current = adminMgrGetAtPath(cfg, ADMIN_MGR_CONFIG_FIELD);
+      const list = Array.isArray(current) ? current.filter((g) => typeof g === 'string') : [];
+      const has = list.includes(guid);
 
-    let nextList = list;
-    let changed = false;
-    if (present && !has) { nextList = [...list, guid]; changed = true; }
-    else if (!present && has) { nextList = list.filter((g) => g !== guid); changed = true; }
+      let nextList = list;
+      let changed = false;
+      if (present && !has) { nextList = [...list, guid]; changed = true; }
+      else if (!present && has) { nextList = list.filter((g) => g !== guid); changed = true; }
 
-    if (changed) {
-      adminMgrSetAtPath(cfg, ADMIN_MGR_CONFIG_FIELD, nextList);
-      await sshWriteFile(server.region, remotePath, cfg);
-      console.log(`[adminmgr] ${present ? 'added' : 'removed'} ${guid} on ${server.tag || server.pteroId}`);
-    }
-    result = { changed, present, count: nextList.length };
-  });
+      if (changed) {
+        adminMgrSetAtPath(cfg, ADMIN_MGR_CONFIG_FIELD, nextList);
+        await sshWriteFile(server.region, remotePath, cfg);
+        console.log(`[adminmgr] ${present ? 'added' : 'removed'} ${guid} on ${server.tag || server.pteroId}`);
+      }
+      result = { changed, present, count: nextList.length };
+    });
+  } catch (e) {
+    // Roll the cache back so the client's next revalidation matches reality.
+    applyCacheToggle(pteroId, guid, !present);
+    throw e;
+  }
 
   if (result.changed) {
     const cur = await readAdminMgrState();
     cur.lastSyncAt = Date.now();
     await writeAdminMgrState(cur);
-    invalidateAdminsCache();
   }
 
   res.json({ ok: true, ...result, dryRun: adminMgrIsDryRun() });
@@ -3049,14 +3136,16 @@ app.post('/api/adminmgr/admin', requireAuth, requireTool('gmManagement'), asyncR
 
   const state = await readAdminMgrState();
   const existing = state.admins[guid] || {};
+  const finalDisplayName = displayName || existing.displayName || '?';
+  const finalSource = displayName ? 'manual' : (existing.source || 'manual');
   state.admins[guid] = {
     ...existing,
-    displayName: displayName || existing.displayName || '?',
-    source: displayName ? 'manual' : (existing.source || 'manual'),
+    displayName: finalDisplayName,
+    source: finalSource,
     updatedAt: Date.now(),
   };
   await writeAdminMgrState(state);
-  invalidateAdminsCache();
+  applyCacheUpsertAdmin(guid, { displayName: finalDisplayName, source: finalSource });
   res.json({ ok: true });
 }));
 
@@ -3074,7 +3163,7 @@ app.put('/api/adminmgr/admin/:guid', requireAuth, requireTool('gmManagement'), a
     updatedAt: Date.now(),
   };
   await writeAdminMgrState(state);
-  invalidateAdminsCache();
+  applyCacheUpsertAdmin(guid, { displayName, source: 'manual' });
   res.json({ ok: true });
 }));
 
@@ -3082,8 +3171,11 @@ app.delete('/api/adminmgr/admin/:guid', requireAuth, requireTool('gmManagement')
   const guid = String(req.params.guid || '').trim();
   if (!adminMgrIsValidGuid(guid)) { res.status(400).json({ error: 'invalid_guid' }); return; }
 
-  const servers = await listReforgerServers();
+  const servers = await listReforgerServersCached();
   const state = await readAdminMgrState();
+
+  // Optimistically remove from cache so revalidating clients don't see the deleted admin.
+  applyCacheDeleteAdmin(guid);
 
   const removals = await Promise.all(servers.map(async (server) => {
     const conn = adminMgrSshHostForRegion(server.region);
@@ -3111,7 +3203,6 @@ app.delete('/api/adminmgr/admin/:guid', requireAuth, requireTool('gmManagement')
   delete state.admins[guid];
   state.lastSyncAt = Date.now();
   await writeAdminMgrState(state);
-  invalidateAdminsCache();
 
   const summary = removals.map((r) => ({
     pteroId: r.server.pteroId,
@@ -3126,7 +3217,6 @@ app.delete('/api/adminmgr/admin/:guid', requireAuth, requireTool('gmManagement')
 app.post('/api/adminmgr/backfill', requireAuth, requireTool('gmManagement'), asyncRoute(async (req, res) => {
   const useBattleMetrics = req.body?.useBattleMetrics === undefined ? adminMgrBmAvailable() : !!req.body.useBattleMetrics;
   const r = await runBackfillCascade(useBattleMetrics);
-  invalidateAdminsCache();
   res.json({ ok: true, ...r, bmAvailable: adminMgrBmAvailable() });
 }));
 
