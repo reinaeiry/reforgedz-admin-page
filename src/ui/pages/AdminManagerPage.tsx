@@ -79,7 +79,6 @@ export function AdminManagerPage() {
   const [editingGuid, setEditingGuid] = useState<string | null>(null);
   const [editingName, setEditingName] = useState('');
 
-  const [busy, setBusy] = useState(false);
   const snapshotRef = useRef<AdminManagerSnapshot | null>(cached);
   snapshotRef.current = snapshot;
 
@@ -124,66 +123,99 @@ export function AdminManagerPage() {
 
   const newGuidValid = GUID_RE.test(newGuid.trim());
 
-  async function onAdd(): Promise<void> {
+  // Optimistic add: insert into the local snapshot immediately, fire the cache write
+  // in the background. The server only stores name + GUID — no SSH involved — so we
+  // don't need to revalidate at all on success.
+  function onAdd(): void {
     if (!newGuidValid) {
       setError('GUID must be 36 chars with hyphens, e.g. fa3dab9d-f22a-44e4-959d-a4afd597acbc');
       return;
     }
-    setBusy(true);
+    const guid = newGuid.trim();
+    const name = newName.trim();
     setError(null);
-    try {
-      await addAdminToCache(newGuid.trim(), newName.trim());
-      setNewGuid('');
-      setNewName('');
-      setShowAdd(false);
-      await revalidate(true);
-      setInfo('Admin added to roster. Tick a server dot to grant access.');
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to add');
-    } finally {
-      setBusy(false);
-    }
+
+    setSnapshot((prev) => {
+      if (!prev) return prev;
+      if (prev.admins.some((a) => a.guid === guid)) return prev;
+      const entry: AdminEntry = {
+        guid,
+        displayName: name || '?',
+        source: name ? 'manual' : 'unknown',
+        presence: {},
+      };
+      return { ...prev, admins: [entry, ...prev.admins] };
+    });
+    setNewGuid('');
+    setNewName('');
+    setShowAdd(false);
+    setInfo('Admin added. Click a dot to grant on a server.');
+
+    void (async () => {
+      try {
+        await addAdminToCache(guid, name);
+      } catch (e) {
+        setError(e instanceof Error ? e.message : 'Failed to add');
+        await revalidate(true);
+      }
+    })();
   }
 
-  async function onRename(guid: string): Promise<void> {
+  // Optimistic rename: update local display, close editor instantly, fire request in bg.
+  // Pure local cache write on the server — no SSH, no need to revalidate.
+  function onRename(guid: string): void {
     const name = editingName.trim();
     if (!name) {
       setError('Name cannot be empty');
       return;
     }
-    setBusy(true);
     setError(null);
-    try {
-      await renameAdmin(guid, name);
-      setEditingGuid(null);
-      setEditingName('');
-      await revalidate(true);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to rename');
-    } finally {
-      setBusy(false);
-    }
+    setEditingGuid(null);
+    setEditingName('');
+    setSnapshot((prev) => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        admins: prev.admins.map((a) =>
+          a.guid === guid ? { ...a, displayName: name, source: 'manual' } : a,
+        ),
+      };
+    });
+    void (async () => {
+      try {
+        await renameAdmin(guid, name);
+      } catch (e) {
+        setError(e instanceof Error ? e.message : 'Failed to rename');
+        await revalidate(true);
+      }
+    })();
   }
 
-  async function onDelete(admin: AdminEntry): Promise<void> {
+  // Optimistic delete: remove from local snapshot immediately, fire the SSH writes in bg.
+  // On error we resync from the boxes since the partial removal could be in any state.
+  function onDelete(admin: AdminEntry): void {
     const presentCount = Object.values(admin.presence).filter(Boolean).length;
     const label = isUnknown(admin) ? admin.guid : `${admin.displayName} (${admin.guid})`;
     const ok = window.confirm(
       `Remove ${label} from all ${presentCount} server config${presentCount === 1 ? '' : 's'}?`,
     );
     if (!ok) return;
-    setBusy(true);
     setError(null);
-    try {
-      const result = await deleteAdmin(admin.guid);
-      const removed = result.results.filter((r) => r.removed).length;
-      setInfo(`Removed from ${removed}/${result.results.length} servers.`);
-      await revalidate(true);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to delete');
-    } finally {
-      setBusy(false);
-    }
+    setSnapshot((prev) => {
+      if (!prev) return prev;
+      return { ...prev, admins: prev.admins.filter((a) => a.guid !== admin.guid) };
+    });
+    setInfo(presentCount > 0 ? `Removing from ${presentCount} server${presentCount === 1 ? '' : 's'}…` : 'Removed from roster.');
+    void (async () => {
+      try {
+        const result = await deleteAdmin(admin.guid);
+        const removed = result.results.filter((r) => r.removed).length;
+        setInfo(`Removed from ${removed}/${result.results.length} servers.`);
+      } catch (e) {
+        setError(e instanceof Error ? e.message : 'Failed to delete');
+        await revalidate(true);
+      }
+    })();
   }
 
   // Fire-and-forget toggle: flip the dot locally immediately, send the request in the
@@ -222,7 +254,7 @@ export function AdminManagerPage() {
           <h1 className="h1">GM Management</h1>
           {snapshot?.dryRun ? <span className="gm-dryrun">Dry run</span> : null}
           <span className="spacer" />
-          <button className="button" onClick={() => setShowAdd((v) => !v)} disabled={busy}>
+          <button className="button" onClick={() => setShowAdd((v) => !v)}>
             {showAdd ? 'Cancel' : '+ Add admin'}
           </button>
         </div>
@@ -249,7 +281,7 @@ export function AdminManagerPage() {
                   <input className="input" value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="NattiKitten" />
                 </div>
                 <div style={{ alignSelf: 'end' }}>
-                  <button className="buttonPrimary button" onClick={onAdd} disabled={busy || !newGuidValid}>Add</button>
+                  <button className="buttonPrimary button" onClick={onAdd} disabled={!newGuidValid}>Add</button>
                 </div>
               </div>
               <div style={{ fontSize: 11, color: 'var(--text-dim)' }}>
@@ -325,7 +357,7 @@ export function AdminManagerPage() {
                               if (e.key === 'Escape') { setEditingGuid(null); setEditingName(''); }
                             }}
                           />
-                          <button className="gm-icon-btn" onClick={() => onRename(a.guid)} disabled={busy}>save</button>
+                          <button className="gm-icon-btn" onClick={() => onRename(a.guid)}>save</button>
                           <button className="gm-icon-btn" onClick={() => { setEditingGuid(null); setEditingName(''); }}>cancel</button>
                         </div>
                       ) : unknown ? (
@@ -359,11 +391,11 @@ export function AdminManagerPage() {
                             setEditingGuid(a.guid);
                             setEditingName(unknown ? '' : a.displayName);
                           }}
-                          disabled={busy || editing}
+                          disabled={editing}
                         >
                           edit
                         </button>
-                        <button className="gm-icon-btn danger" onClick={() => onDelete(a)} disabled={busy}>
+                        <button className="gm-icon-btn danger" onClick={() => onDelete(a)}>
                           delete
                         </button>
                       </div>
