@@ -2463,6 +2463,9 @@ const ADMIN_MGR_CACHE_TTL_MS = 5 * 60 * 1000;
 // NA box is not directly reachable; SSH connects to EU box and bounces over.
 // Mirrors the pattern in reforgedz-dotnet/sync.js.
 const ADMIN_MGR_NA_VIA_EU = process.env.ADMIN_MANAGER_NA_VIA_EU !== '0';
+// reforgedz-dotnet shop (Priority Queue tab proxies through to it)
+const SHOP_BASE_URL = (process.env.SHOP_BASE_URL || 'https://reforgedz.net').replace(/\/+$/, '');
+const SHOP_ADMIN_API_KEY = process.env.SHOP_ADMIN_API_KEY || '';
 
 function adminMgrIsDryRun() {
   return process.env.ADMIN_MANAGER_DRY_RUN === '1';
@@ -3218,6 +3221,55 @@ app.post('/api/adminmgr/backfill', requireAuth, requireTool('gmManagement'), asy
   const useBattleMetrics = req.body?.useBattleMetrics === undefined ? adminMgrBmAvailable() : !!req.body.useBattleMetrics;
   const r = await runBackfillCascade(useBattleMetrics);
   res.json({ ok: true, ...r, bmAvailable: adminMgrBmAvailable() });
+}));
+
+// ─── Priority Queue (proxy to reforgedz-dotnet shop) ────────────────────────
+async function shopFetchProxy(path, opts = {}) {
+  if (!SHOP_ADMIN_API_KEY) {
+    const err = new Error('SHOP_ADMIN_API_KEY not configured on admin page');
+    err.status = 503;
+    throw err;
+  }
+  const headers = {
+    'X-Shop-Admin-Key': SHOP_ADMIN_API_KEY,
+    Accept: 'application/json',
+    ...(opts.body ? { 'Content-Type': 'application/json' } : {}),
+    ...(opts.headers || {})
+  };
+  const r = await fetch(`${SHOP_BASE_URL}${path}`, { ...opts, headers });
+  const text = await r.text();
+  let body = null;
+  try { body = text ? JSON.parse(text) : {}; } catch { body = { error: text }; }
+  return { status: r.status, body };
+}
+
+app.get('/api/priority-queue', requireAuth, requireTool('gmManagement'), asyncRoute(async (req, res) => {
+  const { status, body } = await shopFetchProxy('/api/shop/admin/priority-queue');
+  res.status(status).json(body);
+}));
+
+app.post('/api/priority-queue', requireAuth, requireTool('gmManagement'), asyncRoute(async (req, res) => {
+  const { status, body } = await shopFetchProxy('/api/shop/admin/priority-queue', {
+    method: 'POST',
+    body: JSON.stringify(req.body || {})
+  });
+  res.status(status).json(body);
+}));
+
+app.post('/api/priority-queue/toggle', requireAuth, requireTool('gmManagement'), asyncRoute(async (req, res) => {
+  const { status, body } = await shopFetchProxy('/api/shop/admin/priority-queue/toggle', {
+    method: 'POST',
+    body: JSON.stringify(req.body || {})
+  });
+  res.status(status).json(body);
+}));
+
+app.delete('/api/priority-queue/:guid', requireAuth, requireTool('gmManagement'), asyncRoute(async (req, res) => {
+  const guid = encodeURIComponent(req.params.guid);
+  const { status, body } = await shopFetchProxy(`/api/shop/admin/priority-queue/${guid}`, {
+    method: 'DELETE'
+  });
+  res.status(status).json(body);
 }));
 
 app.get('/api/dev/servers', requireAuth, requireTool('dev'), asyncRoute(async (req, res) => {

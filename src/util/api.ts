@@ -1014,6 +1014,74 @@ export async function toggleAdminOnServer(guid: string, pteroId: string, present
   return (await res.json()) as AdminToggleResult;
 }
 
+// ─── Priority Queue (shop-backed) ───────────────────────────────────────────
+
+export type PriorityQueueServer = { id: string; label: string };
+
+export type PriorityQueueSource = 'purchase' | 'manual' | 'both' | null;
+
+export type PriorityQueueEntry = {
+  guid: string;
+  displayName: string;
+  presence: Record<string, boolean>;
+  sources: Record<string, PriorityQueueSource>;
+};
+
+export type PriorityQueueSnapshot = {
+  servers: PriorityQueueServer[];
+  entries: PriorityQueueEntry[];
+};
+
+export async function getPriorityQueue(): Promise<PriorityQueueSnapshot> {
+  const base = requireApiBaseUrl();
+  const res = await fetch(`${base}/api/priority-queue`, { headers: authHeaders() });
+  if (!res.ok) throw new Error((await res.text()) || `Failed to load priority queue (${res.status})`);
+  return (await res.json()) as PriorityQueueSnapshot;
+}
+
+export async function addManualPriorityQueue(
+  guid: string,
+  opts?: { displayName?: string; serverId?: string },
+): Promise<{ ok: true; entry: PriorityQueueEntry }> {
+  const base = requireApiBaseUrl();
+  const body: Record<string, unknown> = { guid };
+  if (opts?.displayName) body.displayName = opts.displayName;
+  if (opts?.serverId) body.serverId = opts.serverId;
+  const res = await fetch(`${base}/api/priority-queue`, {
+    method: 'POST',
+    headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error((await res.text()) || `Failed to add (${res.status})`);
+  return (await res.json()) as { ok: true; entry: PriorityQueueEntry };
+}
+
+export async function togglePriorityQueueServer(
+  guid: string,
+  serverId: string,
+  present: boolean,
+  displayName?: string,
+): Promise<{ ok: true; entry: PriorityQueueEntry }> {
+  const base = requireApiBaseUrl();
+  const res = await fetch(`${base}/api/priority-queue/toggle`, {
+    method: 'POST',
+    headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ guid, serverId, present, displayName }),
+  });
+  if (!res.ok) throw new Error((await res.text()) || `Failed to toggle (${res.status})`);
+  return (await res.json()) as { ok: true; entry: PriorityQueueEntry };
+}
+
+export async function deletePriorityQueue(guid: string): Promise<{ ok: true; removed: number }> {
+  const base = requireApiBaseUrl();
+  const res = await fetch(`${base}/api/priority-queue/${encodeURIComponent(guid)}`, {
+    method: 'DELETE',
+    headers: authHeaders(),
+  });
+  if (!res.ok) throw new Error((await res.text()) || `Failed to delete (${res.status})`);
+  return (await res.json()) as { ok: true; removed: number };
+}
+
 export type BackfillResult = { ok: true; resolved: number; unknown: number; total: number };
 
 export async function runAdminBackfill(useBattleMetrics: boolean): Promise<BackfillResult> {
