@@ -1,6 +1,6 @@
 import React from 'react';
-import { NavLink, Outlet, useNavigate, useLocation } from 'react-router-dom';
-import { clearSession, hasToolAccess, type ToolName } from '../../util/session';
+import { NavLink, Outlet, useLocation } from 'react-router-dom';
+import { clearSession, hasToolAccess, loginUrl, type ToolName } from '../../util/session';
 import { ServerProvider, useServer } from '../ServerContext';
 
 const NAV_ITEMS: { to: string; label: string; icon: string; tool?: ToolName | ToolName[] }[] = [
@@ -9,7 +9,6 @@ const NAV_ITEMS: { to: string; label: string; icon: string; tool?: ToolName | To
   { to: '/players', label: 'Players', icon: '\u25CF', tool: ['players', 'playerLookup'] },
   { to: '/moderation', label: 'Moderation', icon: '\u26A0', tool: ['bans', 'mutes'] },
   { to: '/server', label: 'Server', icon: '\u2699', tool: ['events', 'health'] },
-  { to: '/admin', label: 'Users', icon: '\u2606', tool: 'admin' },
   { to: '/admins', label: 'GM Management', icon: '♔', tool: 'gmManagement' },
   { to: '/dev', label: 'Dev', icon: '\u270E', tool: 'dev' },
 ];
@@ -29,7 +28,7 @@ const NAV_SECTIONS: { label: string; routes: string[] }[] = [
   { label: 'HOME', routes: ['/'] },
   { label: 'TOOLS', routes: ['/replay'] },
   { label: 'ADMIN', routes: ['/players', '/moderation', '/server'] },
-  { label: 'MGMT', routes: ['/admin', '/admins', '/dev'] },
+  { label: 'MGMT', routes: ['/admins', '/dev'] },
 ];
 
 function RailNav() {
@@ -76,12 +75,11 @@ function ServerSelector() {
 }
 
 function AppShellInner() {
-  const nav = useNavigate();
   const location = useLocation();
 
-  function onLogout() {
-    clearSession();
-    nav('/login', { replace: true });
+  async function onLogout() {
+    await clearSession();
+    window.location.href = loginUrl(window.location.origin + '/');
   }
 
   return (

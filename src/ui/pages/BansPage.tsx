@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { addBan, getBans, listServers, removeBan, type BanEntry, type ServerInfo } from '../../util/api';
-import { getSessionClaims } from '../../util/session';
+import { getSession } from '../../util/session';
 
 const DURATION_OPTIONS = [
   { label: 'Permanent', value: 0 },
@@ -76,11 +76,10 @@ export function BansPage() {
     setBusy(true);
     setError(null);
     try {
-      const claims = getSessionClaims();
       await addBan({
         serverId, playerUID: banUID.trim(), playerName: banName.trim(),
         reason: banReason.trim() || 'No reason', duration: banDuration,
-        bannedBy: claims?.sub ?? 'WebAdmin',
+        bannedBy: getSession()?.user.username ?? 'WebAdmin',
       });
       setBanUID(''); setBanName(''); setBanReason(''); setBanDuration(0);
       await refresh();

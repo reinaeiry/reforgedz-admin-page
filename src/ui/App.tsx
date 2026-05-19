@@ -1,33 +1,38 @@
-import React from 'react';
-import { Navigate, Route, Routes, useLocation } from 'react-router-dom';
-import { LoginPage } from './pages/LoginPage';
+import React, { useEffect, useState } from 'react';
+import { Navigate, Route, Routes } from 'react-router-dom';
 import { ReplayToolPage } from './pages/ReplayToolPage';
 import { HomePage } from './pages/HomePage';
-import { AdminPage } from './pages/AdminPage';
 import { AdminManagerPage } from './pages/AdminManagerPage';
 import { DevPage } from './pages/DevPage';
 import { PlayersPage } from './pages/PlayersPage';
 import { ModerationPage } from './pages/ModerationPage';
 import { ServerPage } from './pages/ServerPage';
 import { AppShell } from './components/AppShell';
-import { getSession } from '../util/session';
+import { getSession, loadSession, loginUrl } from '../util/session';
 
 function RequireAuth(props: { children: React.ReactNode }) {
-  const location = useLocation();
-  const session = getSession();
+  const [ready, setReady] = useState(getSession() !== null);
 
-  if (!session) {
-    return <Navigate to="/login" replace state={{ from: location.pathname }} />;
+  useEffect(() => {
+    if (ready) return;
+    loadSession().then((s) => {
+      if (!s) {
+        window.location.href = loginUrl(window.location.href);
+        return;
+      }
+      setReady(true);
+    });
+  }, [ready]);
+
+  if (!ready) {
+    return <div style={{ padding: 24, color: '#888' }}>Loading session…</div>;
   }
-
   return <>{props.children}</>;
 }
 
 export function App() {
   return (
     <Routes>
-      <Route path="/login" element={<LoginPage />} />
-
       <Route
         element={
           <RequireAuth>
@@ -40,7 +45,6 @@ export function App() {
         <Route path="/players" element={<PlayersPage />} />
         <Route path="/moderation" element={<ModerationPage />} />
         <Route path="/server" element={<ServerPage />} />
-        <Route path="/admin" element={<AdminPage />} />
         <Route path="/admins" element={<AdminManagerPage />} />
         <Route path="/dev" element={<DevPage />} />
       </Route>

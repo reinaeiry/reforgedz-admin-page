@@ -42,9 +42,7 @@ export async function listServers(): Promise<ServerInfo[]> {
   }
 
   const res = await fetch(`${base}/api/servers`, {
-    headers: {
-      Authorization: `Bearer ${session.token}`,
-    },
+    credentials: 'include',
   });
 
   if (!res.ok) {
@@ -77,9 +75,7 @@ export async function getReplayStatus(serverId: string): Promise<ReplayStatus> {
   }
 
   const res = await fetch(`${base}/api/replay/status?serverId=${encodeURIComponent(serverId)}`, {
-    headers: {
-      Authorization: `Bearer ${session.token}`,
-    },
+    credentials: 'include',
   });
 
   if (!res.ok) {
@@ -98,9 +94,7 @@ export async function getReplayStatusAll(): Promise<ReplayStatus[]> {
   }
 
   const res = await fetch(`${base}/api/replay/statusAll`, {
-    headers: {
-      Authorization: `Bearer ${session.token}`,
-    },
+    credentials: 'include',
   });
 
   if (!res.ok) {
@@ -124,9 +118,7 @@ export async function getReplayRange(serverId: string): Promise<ReplayRange> {
   }
 
   const res = await fetch(`${base}/api/replay/range?serverId=${encodeURIComponent(serverId)}`, {
-    headers: {
-      Authorization: `Bearer ${session.token}`,
-    },
+    credentials: 'include',
   });
 
   if (!res.ok) {
@@ -150,9 +142,7 @@ export async function listReplayPlayers(serverId: string): Promise<ReplayPlayer[
   }
 
   const res = await fetch(`${base}/api/replay/players?serverId=${encodeURIComponent(serverId)}`, {
-    headers: {
-      Authorization: `Bearer ${session.token}`,
-    },
+    credentials: 'include',
   });
 
   if (!res.ok) {
@@ -194,9 +184,7 @@ export async function getReplayEvents(params: {
   if (typeof params.sampleIntervalMs === 'number' && params.sampleIntervalMs > 0) qs.set('sampleIntervalMs', String(params.sampleIntervalMs));
 
   const res = await fetch(`${base}/api/replay/events?${qs.toString()}`, {
-    headers: {
-      Authorization: `Bearer ${session.token}`,
-    },
+    credentials: 'include',
   });
 
   if (!res.ok) {
@@ -228,7 +216,7 @@ export async function getReplayVehicles(serverId: string): Promise<VehicleIndex>
   if (!session) throw new Error('Not authenticated');
 
   const res = await fetch(`${base}/api/replay/vehicles?serverId=${encodeURIComponent(serverId)}`, {
-    headers: { Authorization: `Bearer ${session.token}` },
+    credentials: 'include',
   });
   if (!res.ok) throw new Error(await res.text() || `Failed (${res.status})`);
   return (await res.json()) as VehicleIndex;
@@ -241,7 +229,8 @@ export async function requestVehicleDetail(serverId: string, entityId: string): 
 
   const res = await fetch(`${base}/api/replay/vehicleDetail`, {
     method: 'POST',
-    headers: { Authorization: `Bearer ${session.token}`, 'Content-Type': 'application/json' },
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ serverId, entityId }),
   });
   if (!res.ok) throw new Error(await res.text() || `Failed (${res.status})`);
@@ -261,7 +250,7 @@ export async function pollVehicleDetail(serverId: string, requestId: string): Pr
   if (!session) throw new Error('Not authenticated');
 
   const res = await fetch(`${base}/api/replay/vehicleDetail?serverId=${encodeURIComponent(serverId)}&requestId=${encodeURIComponent(requestId)}`, {
-    headers: { Authorization: `Bearer ${session.token}` },
+    credentials: 'include',
   });
   if (!res.ok) throw new Error(await res.text() || `Failed (${res.status})`);
   const data = await res.json();
@@ -284,8 +273,8 @@ export async function sendReplayGmPing(params: {
 
   const res = await fetch(`${base}/api/replay/gmPing`, {
     method: 'POST',
+    credentials: 'include',
     headers: {
-      Authorization: `Bearer ${session.token}`,
       'Content-Type': 'application/json',
     },
     body: JSON.stringify(params),
@@ -317,7 +306,7 @@ export async function getReplayMapTerrain(serverId: string): Promise<MapTerrain>
   if (!session) throw new Error('Not authenticated');
 
   const res = await fetch(`${base}/api/replay/mapTerrain?serverId=${encodeURIComponent(serverId)}`, {
-    headers: { Authorization: `Bearer ${session.token}` },
+    credentials: 'include',
   });
 
   if (!res.ok) {
@@ -352,7 +341,7 @@ export async function getReplayMapDescriptors(serverId: string): Promise<MapDesc
   if (!session) throw new Error('Not authenticated');
 
   const res = await fetch(`${base}/api/replay/mapDescriptors?serverId=${encodeURIComponent(serverId)}`, {
-    headers: { Authorization: `Bearer ${session.token}` },
+    credentials: 'include',
   });
 
   if (!res.ok) {
@@ -369,7 +358,7 @@ export async function getReplayMapTowns(serverId: string): Promise<MapTowns> {
   if (!session) throw new Error('Not authenticated');
 
   const res = await fetch(`${base}/api/replay/mapTowns?serverId=${encodeURIComponent(serverId)}`, {
-    headers: { Authorization: `Bearer ${session.token}` },
+    credentials: 'include',
   });
 
   if (!res.ok) {
@@ -404,7 +393,7 @@ export async function listUsers(): Promise<AdminUser[]> {
   if (!session) throw new Error('Not authenticated');
 
   const res = await fetch(`${base}/api/admin/users`, {
-    headers: { Authorization: `Bearer ${session.token}` },
+    credentials: 'include',
   });
   if (!res.ok) throw new Error((await res.text()) || `Failed to list users (${res.status})`);
   return (await res.json()) as AdminUser[];
@@ -417,8 +406,8 @@ export async function createUser(payload: { username: string; password: string; 
 
   const res = await fetch(`${base}/api/admin/users`, {
     method: 'POST',
+    credentials: 'include',
     headers: {
-      Authorization: `Bearer ${session.token}`,
       'Content-Type': 'application/json',
     },
     body: JSON.stringify(payload),
@@ -434,8 +423,8 @@ export async function updateUserTools(username: string, tools: ToolAccess): Prom
 
   const res = await fetch(`${base}/api/admin/users/${encodeURIComponent(username)}`, {
     method: 'PUT',
+    credentials: 'include',
     headers: {
-      Authorization: `Bearer ${session.token}`,
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({ tools }),
@@ -451,7 +440,7 @@ export async function deleteUser(username: string): Promise<{ ok: true }> {
 
   const res = await fetch(`${base}/api/admin/users/${encodeURIComponent(username)}`, {
     method: 'DELETE',
-    headers: { Authorization: `Bearer ${session.token}` },
+    credentials: 'include',
   });
   if (!res.ok) throw new Error((await res.text()) || `Failed to delete user (${res.status})`);
   return (await res.json()) as { ok: true };
@@ -469,7 +458,7 @@ export async function listDevServers(): Promise<DevServerInfo[]> {
   if (!session) throw new Error('Not authenticated');
 
   const res = await fetch(`${base}/api/dev/servers`, {
-    headers: { Authorization: `Bearer ${session.token}` },
+    credentials: 'include',
   });
   if (!res.ok) throw new Error((await res.text()) || `Failed to list dev servers (${res.status})`);
   return (await res.json()) as DevServerInfo[];
@@ -482,8 +471,8 @@ export async function addDevServer(payload: { serverId: string; serverKey: strin
 
   const res = await fetch(`${base}/api/dev/servers`, {
     method: 'POST',
+    credentials: 'include',
     headers: {
-      Authorization: `Bearer ${session.token}`,
       'Content-Type': 'application/json',
     },
     body: JSON.stringify(payload),
@@ -499,7 +488,7 @@ export async function clearServerHistory(serverId: string): Promise<{ ok: true }
 
   const res = await fetch(`${base}/api/dev/servers/clear?serverId=${encodeURIComponent(serverId)}`, {
     method: 'POST',
-    headers: { Authorization: `Bearer ${session.token}` },
+    credentials: 'include',
   });
   if (!res.ok) throw new Error((await res.text()) || `Failed to clear history (${res.status})`);
   return (await res.json()) as { ok: true };
@@ -512,7 +501,7 @@ export async function regenerateTerrainData(serverId: string): Promise<{ ok: tru
 
   const res = await fetch(`${base}/api/dev/servers/regenerateTerrain?serverId=${encodeURIComponent(serverId)}`, {
     method: 'POST',
-    headers: { Authorization: `Bearer ${session.token}` },
+    credentials: 'include',
   });
   if (!res.ok) throw new Error((await res.text()) || `Failed to regenerate terrain (${res.status})`);
   return (await res.json()) as { ok: true };
@@ -529,7 +518,7 @@ export async function getDevDiscordWebhook(): Promise<DevDiscordWebhookStatus> {
   if (!session) throw new Error('Not authenticated');
 
   const res = await fetch(`${base}/api/dev/discordWebhook`, {
-    headers: { Authorization: `Bearer ${session.token}` },
+    credentials: 'include',
   });
   if (!res.ok) throw new Error((await res.text()) || `Failed to load webhook (${res.status})`);
   return (await res.json()) as DevDiscordWebhookStatus;
@@ -542,8 +531,8 @@ export async function setDevDiscordWebhook(webhookUrl: string): Promise<{ ok: tr
 
   const res = await fetch(`${base}/api/dev/discordWebhook`, {
     method: 'POST',
+    credentials: 'include',
     headers: {
-      Authorization: `Bearer ${session.token}`,
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({ webhookUrl }),
@@ -566,8 +555,8 @@ export async function exportReplayEventToDiscord(params: {
 
   const res = await fetch(`${base}/api/replay/exportDiscord`, {
     method: 'POST',
+    credentials: 'include',
     headers: {
-      Authorization: `Bearer ${session.token}`,
       'Content-Type': 'application/json',
     },
     body: JSON.stringify(params),
@@ -591,7 +580,7 @@ export async function getServerHealth(serverId: string): Promise<ServerHealth> {
   if (!session) throw new Error('Not authenticated');
 
   const res = await fetch(`${base}/api/admin/health?serverId=${encodeURIComponent(serverId)}`, {
-    headers: { Authorization: `Bearer ${session.token}` },
+    credentials: 'include',
   });
   if (!res.ok) throw new Error((await res.text()) || `Failed to get server health (${res.status})`);
   return (await res.json()) as ServerHealth;
@@ -612,7 +601,7 @@ export async function getBans(serverId: string): Promise<BanEntry[]> {
   if (!session) throw new Error('Not authenticated');
 
   const res = await fetch(`${base}/api/admin/bans?serverId=${encodeURIComponent(serverId)}`, {
-    headers: { Authorization: `Bearer ${session.token}` },
+    credentials: 'include',
   });
   if (!res.ok) throw new Error((await res.text()) || `Failed to get bans (${res.status})`);
   return (await res.json()) as BanEntry[];
@@ -632,8 +621,8 @@ export async function addBan(params: {
 
   const res = await fetch(`${base}/api/admin/bans`, {
     method: 'POST',
+    credentials: 'include',
     headers: {
-      Authorization: `Bearer ${session.token}`,
       'Content-Type': 'application/json',
     },
     body: JSON.stringify(params),
@@ -649,7 +638,7 @@ export async function removeBan(serverId: string, playerUID: string): Promise<{ 
 
   const res = await fetch(`${base}/api/admin/bans/${encodeURIComponent(playerUID)}?serverId=${encodeURIComponent(serverId)}`, {
     method: 'DELETE',
-    headers: { Authorization: `Bearer ${session.token}` },
+    credentials: 'include',
   });
   if (!res.ok) throw new Error((await res.text()) || `Failed to remove ban (${res.status})`);
   return (await res.json()) as { ok: true };
@@ -670,7 +659,7 @@ export async function getMutes(serverId: string): Promise<MuteEntry[]> {
   if (!session) throw new Error('Not authenticated');
 
   const res = await fetch(`${base}/api/admin/mutes?serverId=${encodeURIComponent(serverId)}`, {
-    headers: { Authorization: `Bearer ${session.token}` },
+    credentials: 'include',
   });
   if (!res.ok) throw new Error((await res.text()) || `Failed to get mutes (${res.status})`);
   return (await res.json()) as MuteEntry[];
@@ -690,8 +679,8 @@ export async function addMute(params: {
 
   const res = await fetch(`${base}/api/admin/mutes`, {
     method: 'POST',
+    credentials: 'include',
     headers: {
-      Authorization: `Bearer ${session.token}`,
       'Content-Type': 'application/json',
     },
     body: JSON.stringify(params),
@@ -707,7 +696,7 @@ export async function removeMute(serverId: string, playerUID: string): Promise<{
 
   const res = await fetch(`${base}/api/admin/mutes/${encodeURIComponent(playerUID)}?serverId=${encodeURIComponent(serverId)}`, {
     method: 'DELETE',
-    headers: { Authorization: `Bearer ${session.token}` },
+    credentials: 'include',
   });
   if (!res.ok) throw new Error((await res.text()) || `Failed to remove mute (${res.status})`);
   return (await res.json()) as { ok: true };
@@ -724,8 +713,8 @@ export async function kickPlayer(params: {
 
   const res = await fetch(`${base}/api/admin/kick`, {
     method: 'POST',
+    credentials: 'include',
     headers: {
-      Authorization: `Bearer ${session.token}`,
       'Content-Type': 'application/json',
     },
     body: JSON.stringify(params),
@@ -745,8 +734,8 @@ export async function sendGlobalMessage(params: {
 
   const res = await fetch(`${base}/api/admin/globalMessage`, {
     method: 'POST',
+    credentials: 'include',
     headers: {
-      Authorization: `Bearer ${session.token}`,
       'Content-Type': 'application/json',
     },
     body: JSON.stringify(params),
@@ -771,7 +760,7 @@ export async function getLivePlayers(serverId: string): Promise<LivePlayer[]> {
   if (!session) throw new Error('Not authenticated');
 
   const res = await fetch(`${base}/api/admin/players?serverId=${encodeURIComponent(serverId)}`, {
-    headers: { Authorization: `Bearer ${session.token}` },
+    credentials: 'include',
   });
   if (!res.ok) throw new Error((await res.text()) || `Failed to get live players (${res.status})`);
   return (await res.json()) as LivePlayer[];
@@ -803,7 +792,7 @@ export async function getEventLog(params: {
   if (typeof params.limit === 'number') qs.set('limit', String(params.limit));
 
   const res = await fetch(`${base}/api/admin/events?${qs.toString()}`, {
-    headers: { Authorization: `Bearer ${session.token}` },
+    credentials: 'include',
   });
   if (!res.ok) throw new Error((await res.text()) || `Failed to get event log (${res.status})`);
   return (await res.json()) as EventLogEntry[];
@@ -826,7 +815,7 @@ export async function getPlayerProfile(serverId: string, playerUID: string): Pro
 
   const res = await fetch(
     `${base}/api/admin/player/${encodeURIComponent(playerUID)}?serverId=${encodeURIComponent(serverId)}`,
-    { headers: { Authorization: `Bearer ${session.token}` } }
+    { credentials: 'include' }
   );
   if (!res.ok) throw new Error((await res.text()) || `Failed to get player profile (${res.status})`);
   return (await res.json()) as PlayerProfile;
@@ -840,7 +829,7 @@ export async function getShutoff(serverId: string): Promise<{ shutoff: boolean }
   if (!session) throw new Error('Not authenticated');
 
   const res = await fetch(`${base}/api/admin/shutoff?serverId=${encodeURIComponent(serverId)}`, {
-    headers: { Authorization: `Bearer ${session.token}` },
+    credentials: 'include',
   });
   if (!res.ok) throw new Error((await res.text()) || `Failed to get shutoff status (${res.status})`);
   return (await res.json()) as { shutoff: boolean };
@@ -853,8 +842,8 @@ export async function setShutoff(serverId: string, enabled: boolean): Promise<{ 
 
   const res = await fetch(`${base}/api/admin/shutoff`, {
     method: 'POST',
+    credentials: 'include',
     headers: {
-      Authorization: `Bearer ${session.token}`,
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({ serverId, enabled }),
@@ -887,7 +876,7 @@ export async function getPiiPlayers(serverId: string): Promise<PiiResponse> {
 
   const res = await fetch(
     `${base}/api/admin/pii?serverId=${encodeURIComponent(serverId)}`,
-    { headers: { Authorization: `Bearer ${session.token}` } }
+    { credentials: 'include' }
   );
   if (!res.ok) throw new Error((await res.text()) || `Failed to get PII data (${res.status})`);
   return (await res.json()) as PiiResponse;
@@ -927,15 +916,9 @@ export type AdminManagerSnapshot = {
   fromCache?: boolean;
 };
 
-function authHeaders(): HeadersInit {
-  const session = getSession();
-  if (!session) throw new Error('Not authenticated');
-  return { Authorization: `Bearer ${session.token}` };
-}
-
 export async function getAdminManagerServers(): Promise<{ servers: ReforgerServer[]; dryRun: boolean }> {
   const base = requireApiBaseUrl();
-  const res = await fetch(`${base}/api/adminmgr/servers`, { headers: authHeaders() });
+  const res = await fetch(`${base}/api/adminmgr/servers`, { credentials: 'include' });
   if (!res.ok) throw new Error((await res.text()) || `Failed to list servers (${res.status})`);
   return (await res.json()) as { servers: ReforgerServer[]; dryRun: boolean };
 }
@@ -946,7 +929,7 @@ export async function getAdminManagerSnapshot(opts?: { force?: boolean; sinceVer
   if (opts?.force) qs.set('force', '1');
   if (opts?.sinceVersion) qs.set('since', String(opts.sinceVersion));
   const url = `${base}/api/adminmgr/admins${qs.toString() ? '?' + qs.toString() : ''}`;
-  const res = await fetch(url, { headers: authHeaders() });
+  const res = await fetch(url, { credentials: 'include', });
   if (res.status === 304) return null;
   if (!res.ok) throw new Error((await res.text()) || `Failed to load admins (${res.status})`);
   return (await res.json()) as AdminManagerSnapshot;
@@ -954,7 +937,7 @@ export async function getAdminManagerSnapshot(opts?: { force?: boolean; sinceVer
 
 export async function getAdminManagerDryRun(): Promise<{ enabled: boolean }> {
   const base = requireApiBaseUrl();
-  const res = await fetch(`${base}/api/adminmgr/dryrun`, { headers: authHeaders() });
+  const res = await fetch(`${base}/api/adminmgr/dryrun`, { credentials: 'include', });
   if (!res.ok) throw new Error((await res.text()) || `Failed to get dry-run state (${res.status})`);
   return (await res.json()) as { enabled: boolean };
 }
@@ -963,7 +946,8 @@ export async function addAdminToCache(guid: string, displayName?: string): Promi
   const base = requireApiBaseUrl();
   const res = await fetch(`${base}/api/adminmgr/admin`, {
     method: 'POST',
-    headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ guid, displayName: displayName || '' }),
   });
   if (!res.ok) throw new Error((await res.text()) || `Failed to add admin (${res.status})`);
@@ -973,7 +957,8 @@ export async function renameAdmin(guid: string, displayName: string): Promise<vo
   const base = requireApiBaseUrl();
   const res = await fetch(`${base}/api/adminmgr/admin/${encodeURIComponent(guid)}`, {
     method: 'PUT',
-    headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ displayName }),
   });
   if (!res.ok) throw new Error((await res.text()) || `Failed to rename admin (${res.status})`);
@@ -989,7 +974,7 @@ export async function deleteAdmin(guid: string): Promise<AdminDeleteResult> {
   const base = requireApiBaseUrl();
   const res = await fetch(`${base}/api/adminmgr/admin/${encodeURIComponent(guid)}`, {
     method: 'DELETE',
-    headers: authHeaders(),
+    credentials: 'include',
   });
   if (!res.ok) throw new Error((await res.text()) || `Failed to delete admin (${res.status})`);
   return (await res.json()) as AdminDeleteResult;
@@ -1007,7 +992,8 @@ export async function toggleAdminOnServer(guid: string, pteroId: string, present
   const base = requireApiBaseUrl();
   const res = await fetch(`${base}/api/adminmgr/toggle`, {
     method: 'POST',
-    headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ guid, pteroId, present }),
   });
   if (!res.ok) throw new Error((await res.text()) || `Failed to toggle admin (${res.status})`);
@@ -1034,7 +1020,7 @@ export type PriorityQueueSnapshot = {
 
 export async function getPriorityQueue(): Promise<PriorityQueueSnapshot> {
   const base = requireApiBaseUrl();
-  const res = await fetch(`${base}/api/priority-queue`, { headers: authHeaders() });
+  const res = await fetch(`${base}/api/priority-queue`, { credentials: 'include', });
   if (!res.ok) throw new Error((await res.text()) || `Failed to load priority queue (${res.status})`);
   return (await res.json()) as PriorityQueueSnapshot;
 }
@@ -1049,7 +1035,8 @@ export async function addManualPriorityQueue(
   if (opts?.serverId) body.serverId = opts.serverId;
   const res = await fetch(`${base}/api/priority-queue`, {
     method: 'POST',
-    headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
   if (!res.ok) throw new Error((await res.text()) || `Failed to add (${res.status})`);
@@ -1065,7 +1052,8 @@ export async function togglePriorityQueueServer(
   const base = requireApiBaseUrl();
   const res = await fetch(`${base}/api/priority-queue/toggle`, {
     method: 'POST',
-    headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ guid, serverId, present, displayName }),
   });
   if (!res.ok) throw new Error((await res.text()) || `Failed to toggle (${res.status})`);
@@ -1076,7 +1064,7 @@ export async function deletePriorityQueue(guid: string): Promise<{ ok: true; rem
   const base = requireApiBaseUrl();
   const res = await fetch(`${base}/api/priority-queue/${encodeURIComponent(guid)}`, {
     method: 'DELETE',
-    headers: authHeaders(),
+    credentials: 'include',
   });
   if (!res.ok) throw new Error((await res.text()) || `Failed to delete (${res.status})`);
   return (await res.json()) as { ok: true; removed: number };
@@ -1088,7 +1076,8 @@ export async function runAdminBackfill(useBattleMetrics: boolean): Promise<Backf
   const base = requireApiBaseUrl();
   const res = await fetch(`${base}/api/adminmgr/backfill`, {
     method: 'POST',
-    headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ useBattleMetrics }),
   });
   if (!res.ok) throw new Error((await res.text()) || `Backfill failed (${res.status})`);

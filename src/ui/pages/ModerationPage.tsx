@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { addBan, getBans, removeBan, addMute, getMutes, removeMute, type BanEntry, type MuteEntry } from '../../util/api';
-import { getSessionClaims } from '../../util/session';
+import { getSession } from '../../util/session';
 import { useServer } from '../ServerContext';
 
 const BAN_DURATIONS = [
@@ -71,8 +71,7 @@ function BansTab({ serverId }: { serverId: string }) {
     if (!banUID.trim()) return;
     setBusy(true); setError(null);
     try {
-      const claims = getSessionClaims();
-      await addBan({ serverId, playerUID: banUID.trim(), playerName: banName.trim(), reason: banReason.trim() || 'No reason', duration: banDuration, bannedBy: claims?.sub ?? 'WebAdmin' });
+      await addBan({ serverId, playerUID: banUID.trim(), playerName: banName.trim(), reason: banReason.trim() || 'No reason', duration: banDuration, bannedBy: getSession()?.user.username ?? 'WebAdmin' });
       setBanUID(''); setBanName(''); setBanReason(''); setBanDuration(0);
       await refresh();
     } catch (e) { setError(e instanceof Error ? e.message : 'Failed to ban'); } finally { setBusy(false); }
@@ -171,8 +170,7 @@ function MutesTab({ serverId }: { serverId: string }) {
     if (!muteUID.trim()) return;
     setBusy(true); setError(null);
     try {
-      const claims = getSessionClaims();
-      await addMute({ serverId, playerUID: muteUID.trim(), playerName: muteName.trim(), reason: muteReason.trim() || 'No reason', duration: muteDuration, mutedBy: claims?.sub ?? 'WebAdmin' });
+      await addMute({ serverId, playerUID: muteUID.trim(), playerName: muteName.trim(), reason: muteReason.trim() || 'No reason', duration: muteDuration, mutedBy: getSession()?.user.username ?? 'WebAdmin' });
       setMuteUID(''); setMuteName(''); setMuteReason(''); setMuteDuration(0);
       await refresh();
     } catch (e) { setError(e instanceof Error ? e.message : 'Failed to mute'); } finally { setBusy(false); }

@@ -7,7 +7,10 @@ import { createReadStream } from 'node:fs';
 import dotenv from 'dotenv';
 import express from 'express';
 import compression from 'compression';
+import cookieParser from 'cookie-parser';
 import { Client as SshClient } from 'ssh2';
+
+import { createRzAuth } from './lib/rz-auth.js';
 
 import { createCanvas } from '@napi-rs/canvas';
 import gifenc from 'gifenc';
@@ -23,14 +26,25 @@ app.use(compression());
 
 const JSON_LIMIT = process.env.JSON_LIMIT || '10mb';
 app.use(express.json({ limit: JSON_LIMIT }));
+app.use(cookieParser());
 
 const PORT = parseInt(process.env.PORT || '3000', 10);
 
-const ADMIN_USER = process.env.ADMIN_USER || 'admin';
-const ADMIN_PASS = process.env.ADMIN_PASS || 'change-me';
+const AUTH_BASE = process.env.AUTH_BASE || 'https://auth.reforgedz.net';
+const AUTH_PUBLIC_KEY_PEM = process.env.AUTH_PUBLIC_KEY_PEM || '';
+const AUTH_PUBLIC_KEY_PATH = process.env.AUTH_PUBLIC_KEY_PATH || '';
+const AUTH_PUBLIC_KEY_URL = process.env.AUTH_PUBLIC_KEY_URL || `${AUTH_BASE.replace(/\/+$/, '')}/api/auth/public-key`;
 
-// IMPORTANT: set this to a long random string in production
-const TOKEN_SECRET = process.env.TOKEN_SECRET || 'dev-token-secret-change-me';
+const rzAuth = createRzAuth({
+  publicKeyPem: AUTH_PUBLIC_KEY_PEM || undefined,
+  publicKeyPath: AUTH_PUBLIC_KEY_PATH || undefined,
+  publicKeyUrl: AUTH_PUBLIC_KEY_PEM ? undefined : AUTH_PUBLIC_KEY_URL,
+  authBase: AUTH_BASE,
+  loginUrl: `${AUTH_BASE.replace(/\/+$/, '')}/login`,
+  cookieName: process.env.COOKIE_NAME || 'rz_session'
+});
+await rzAuth.ready();
+app.use(rzAuth.attachSession);
 
 // Comma-separated mapping: "serverId=serverKey,serverId2=serverKey2"
 const INGEST_KEYS = process.env.INGEST_KEYS || '';
@@ -82,7 +96,6 @@ function parseIngestKeyMap(value) {
 
 const ingestKeyMap = parseIngestKeyMap(INGEST_KEYS);
 
-const USERS_PATH = path.join(DATA_DIR, 'users.json');
 const INGEST_KEYS_PATH = path.join(DATA_DIR, 'ingestKeys.json');
 const MAPS_DIR = path.join(DATA_DIR, 'maps');
 const SETTINGS_PATH = path.join(DATA_DIR, 'settings.json');
@@ -1040,149 +1053,26 @@ function getExpectedIngestKey(serverId, safeId) {
   return ingestKeyMap.get(serverId) || ingestKeyMap.get(safeId) || null;
 }
 
-/** @returns {{ users: Record<string, any> }} */
-async function readUsersFile() {
-  const obj = await readJsonOrNull(USERS_PATH);
-  if (!obj || typeof obj !== 'object') return { users: {} };
-  const users = obj.users && typeof obj.users === 'object' && !Array.isArray(obj.users) ? obj.users : {};
-  return { users };
-}
-
-function pbkdf2Hash(password, saltHex) {
-  const salt = Buffer.from(saltHex, 'hex');
-  const iter = 120_000;
-  const dk = crypto.pbkdf2Sync(String(password), salt, iter, 32, 'sha256');
-  return { iter, hashHex: dk.toString('hex') };
-}
-
-function makePasswordRecord(password) {
-  const salt = crypto.randomBytes(16).toString('hex');
-  const { iter, hashHex } = pbkdf2Hash(password, salt);
-  return { algo: 'pbkdf2-sha256', iter, saltHex: salt, hashHex };
-}
-
-function verifyPassword(password, record) {
-  if (!record || typeof record !== 'object') return false;
-  if (record.algo !== 'pbkdf2-sha256') return false;
-  if (typeof record.saltHex !== 'string' || typeof record.hashHex !== 'string') return false;
-
-  // iter is stored but currently fixed; accept stored value if valid.
-  const expected = Buffer.from(record.hashHex, 'hex');
-  const salt = Buffer.from(record.saltHex, 'hex');
-  const iter = (typeof record.iter === 'number' && Number.isFinite(record.iter) && record.iter > 10_000) ? record.iter : 120_000;
-
-  const got = crypto.pbkdf2Sync(String(password), salt, iter, expected.length, 'sha256');
-  if (got.length !== expected.length) return false;
-  return crypto.timingSafeEqual(got, expected);
-}
-
-function normalizeTools(tools) {
-  const t = tools && typeof tools === 'object' ? tools : {};
-  const admin = !!t.admin;
-  return {
-    replay: !!t.replay,
-    admin,
-    dev: !!t.dev,
-    // Granular admin sub-tools — default to `admin` flag for backward compatibility
-    players: t.players !== undefined ? !!t.players : admin,
-    bans: t.bans !== undefined ? !!t.bans : admin,
-    mutes: t.mutes !== undefined ? !!t.mutes : admin,
-    events: t.events !== undefined ? !!t.events : admin,
-    health: t.health !== undefined ? !!t.health : admin,
-    playerLookup: t.playerLookup !== undefined ? !!t.playerLookup : admin,
-    pii: t.pii !== undefined ? !!t.pii : admin,
-    gmManagement: t.gmManagement !== undefined ? !!t.gmManagement : admin,
-  };
-}
-
-function base64UrlEncode(buf) {
-  return Buffer.from(buf).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
-}
-
-function base64UrlDecodeToString(s) {
-  const padded = String(s).replace(/-/g, '+').replace(/_/g, '/');
-  const padLen = (4 - (padded.length % 4)) % 4;
-  const withPad = padded + '='.repeat(padLen);
-  return Buffer.from(withPad, 'base64').toString('utf8');
-}
-
-function base64UrlDecodeToBuffer(s) {
-  const padded = String(s).replace(/-/g, '+').replace(/_/g, '/');
-  const padLen = (4 - (padded.length % 4)) % 4;
-  const withPad = padded + '='.repeat(padLen);
-  return Buffer.from(withPad, 'base64');
-}
-
-function signToken(payload) {
-  const bodyJson = JSON.stringify(payload);
-  const body = base64UrlEncode(bodyJson);
-  const sig = crypto.createHmac('sha256', TOKEN_SECRET).update(body).digest();
-  return `${body}.${base64UrlEncode(sig)}`;
-}
-
-function verifyToken(token) {
-  if (!token) return null;
-
-  const parts = String(token).split('.');
-  if (parts.length !== 2) return null;
-
-  const [body, sig] = parts;
-  if (!body || !sig) return null;
-
-  const expected = crypto.createHmac('sha256', TOKEN_SECRET).update(body).digest();
-  const got = base64UrlDecodeToBuffer(sig);
-
-  if (got.length !== expected.length) return null;
-  if (!crypto.timingSafeEqual(got, expected)) return null;
-
-  let payload;
-  try {
-    payload = JSON.parse(base64UrlDecodeToString(body));
-  } catch {
-    return null;
-  }
-
-  if (!payload || typeof payload !== 'object') return null;
-
-  if (typeof payload.exp === 'number' && Date.now() > payload.exp) return null;
-
-  return payload;
-}
-
+// requireAuth / requireTool — backed by the SSO cookie verified in attachSession.
+// req.user keeps the legacy shape ({ sub, tools }) so the rest of the file is untouched.
 function requireAuth(req, res, next) {
-  const header = req.header('authorization') || '';
-  const prefix = 'Bearer ';
-  if (!header.startsWith(prefix)) {
-    res.status(401).send('Missing Authorization header');
+  if (!req.rzUser) {
+    res.status(401).send('Unauthorized');
     return;
   }
-
-  const token = header.slice(prefix.length).trim();
-  const payload = verifyToken(token);
-  if (!payload) {
-    res.status(401).send('Invalid token');
-    return;
-  }
-
-  req.user = payload;
+  const adminPerms = (req.rzUser.perms && req.rzUser.perms.admin) || {};
+  req.user = { sub: req.rzUser.username, tools: adminPerms };
   next();
 }
 
 function requireTool(tool) {
   return (req, res, next) => {
-    const user = req.user;
-    const tools = user && user.tools && typeof user.tools === 'object' ? user.tools : null;
-    // Default allow replay if tools missing (backward compatibility)
-    if (!tools) {
-      if (tool === 'replay') return next();
-      res.status(403).send('Forbidden');
+    if (!req.rzUser) {
+      res.status(401).send('Unauthorized');
       return;
     }
-
-    if (tools[tool]) return next();
-    // Backward compat: tools added after a user logged in won't be on their JWT.
-    // Treat unset gmManagement as inheriting from admin so existing admins keep access.
-    if (tool === 'gmManagement' && tools.gmManagement === undefined && tools.admin) return next();
+    const adminPerms = (req.rzUser.perms && req.rzUser.perms.admin) || {};
+    if (adminPerms[tool] === true) return next();
     res.status(403).send('Forbidden');
   };
 }
@@ -1744,65 +1634,10 @@ app.get('/api/health', (req, res) => {
   res.json({ ok: true });
 });
 
+// Authentication, user CRUD, and password management live at auth.reforgedz.net.
+// The cookie is verified via attachSession + requireAuth above; this app no longer issues tokens.
 app.get('/api/me', requireAuth, (req, res) => {
-  const sub = req.user && typeof req.user.sub === 'string' ? req.user.sub : null;
-  res.json({ username: sub, tools: req.user && req.user.tools ? req.user.tools : null });
-});
-
-app.post('/api/auth/login', (req, res) => {
-  const { username, password } = req.body || {};
-
-  if (typeof username !== 'string' || typeof password !== 'string') {
-    res.status(400).send('Invalid payload');
-    return;
-  }
-
-  (async () => {
-    const uname = String(username);
-    const pwd = String(password);
-
-    // If users.json exists / contains users, authenticate against it.
-    const { users } = await readUsersFile();
-    const entry = users[uname];
-    if (entry) {
-      if (!verifyPassword(pwd, entry.password)) {
-        res.status(401).send('Invalid credentials');
-        return;
-      }
-
-      const tools = normalizeTools(entry.tools);
-      if (!tools.replay && !tools.admin && !tools.dev) {
-        res.status(403).send('Account has no tool access');
-        return;
-      }
-
-      const token = signToken({
-        sub: uname,
-        exp: Date.now() + 24 * 60 * 60 * 1000,
-        tools,
-      });
-
-      res.json({ token });
-      return;
-    }
-
-    // Bootstrap fallback: env admin credentials.
-    if (!timingSafeEqualString(uname, ADMIN_USER) || !timingSafeEqualString(pwd, ADMIN_PASS)) {
-      res.status(401).send('Invalid credentials');
-      return;
-    }
-
-    const token = signToken({
-      sub: uname,
-      exp: Date.now() + 24 * 60 * 60 * 1000,
-      tools: { replay: true, admin: true, dev: true, players: true, bans: true, mutes: true, events: true, health: true, playerLookup: true, pii: true },
-      bootstrap: true,
-    });
-
-    res.json({ token });
-  })().catch(() => {
-    res.status(500).send('Login failed');
-  });
+  res.json({ username: req.user.sub, tools: req.user.tools, perms: req.rzUser.perms });
 });
 
 app.get('/api/servers', requireAuth, requireTool('replay'), asyncRoute(async (req, res) => {
@@ -2332,115 +2167,7 @@ app.post('/api/replay/exportDiscord', requireAuth, requireTool('replay'), asyncR
   res.json({ ok: true });
 }));
 
-app.get('/api/admin/users', requireAuth, requireTool('admin'), asyncRoute(async (req, res) => {
-  const { users } = await readUsersFile();
-  const out = Object.entries(users).map(([username, v]) => ({
-    username,
-    tools: normalizeTools(v && v.tools),
-  }));
-  out.sort((a, b) => a.username.localeCompare(b.username));
-  res.json(out);
-}));
-
-app.post('/api/admin/users', requireAuth, requireTool('admin'), asyncRoute(async (req, res) => {
-  const { username, password, tools } = req.body || {};
-  if (typeof username !== 'string' || username.trim().length < 3) {
-    res.status(400).send('Invalid username');
-    return;
-  }
-  if (typeof password !== 'string' || password.length < 6) {
-    res.status(400).send('Invalid password');
-    return;
-  }
-
-  const uname = username.trim();
-  const nextTools = normalizeTools(tools);
-  if (!nextTools.replay && !nextTools.admin && !nextTools.dev) {
-    res.status(400).send('User must have at least one tool');
-    return;
-  }
-
-  const file = await readUsersFile();
-  if (file.users[uname]) {
-    res.status(409).send('User already exists');
-    return;
-  }
-
-  const users = { ...file.users };
-  users[uname] = {
-    password: makePasswordRecord(password),
-    tools: nextTools,
-    createdAt: Date.now(),
-  };
-
-  await writeJsonAtomic(USERS_PATH, { users });
-  res.json({ ok: true });
-}));
-
-app.put('/api/admin/users/:username', requireAuth, requireTool('admin'), asyncRoute(async (req, res) => {
-  const uname = String(req.params.username || '');
-  if (!uname) {
-    res.status(400).send('Missing username');
-    return;
-  }
-
-  const { tools, password } = req.body || {};
-  const file = await readUsersFile();
-  if (!file.users[uname]) {
-    res.status(404).send('User not found');
-    return;
-  }
-
-  const users = { ...file.users };
-  const entry = { ...users[uname] };
-  if (tools !== undefined) {
-    const nextTools = normalizeTools(tools);
-    if (!nextTools.replay && !nextTools.admin && !nextTools.dev) {
-      res.status(400).send('User must have at least one tool');
-      return;
-    }
-    entry.tools = nextTools;
-  }
-
-  if (password !== undefined) {
-    if (typeof password !== 'string' || password.length < 6) {
-      res.status(400).send('Invalid password');
-      return;
-    }
-    entry.password = makePasswordRecord(password);
-    entry.passwordUpdatedAt = Date.now();
-  }
-
-  entry.updatedAt = Date.now();
-  users[uname] = entry;
-  await writeJsonAtomic(USERS_PATH, { users });
-  res.json({ ok: true });
-}));
-
-app.delete('/api/admin/users/:username', requireAuth, requireTool('admin'), asyncRoute(async (req, res) => {
-  const uname = String(req.params.username || '');
-  if (!uname) {
-    res.status(400).send('Missing username');
-    return;
-  }
-
-  const self = req.user && typeof req.user.sub === 'string' ? req.user.sub : '';
-  if (self && uname === self) {
-    res.status(400).send('Cannot delete your own account');
-    return;
-  }
-
-  const file = await readUsersFile();
-  if (!file.users[uname]) {
-    res.status(404).send('User not found');
-    return;
-  }
-
-  const users = { ...file.users };
-  delete users[uname];
-  await writeJsonAtomic(USERS_PATH, { users });
-  res.json({ ok: true });
-}));
+// User CRUD has moved to auth.reforgedz.net. Use the manager UI there.
 
 // ============================================================
 // Admin Manager

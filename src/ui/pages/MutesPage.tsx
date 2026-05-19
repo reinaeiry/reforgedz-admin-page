@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { addMute, getMutes, listServers, removeMute, type MuteEntry, type ServerInfo } from '../../util/api';
-import { getSessionClaims } from '../../util/session';
+import { getSession } from '../../util/session';
 
 const DURATION_OPTIONS = [
   { label: 'Permanent', value: 0 },
@@ -76,11 +76,10 @@ export function MutesPage() {
     setBusy(true);
     setError(null);
     try {
-      const claims = getSessionClaims();
       await addMute({
         serverId, playerUID: muteUID.trim(), playerName: muteName.trim(),
         reason: muteReason.trim() || 'No reason', duration: muteDuration,
-        mutedBy: claims?.sub ?? 'WebAdmin',
+        mutedBy: getSession()?.user.username ?? 'WebAdmin',
       });
       setMuteUID(''); setMuteName(''); setMuteReason(''); setMuteDuration(0);
       await refresh();

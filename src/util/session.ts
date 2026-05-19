@@ -1,88 +1,110 @@
-export type Session = {
-  token: string;
+/**
+ * Cookie-based SSO session, backed by auth.reforgedz.net.
+ *
+ * The `rz_session` cookie is set on `.reforgedz.net` and is HttpOnly, so JS
+ * can't read it directly. Instead we call `GET /api/auth/me` on the auth
+ * service once at boot and cache the result in memory.
+ */
+
+export type AdminPerms = {
+  replay: boolean;
+  admin: boolean;
+  dev: boolean;
+  players: boolean;
+  bans: boolean;
+  mutes: boolean;
+  events: boolean;
+  health: boolean;
+  playerLookup: boolean;
+  pii: boolean;
+  gmManagement: boolean;
 };
 
-export type SessionClaims = {
-  sub: string;
-  exp?: number;
-  tools?: {
-    replay?: boolean;
-    admin?: boolean;
-    dev?: boolean;
-    players?: boolean;
-    bans?: boolean;
-    mutes?: boolean;
-    events?: boolean;
-    health?: boolean;
-    playerLookup?: boolean;
-    pii?: boolean;
-    gmManagement?: boolean;
-  };
+export type TranscriptPerms = { read: boolean; delete: boolean; appeals: boolean };
+export type RestrictedPerms = { access: boolean };
+
+export type Perms = {
+  admin: AdminPerms;
+  transcripts: TranscriptPerms;
+  restricted: RestrictedPerms;
+  manager: boolean;
 };
 
-const STORAGE_KEY = 'reforgedz.session';
+export type SessionUser = {
+  id: number;
+  username: string;
+  email: string | null;
+  isManager: boolean;
+  perms: Perms;
+};
+
+export type Session = { user: SessionUser };
+
+let cached: Session | null = null;
+let loading: Promise<Session | null> | null = null;
+
+export function authServiceOrigin(): string {
+  const fromEnv = (import.meta.env.VITE_AUTH_ORIGIN as string | undefined) || '';
+  if (fromEnv) return fromEnv.replace(/\/+$/, '');
+  return 'https://auth.reforgedz.net';
+}
+
+export function loginUrl(returnTo?: string): string {
+  const origin = authServiceOrigin();
+  const ret = returnTo ?? (typeof window !== 'undefined' ? window.location.href : '');
+  const u = new URL('/login', origin);
+  if (ret) u.searchParams.set('return', ret);
+  return u.toString();
+}
+
+async function fetchMe(): Promise<Session | null> {
+  const res = await fetch(`${authServiceOrigin()}/api/auth/me`, { credentials: 'include' });
+  if (!res.ok) return null;
+  const data = (await res.json()) as { user: SessionUser };
+  if (!data || !data.user) return null;
+  return { user: data.user };
+}
 
 export function getSession(): Session | null {
-  const raw = localStorage.getItem(STORAGE_KEY);
-  if (!raw) {
-    return null;
-  }
+  return cached;
+}
 
+export async function loadSession(): Promise<Session | null> {
+  if (cached) return cached;
+  if (!loading) loading = fetchMe().then((s) => { cached = s; return s; }).finally(() => { loading = null; });
+  return loading;
+}
+
+export async function refreshSession(): Promise<Session | null> {
+  cached = null;
+  return loadSession();
+}
+
+export async function clearSession(): Promise<void> {
   try {
-    const parsed = JSON.parse(raw) as Session;
-    if (!parsed || typeof parsed.token !== 'string' || parsed.token.length === 0) {
-      return null;
-    }
-
-    return parsed;
-  } catch {
-    return null;
-  }
+    await fetch(`${authServiceOrigin()}/api/auth/logout`, { method: 'POST', credentials: 'include' });
+  } catch { /* ignore */ }
+  cached = null;
 }
 
-export function setSession(session: Session): void {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(session));
-}
-
-export function clearSession(): void {
-  localStorage.removeItem(STORAGE_KEY);
-}
-
-function base64UrlDecodeToString(s: string): string {
-  const padded = s.replace(/-/g, '+').replace(/_/g, '/');
-  const padLen = (4 - (padded.length % 4)) % 4;
-  const withPad = padded + '='.repeat(padLen);
-  return atob(withPad);
-}
-
-export function getSessionClaims(): SessionClaims | null {
-  const session = getSession();
-  if (!session) return null;
-
-  const parts = String(session.token).split('.');
-  if (parts.length !== 2) return null;
-
-  try {
-    const json = base64UrlDecodeToString(parts[0]);
-    const parsed = JSON.parse(json) as SessionClaims;
-    if (!parsed || typeof parsed.sub !== 'string') return null;
-    return parsed;
-  } catch {
-    return null;
-  }
-}
-
-export type ToolName = 'replay' | 'admin' | 'dev' | 'players' | 'bans' | 'mutes' | 'events' | 'health' | 'playerLookup' | 'pii' | 'gmManagement';
+export type ToolName = keyof AdminPerms;
 
 export function hasToolAccess(tool: ToolName): boolean {
-  const c = getSessionClaims();
-  if (!c) return false;
-  const tools = c.tools;
-  if (!tools || typeof tools !== 'object') return tool === 'replay';
-  const t = tools as Record<string, unknown>;
-  if (t[tool]) return true;
-  // Backward compat: tools added after a user logged in won't be on their JWT.
-  // Treat unset gmManagement as inheriting from admin so existing admins keep access.
-  if (tool === 'gmManagement' && t.gmManagement === undefined && t.admin) return true;
-  return false;
+  const s = cached;
+  if (!s) return false;
+  return !!s.user.perms.admin[tool];
+}
+
+export function hasTranscriptPerm(perm: keyof TranscriptPerms): boolean {
+  const s = cached;
+  if (!s) return false;
+  return !!s.user.perms.transcripts[perm];
+}
+
+export function hasRestrictedAccess(): boolean {
+  return !!cached?.user.perms.restricted.access;
+}
+
+export function isManager(): boolean {
+  return !!cached?.user.isManager;
 }
