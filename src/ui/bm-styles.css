@@ -89,6 +89,8 @@
 .bmIpList { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font-size: .85rem; }
 .bmIpChip { background: var(--bg-raised); border: 1px solid var(--border); padding: 2px 8px; border-radius: 999px; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: .75rem; }
 .bmIpChip.banned { border-color: var(--cyan); background: rgba(239,68,68,.1); color: #fca5a5; }
+.bmGuid { font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: .72rem; color: var(--text-dim); text-decoration: none; }
+.bmGuid:hover { color: var(--cyan); text-decoration: underline; }
 
 .bmActivity { background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 8px; max-height: 480px; overflow-y: auto; }
 .bmActivity-list { list-style: none; margin: 0; padding: 0; }

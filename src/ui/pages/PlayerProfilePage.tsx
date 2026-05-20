@@ -135,12 +135,6 @@ export function PlayerProfilePage() {
           </div>
           <div className="bmProfile-actions">
             <a className="btn" href={bmUrl} target="_blank" rel="noreferrer">View on BattleMetrics</a>
-            {player.guid ? (
-              <Link className="btn" to={`/replay?focus=${player.guid}`}>View in Replay</Link>
-            ) : null}
-            {player.guid ? (
-              <Link className="btn" to={`/admins?guid=${player.guid}`}>GM Management</Link>
-            ) : null}
             {canBan ? (
               <button className="btn btn-danger" onClick={() => setBanFormOpen(true)}>Ban</button>
             ) : null}
@@ -239,7 +233,7 @@ export function PlayerProfilePage() {
                     {ipAlts.alts.map((a) => (
                       <tr key={`${a.be_guid}-${a.ip}`}>
                         <td><Link to={`/player/${a.be_guid}`}>{a.username}</Link></td>
-                        <td><code>{a.be_guid.slice(0, 8)}…</code></td>
+                        <td><Link to={`/player/${a.be_guid}`} className="bmGuid">{a.be_guid}</Link></td>
                         <td><code>{a.ip}</code></td>
                         <td>{a.server_name}</td>
                         <td>{a.last_seen ? new Date(a.last_seen * 1000).toLocaleString() : ''}</td>
