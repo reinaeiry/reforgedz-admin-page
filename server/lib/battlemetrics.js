@@ -129,7 +129,20 @@ async function bmFetch(path, init = {}, { cacheKey, ttl } = {}) {
         const txt = await res.text().catch(() => '');
         throw new Error(`bm ${res.status}: ${txt.slice(0, 300)}`);
       }
-      const data = await res.json();
+      // 204 No Content (or any zero-length body — DELETE typically) means
+      // success with nothing to parse. Don't try to JSON-decode that.
+      if (res.status === 204) return null;
+      const contentLength = res.headers.get('content-length');
+      if (contentLength === '0') return null;
+      const text = await res.text();
+      if (!text) return null;
+      let data;
+      try { data = JSON.parse(text); }
+      catch (err) {
+        // BM sometimes returns plain-text confirmations; surface the body
+        // so the caller knows what happened rather than failing JSON parse.
+        throw new Error(`bm ${res.status}: ${text.slice(0, 300)}`);
+      }
       if (cacheKey && ttl) cacheSet(cacheKey, data, ttl);
       return data;
     }
