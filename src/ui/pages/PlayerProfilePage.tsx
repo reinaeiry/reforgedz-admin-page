@@ -221,12 +221,21 @@ export function PlayerProfilePage() {
         {transcripts.length === 0 && !transcriptsErr ? <div className="muted">No transcripts matching this player.</div> : (
           <ul className="bmProfile-transcriptList">
             {transcripts.map((t) => (
-              <li key={t.id}>
-                <a href={`https://transcripts.reforgedz.net/t/${t.id}`} target="_blank" rel="noreferrer">
-                  #{t.ticketId || '?'} {t.channelName || ''}
+              <li key={t.id} className="bmTranscriptRow">
+                <a
+                  className="bmTranscriptTicket"
+                  href={`https://transcripts.reforgedz.net/t/${t.id}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  title={t.channelName || ''}
+                >
+                  #{t.ticketId || '?'}
                 </a>
-                {' '}<span className="muted">{t.category || ''} · {t.closedAt ? new Date(t.closedAt).toLocaleDateString() : ''}</span>
-                {t.restricted ? <span className="bmBadge">restricted</span> : null}
+                {t.category ? <span className="bmTranscriptCat">{t.category}</span> : null}
+                {t.restricted ? <span className="bmBadge bmBadge-warn">restricted</span> : null}
+                <span className="bmTranscriptDate">
+                  {t.closedAt ? new Date(t.closedAt).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' }) : '—'}
+                </span>
               </li>
             ))}
           </ul>
