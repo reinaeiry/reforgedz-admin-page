@@ -270,19 +270,41 @@ export async function listBans({ serverIds, includeExpired = false } = {}) {
 }
 
 export async function createBan({ playerId, identifiers, reason, note, expires, banListId, autoAddEnabled = true, orgWide = true, serverIds }) {
-  // BM's POST /bans schema: identifiers (array), reason, note, expires (ISO or null),
-  // banList (optional), orgWide vs server-scoped (autoAddEnabled controls native banlist).
+  // BM's POST /bans schema: `identifiers` is REQUIRED and lives in
+  // attributes (as an array of identifier IDs), NOT in relationships.
+  // The relationship-shape we used before returned a 400:
+  //   "must have required property 'identifiers'" at /data/attributes.
+  // When the caller only passed `playerId` we resolve a usable set of
+  // identifier IDs from the player so BM has something to lock against.
+  let idList = (identifiers || []).map(String);
+  if (!idList.length && playerId) {
+    try {
+      const player = await getPlayer(String(playerId));
+      const included = player?.included || [];
+      idList = included
+        .filter((inc) => inc?.type === 'identifier')
+        .filter((inc) => {
+          const t = inc?.attributes?.type;
+          // Skip ip identifiers in the default set — BM bans on those
+          // are too aggressive without an explicit caller request.
+          return t && t !== 'ip';
+        })
+        .map((inc) => String(inc.id));
+    } catch (err) {
+      // Fall through with an empty list — BM will reject with a clean
+      // 400 the caller can surface.
+    }
+  }
+
   const attributes = {
     reason: reason || null,
     note: note || null,
     expires: expires || null,
     autoAddEnabled: !!autoAddEnabled,
-    orgWide: !!orgWide
+    orgWide: !!orgWide,
+    identifiers: idList
   };
   const relationships = {};
-  if (identifiers && identifiers.length) {
-    relationships.identifiers = { data: identifiers.map((id) => ({ type: 'identifier', id: String(id) })) };
-  }
   if (playerId) {
     relationships.player = { data: { type: 'player', id: String(playerId) } };
   }
@@ -292,10 +314,8 @@ export async function createBan({ playerId, identifiers, reason, note, expires, 
   if (!orgWide && serverIds && serverIds.length) {
     relationships.server = { data: serverIds.map((id) => ({ type: 'server', id: String(id) })) };
   }
-  const data = await bmFetch('/bans', {
-    method: 'POST',
-    body: JSON.stringify({ data: { type: 'ban', attributes, relationships } })
-  });
+  const body = { data: { type: 'ban', attributes, relationships } };
+  const data = await bmFetch('/bans', { method: 'POST', body: JSON.stringify(body) });
   invalidatePrefix('bans-list:');
   invalidatePrefix(`bans-player:${playerId || ''}`);
   return data.data;
