@@ -339,22 +339,53 @@ export function buildBmRouter({ requirePerm, getPteroServers, asyncRoute }) {
   // viewActivity gates everything; chat lines additionally require viewChat
   // if you wanted to split them later — for v1 we collapse under viewActivity.
 
-  router.get('/logs', requirePerm('viewActivity'), asyncRoute(async (req, res) => {
-    // Per-log-type perm intersection: even if a client asks for everything,
-    // we only return types the user is allowed to see.
-    const ALL_TYPES = ['kill', 'death', 'anticheat', 'shop', 'chat', 'base'];
-    const logsPerms = (req.rzUser?.perms?.moderation?.logs) || (req.rzUser?.perms?.battlemetrics?.logs) || {};
-    const fallbackAll = !!req.rzUser?.perms?.moderation?.viewActivity || !!req.rzUser?.perms?.battlemetrics?.viewActivity;
-    const allowed = ALL_TYPES.filter((t) => logsPerms[t] || (fallbackAll && !Object.keys(logsPerms).length));
-    if (!allowed.length) return res.json({ logs: [] });
+  // Per-server log channel layout — must match the bot's logChannels.js.
+  const LOG_SCOPES_DEF = {
+    NA1: ['kill', 'chat'],
+    NA2: ['kill', 'chat'],
+    EU1: ['kill', 'chat'],
+    EU2: ['kill', 'chat'],
+    NA:  ['anticheat', 'shop'],
+    EU:  ['anticheat', 'shop'],
+    ALL: ['base']
+  };
 
-    const requested = typeof req.query.types === 'string' && req.query.types
-      ? req.query.types.split(',').map((s) => s.trim()).filter(Boolean)
+  router.get('/logs', requirePerm('viewActivity'), asyncRoute(async (req, res) => {
+    // Build the user's allowed (scope, type) set from their JWT perms.
+    const logsPerms = (req.rzUser?.perms?.moderation?.logs)
+                   || (req.rzUser?.perms?.battlemetrics?.logs)
+                   || {};
+    const fallbackAll = !!(req.rzUser?.perms?.moderation?.viewActivity || req.rzUser?.perms?.battlemetrics?.viewActivity)
+                     && !Object.keys(logsPerms).some((k) => logsPerms[k] && typeof logsPerms[k] === 'object');
+    const allowedPairs = [];
+    for (const [scope, types] of Object.entries(LOG_SCOPES_DEF)) {
+      for (const t of types) {
+        const ok = fallbackAll
+          ? true
+          : !!(logsPerms[scope] && logsPerms[scope][t]);
+        if (ok) {
+          allowedPairs.push({ scope, type: t });
+          // 'kill' channels also produce 'death' rows — grant death wherever kill is granted.
+          if (t === 'kill') allowedPairs.push({ scope, type: 'death' });
+        }
+      }
+    }
+    if (!allowedPairs.length) {
+      res.set('Cache-Control', 'private, max-age=15');
+      return res.json({ logs: [] });
+    }
+
+    // Optional client-side type filter narrows the set further.
+    const requestedTypes = typeof req.query.types === 'string' && req.query.types
+      ? new Set(req.query.types.split(',').map((s) => s.trim()).filter(Boolean))
       : null;
-    const types = requested
-      ? requested.filter((t) => allowed.includes(t))
-      : allowed;
-    if (!types.length) return res.json({ logs: [] });
+    const finalPairs = requestedTypes
+      ? allowedPairs.filter((p) => requestedTypes.has(p.type))
+      : allowedPairs;
+    if (!finalPairs.length) {
+      res.set('Cache-Control', 'private, max-age=15');
+      return res.json({ logs: [] });
+    }
 
     const servers = typeof req.query.servers === 'string' && req.query.servers
       ? req.query.servers.split(',').map((s) => s.trim()).filter(Boolean)
@@ -362,7 +393,7 @@ export function buildBmRouter({ requirePerm, getPteroServers, asyncRoute }) {
     const logs = await gameLogs.listLogs({
       guid: req.query.guid || null,
       name: req.query.name || null,
-      types,
+      scopePairs: finalPairs,
       servers,
       q: req.query.q || null,
       sinceMs: req.query.sinceMs ? +req.query.sinceMs : null,
@@ -370,8 +401,6 @@ export function buildBmRouter({ requirePerm, getPteroServers, asyncRoute }) {
       limit: req.query.limit ? +req.query.limit : 100,
       offset: req.query.offset ? +req.query.offset : 0
     });
-    // Browser can reuse the response for 15s without revalidation — covers
-    // the "user toggles a filter twice in a row" case for free.
     res.set('Cache-Control', 'private, max-age=15');
     res.json({ logs });
   }));

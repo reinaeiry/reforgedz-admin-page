@@ -14,14 +14,23 @@ export type AdminPerms = {
 
 export type TranscriptPerms = { read: boolean; stats: boolean; restricted: boolean };
 
-export type LogLevelPerms = {
-  kill: boolean;
-  death: boolean;
-  anticheat: boolean;
-  shop: boolean;
-  chat: boolean;
-  base: boolean;
+export type LogScopeKey = 'NA1' | 'NA2' | 'EU1' | 'EU2' | 'NA' | 'EU' | 'ALL';
+export type LogType = 'kill' | 'chat' | 'anticheat' | 'shop' | 'base' | 'death';
+
+// Each scope only carries the types its channel produces. Death events
+// piggyback on kill channels (same /kill log feed), so death follows
+// the same per-server gate as kill.
+export const LOG_SCOPES: Record<LogScopeKey, LogType[]> = {
+  NA1: ['kill', 'chat'],
+  NA2: ['kill', 'chat'],
+  EU1: ['kill', 'chat'],
+  EU2: ['kill', 'chat'],
+  NA:  ['anticheat', 'shop'],
+  EU:  ['anticheat', 'shop'],
+  ALL: ['base']
 };
+
+export type LogPerms = Partial<Record<LogScopeKey, Partial<Record<LogType, boolean>>>>;
 
 export type ModerationPerms = {
   viewServers: boolean;
@@ -33,7 +42,7 @@ export type ModerationPerms = {
   kick: boolean;
   ban: boolean;
   manage: boolean;
-  logs: LogLevelPerms;
+  logs: LogPerms;
 };
 
 // Back-compat alias — old name kept so the rest of the codebase moves over
@@ -82,13 +91,22 @@ async function fetchMe(): Promise<Session | null> {
   const u = data.user;
   // Read moderation, fall back to legacy battlemetrics key during rollout.
   const mod: any = u.perms?.moderation || u.perms?.battlemetrics || {};
-  const logs: any = mod.logs || {};
-  // If user has viewActivity but no granular log perms, treat all log
-  // levels as on (mirrors the server-side forward-migration).
-  const anyLogPerm = ['kill','death','anticheat','shop','chat','base'].some((k) => !!logs[k]);
-  const defaultLog = !!mod.viewActivity && !anyLogPerm;
-  // admin.moderation auto-grants if any moderation perm is set — covers
-  // existing users until the next manage.html save.
+  const logsRaw: any = mod.logs || {};
+  // Detect old flat shape (logs.kill, logs.chat...) vs new nested per-scope.
+  const flatTypes = ['kill','death','anticheat','shop','chat','base'];
+  const looksFlat = flatTypes.some((t) => typeof logsRaw[t] === 'boolean');
+  const anyFlat = flatTypes.some((t) => !!logsRaw[t]);
+  const defaultLog = !!mod.viewActivity && !anyFlat &&
+    !(LOG_SCOPES && Object.keys(LOG_SCOPES).some((s) => logsRaw[s] && Object.values(logsRaw[s]).some(Boolean)));
+  const logs: LogPerms = {};
+  for (const scope of Object.keys(LOG_SCOPES) as LogScopeKey[]) {
+    logs[scope] = {};
+    for (const t of LOG_SCOPES[scope]) {
+      if (looksFlat) logs[scope]![t] = !!logsRaw[t];
+      else logs[scope]![t] = !!(logsRaw[scope] && logsRaw[scope][t]);
+      if (defaultLog) logs[scope]![t] = true;
+    }
+  }
   const adminMod = !!u.perms?.admin?.moderation
     || ['viewServers','viewPlayers','viewIps','viewActivity','viewBans','writeNotes','kick','ban','manage']
       .some((k) => !!mod[k]);
@@ -116,14 +134,7 @@ async function fetchMe(): Promise<Session | null> {
           kick: !!mod.kick,
           ban: !!mod.ban,
           manage: !!mod.manage,
-          logs: {
-            kill: !!logs.kill || defaultLog,
-            death: !!logs.death || defaultLog,
-            anticheat: !!logs.anticheat || defaultLog,
-            shop: !!logs.shop || defaultLog,
-            chat: !!logs.chat || defaultLog,
-            base: !!logs.base || defaultLog,
-          },
+          logs,
         },
         manager: !!u.perms?.manager,
       },
@@ -168,20 +179,41 @@ export function hasModPerm(p: ModPermName): boolean {
   return !!s.user.perms.moderation[p];
 }
 
-export type LogLevel = keyof LogLevelPerms;
-export function hasLogPerm(level: LogLevel): boolean {
+// Legacy alias kept so anything still importing LogLevel keeps compiling.
+export type LogLevel = LogType;
+export function hasLogPerm(scope: LogScopeKey, type: LogType): boolean {
   const s = cached;
   if (!s) return false;
-  return !!s.user.perms.moderation.logs[level];
+  return !!(s.user.perms.moderation.logs[scope] && s.user.perms.moderation.logs[scope]![type]);
 }
-export function allowedLogLevels(): LogLevel[] {
+export function allowedLogScopes(): LogScopeKey[] {
   const s = cached;
   if (!s) return [];
-  const out: LogLevel[] = [];
-  for (const k of ['kill','death','anticheat','shop','chat','base'] as LogLevel[]) {
-    if (s.user.perms.moderation.logs[k]) out.push(k);
+  const out: LogScopeKey[] = [];
+  for (const scope of Object.keys(LOG_SCOPES) as LogScopeKey[]) {
+    const types = LOG_SCOPES[scope];
+    if (types.some((t) => hasLogPerm(scope, t))) out.push(scope);
   }
   return out;
+}
+// All (scope, type) pairs the user can see.
+export function allowedScopeTypes(): { scope: LogScopeKey; type: LogType }[] {
+  const out: { scope: LogScopeKey; type: LogType }[] = [];
+  for (const scope of Object.keys(LOG_SCOPES) as LogScopeKey[]) {
+    for (const t of LOG_SCOPES[scope]) {
+      if (hasLogPerm(scope, t)) out.push({ scope, type: t });
+    }
+  }
+  return out;
+}
+// Distinct log types the user can see anywhere — used by the type-chip row.
+export function allowedLogLevels(): LogType[] {
+  const set = new Set<LogType>();
+  for (const { type } of allowedScopeTypes()) set.add(type);
+  // 'death' rides on the same channel as 'kill' (it's parsed from the
+  // /kill log feed), so it inherits the kill perm.
+  if (set.has('kill')) set.add('death');
+  return Array.from(set);
 }
 
 export function hasAnyModPerm(): boolean {
@@ -189,7 +221,7 @@ export function hasAnyModPerm(): boolean {
   if (!s) return false;
   const m = s.user.perms.moderation;
   if (m.viewServers || m.viewPlayers || m.viewIps || m.viewActivity || m.viewBans || m.writeNotes || m.kick || m.ban || m.manage) return true;
-  return Object.values(m.logs).some(Boolean);
+  return allowedScopeTypes().length > 0;
 }
 
 // Back-compat shim — old code calls hasBmPerm.

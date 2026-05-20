@@ -75,6 +75,10 @@ export async function listLogs(opts = {}) {
   if (opts.name) params.set('name', opts.name);
   if (opts.types && opts.types.length) params.set('types', opts.types.join(','));
   if (opts.servers && opts.servers.length) params.set('servers', opts.servers.join(','));
+  if (opts.scopes && opts.scopes.length) params.set('scopes', opts.scopes.join(','));
+  if (opts.scopePairs && opts.scopePairs.length) {
+    params.set('scopePairs', opts.scopePairs.map((p) => `${p.scope}:${p.type}`).join(','));
+  }
   if (opts.q) params.set('q', opts.q);
   if (opts.sinceMs) params.set('sinceMs', String(opts.sinceMs));
   if (opts.untilMs) params.set('untilMs', String(opts.untilMs));
