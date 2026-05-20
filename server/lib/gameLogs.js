@@ -7,6 +7,32 @@ function botKey() { return process.env.TICKET_BOT_INTERNAL_KEY || ''; }
 
 function isEnabled() { return !!(botBase() && botKey()); }
 
+// TTL cache so repeated identical queries (filter-toggling, page refresh,
+// multiple admins viewing the same profile) don't hammer the ticket-bot's
+// SQLite reader. 30s is a sweet spot — short enough that live ingest
+// surfaces within half a minute, long enough to absorb typical bursts.
+const CACHE_TTL_MS = 30_000;
+const CACHE_MAX = 200;
+const cache = new Map();
+
+function cacheGet(key) {
+  const hit = cache.get(key);
+  if (!hit) return null;
+  if (hit.expiresAt < Date.now()) { cache.delete(key); return null; }
+  // LRU bump.
+  cache.delete(key);
+  cache.set(key, hit);
+  return hit.value;
+}
+
+function cacheSet(key, value) {
+  cache.set(key, { value, expiresAt: Date.now() + CACHE_TTL_MS });
+  while (cache.size > CACHE_MAX) {
+    const oldest = cache.keys().next().value;
+    cache.delete(oldest);
+  }
+}
+
 async function botGet(path) {
   if (!isEnabled()) return null;
   try {
@@ -54,8 +80,14 @@ export async function listLogs(opts = {}) {
   if (opts.untilMs) params.set('untilMs', String(opts.untilMs));
   if (opts.limit) params.set('limit', String(opts.limit));
   if (opts.offset) params.set('offset', String(opts.offset));
-  const out = await botGet(`/api/internal/logs?${params}`);
-  return (out && out.logs) || [];
+  const qs = params.toString();
+  const cacheKey = `logs:${qs}`;
+  const hit = cacheGet(cacheKey);
+  if (hit) return hit;
+  const out = await botGet(`/api/internal/logs?${qs}`);
+  const rows = (out && out.logs) || [];
+  cacheSet(cacheKey, rows);
+  return rows;
 }
 
 export async function rememberLink(name, guid, atMs) {

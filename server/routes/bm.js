@@ -357,6 +357,9 @@ export function buildBmRouter({ requirePerm, getPteroServers, asyncRoute }) {
       limit: req.query.limit ? +req.query.limit : 100,
       offset: req.query.offset ? +req.query.offset : 0
     });
+    // Browser can reuse the response for 15s without revalidation — covers
+    // the "user toggles a filter twice in a row" case for free.
+    res.set('Cache-Control', 'private, max-age=15');
     res.json({ logs });
   }));
 
