@@ -1689,12 +1689,9 @@ app.use('/api/tickets', ticketsRouter);
 // (which bmSseRouter pipes to admin SPA clients over /api/bm/events).
 ticketEventRelay.start();
 
-// ─── In-game bans + mutes ─────────────────────────────────────────────────
-// Per-server JSON files (profile/profile/ReforgedZBans.json,
-// ReforgedZMutes.json) on each game server's Pterodactyl volume. Edited
-// here over SSH using the same helpers that GM Management uses for
-// config.json. See "ingame-bans-mutes" section further down.
-mountIngameBansMutes(app, { requireAuth, requireBmPerm, asyncRoute });
+// Note: the /api/ingame/* routes (in-game bans + mutes) are mounted at the
+// bottom of this file, after their helper functions and SSH-related consts
+// are initialised. See `mountIngameBansMutes` below.
 
 app.get('/api/servers', requireAuth, requireTool('replay'), asyncRoute(async (req, res) => {
   const serversDir = path.join(DATA_DIR, 'servers');
@@ -3699,6 +3696,9 @@ function mountIngameBansMutes(app, { requireAuth, requireBmPerm: _bm, asyncRoute
     }));
   }
 }
+
+// Mount /api/ingame/* now that the helpers + consts above are initialised.
+mountIngameBansMutes(app, { requireAuth, requireBmPerm, asyncRoute });
 
 // Serve static frontend if built (dist/)
 const distDir = path.resolve('dist');
