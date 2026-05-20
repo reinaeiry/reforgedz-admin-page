@@ -1,7 +1,9 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { hasBmPerm } from '../../util/session';
-import { type BmDashServer, listBans, listBmServers } from '../../util/bmApi';
+import { type BmDashServer, deleteBan, listBans, listBmServers, updateBan } from '../../util/bmApi';
+import { renderBanReason } from '../../util/banFormat';
+import { ConfirmModal } from '../components/ConfirmModal';
 import { load as loadFilter, save as saveFilter } from '../../util/serverFilter';
 import { BMServerStatusStrip } from '../components/BMServerStatusStrip';
 import { BMPlayerSearch } from '../components/BMPlayerSearch';
@@ -152,6 +154,10 @@ function BansTab({ servers, serverIds }: { servers: BmDashServer[]; serverIds: s
   const [includeExpired, setIncludeExpired] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [banFor, setBanFor] = useState<{ bmPlayerId: string; name: string; guid?: string | null } | null>(null);
+  const [showSearch, setShowSearch] = useState(false);
+  const [editing, setEditing] = useState<any | null>(null);
+  const [unbanConfirm, setUnbanConfirm] = useState<any | null>(null);
+  const [busy, setBusy] = useState(false);
   const canBan = hasBmPerm('ban');
   const nav = useNavigate();
 
@@ -166,6 +172,20 @@ function BansTab({ servers, serverIds }: { servers: BmDashServer[]; serverIds: s
   }
   useEffect(() => { load(); }, [JSON.stringify(serverIds), includeExpired]); // eslint-disable-line
 
+  async function doUnban() {
+    if (!unbanConfirm) return;
+    setBusy(true);
+    try {
+      await deleteBan(unbanConfirm.id);
+      setUnbanConfirm(null);
+      await load();
+    } catch (e: any) {
+      setErr(e?.message || 'Failed to unban');
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <section className="bmTabPanel">
       <div className="bmToolbar">
@@ -174,6 +194,7 @@ function BansTab({ servers, serverIds }: { servers: BmDashServer[]; serverIds: s
           Include expired
         </label>
         <button className="btn" onClick={load}>Refresh</button>
+        {canBan ? <button className="btn btn-primary" onClick={() => setShowSearch(true)}>+ New ban</button> : null}
       </div>
       {err ? <div className="bmError">{err}</div> : null}
       <table className="bmTable">
@@ -185,8 +206,6 @@ function BansTab({ servers, serverIds }: { servers: BmDashServer[]; serverIds: s
             <tr><td colSpan={5} className="muted">No bans.</td></tr>
           ) : bans.map((b) => {
             const a = b.attributes || {};
-            // Names come from three possible places — prefer the included
-            // player resource (set by the backend), then the identifiers list.
             const idName = a.identifiers?.find((i: any) => i.type === 'name')?.identifier;
             const playerName = b.player?.name || idName || a.note?.split('\n')[0] || '(unknown)';
             return (
@@ -196,22 +215,45 @@ function BansTab({ servers, serverIds }: { servers: BmDashServer[]; serverIds: s
                     ? <a href="#" onClick={(e) => { e.preventDefault(); nav(`/player/by-bm/${b.player.id}`); }}>{playerName}</a>
                     : playerName}
                 </td>
-                <td>{a.reason || ''}</td>
+                <td>{renderBanReason(a.reason, a.expires, a.createdAt)}</td>
                 <td>{a.expires ? new Date(a.expires).toLocaleString() : 'Permanent'}</td>
                 <td>{a.createdAt ? new Date(a.createdAt).toLocaleString() : ''}</td>
-                <td>
-                  <a className="btn btn-sm" href={`https://www.battlemetrics.com/rcon/bans/${b.id}`} target="_blank" rel="noreferrer">View on BM</a>
+                <td className="bmBanActions">
+                  <a className="btn btn-sm" href={`https://www.battlemetrics.com/rcon/bans/${b.id}`} target="_blank" rel="noreferrer">BM</a>
+                  {canBan ? (
+                    <>
+                      <button className="btn btn-sm" onClick={() => setEditing(b)}>Edit</button>
+                      <button className="btn btn-sm btn-danger" onClick={() => setUnbanConfirm({ id: b.id, playerName })}>Remove</button>
+                    </>
+                  ) : null}
                 </td>
               </tr>
             );
           })}
         </tbody>
       </table>
-      {canBan ? (
-        <div className="bmFooter">
-          <p className="muted">Tip: open a player profile to ban with the full form.</p>
+
+      {/* New ban: search a player, then open the full ban form */}
+      {showSearch ? (
+        <div className="modalBackdrop" onClick={(e) => { if (e.target === e.currentTarget) setShowSearch(false); }}>
+          <div className="modalCard">
+            <header className="modalHeader"><h3>Pick a player to ban</h3></header>
+            <div className="modalBody">
+              <BMPlayerSearch
+                navigateOnPick={false}
+                onPick={(p) => {
+                  setShowSearch(false);
+                  setBanFor({ bmPlayerId: p.bmPlayerId || '', name: p.name, guid: p.guid });
+                }}
+              />
+            </div>
+            <footer className="modalFooter">
+              <button className="btn" onClick={() => setShowSearch(false)}>Cancel</button>
+            </footer>
+          </div>
         </div>
       ) : null}
+
       {banFor ? (
         <BMBanForm
           player={banFor}
@@ -220,6 +262,94 @@ function BansTab({ servers, serverIds }: { servers: BmDashServer[]; serverIds: s
           onCreated={() => { setBanFor(null); load(); }}
         />
       ) : null}
+
+      {editing ? (
+        <EditBanModal
+          ban={editing}
+          onClose={() => setEditing(null)}
+          onSaved={() => { setEditing(null); load(); }}
+        />
+      ) : null}
+
+      {unbanConfirm ? (
+        <ConfirmModal
+          title="Remove ban?"
+          danger
+          busy={busy}
+          confirmLabel="Remove"
+          body={<p>Remove the ban on <strong>{unbanConfirm.playerName}</strong>? They'll be able to rejoin immediately.</p>}
+          onConfirm={doUnban}
+          onCancel={() => setUnbanConfirm(null)}
+        />
+      ) : null}
     </section>
+  );
+}
+
+function EditBanModal({ ban, onClose, onSaved }: { ban: any; onClose: () => void; onSaved: () => void }) {
+  const a = ban.attributes || {};
+  const initialReason = a.reason || '';
+  const initialNote = a.note || '';
+  // datetime-local needs `YYYY-MM-DDTHH:mm` without timezone — convert.
+  const initialExpiresLocal = (() => {
+    if (!a.expires) return '';
+    const d = new Date(a.expires);
+    const pad = (n: number) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  })();
+  const [reason, setReason] = useState(initialReason);
+  const [note, setNote] = useState(initialNote);
+  const [expires, setExpires] = useState<string>(initialExpiresLocal);
+  const [permanent, setPermanent] = useState<boolean>(!a.expires);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function save() {
+    setBusy(true);
+    setErr(null);
+    try {
+      const expiresIso = permanent ? null : (expires ? new Date(expires).toISOString() : null);
+      await updateBan(ban.id, { reason, note, expires: expiresIso });
+      onSaved();
+    } catch (e: any) {
+      setErr(e?.message || 'Failed to save');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="modalBackdrop" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div className="modalCard bmBanForm">
+        <header className="modalHeader"><h3>Edit ban</h3></header>
+        <div className="modalBody">
+          {err ? <div className="bmError">{err}</div> : null}
+          <div className="field">
+            <label>Reason</label>
+            <input type="text" value={reason} onChange={(e) => setReason(e.target.value)} autoFocus />
+          </div>
+          <div className="field">
+            <label>Note (internal)</label>
+            <textarea rows={2} value={note} onChange={(e) => setNote(e.target.value)} />
+          </div>
+          <div className="field">
+            <label className="bmInlineLabel">
+              <input type="checkbox" checked={permanent} onChange={(e) => setPermanent(e.target.checked)} />
+              Permanent
+            </label>
+          </div>
+          {!permanent ? (
+            <div className="field">
+              <label>Expires</label>
+              <input type="datetime-local" value={expires} onChange={(e) => setExpires(e.target.value)} />
+            </div>
+          ) : null}
+        </div>
+        <footer className="modalFooter">
+          <button className="btn" onClick={onClose} disabled={busy}>Cancel</button>
+          <button className="btn btn-primary" onClick={save} disabled={busy}>Save</button>
+        </footer>
+      </div>
+    </div>
   );
 }

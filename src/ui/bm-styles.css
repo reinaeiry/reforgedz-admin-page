@@ -75,9 +75,16 @@
 .bmTable th, .bmTable td { padding: 8px 10px; text-align: left; border-bottom: 1px solid var(--border); }
 .bmTable thead th { background: var(--surface); color: var(--text-dim); font-weight: 600; font-size: .72rem; text-transform: uppercase; letter-spacing: 1px; }
 
-.bmServersGrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
-.bmServerPanel { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 12px; }
-.bmServerPanel h3 { font-size: .9rem; margin-bottom: 8px; color: var(--text-bright); }
+.bmServersGrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(380px, 1fr)); gap: 16px; }
+.bmServerPanel { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 12px; min-width: 0; }
+.bmServerPanel h3 { font-size: .9rem; margin-bottom: 8px; color: var(--text-bright); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bmOnlineList .bmTable { table-layout: fixed; }
+.bmOnlineList .bmTable th:last-child, .bmOnlineList .bmTable td:last-child { width: 70px; text-align: right; }
+.bmOnlineList .bmTable td { vertical-align: middle; }
+.bmOnlinePlayerCell { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.bmOnlinePlayerCell .name { font-weight: 500; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bmOnlinePlayerCell .guid { color: var(--text-dim); font-size: .7rem; font-family: 'JetBrains Mono', ui-monospace, monospace; }
+.bmBanActions { display: flex; gap: 4px; justify-content: flex-end; flex-wrap: wrap; }
 
 .bmActivity { background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 8px; max-height: 480px; overflow-y: auto; }
 .bmActivity-list { list-style: none; margin: 0; padding: 0; }

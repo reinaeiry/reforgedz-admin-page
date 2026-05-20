@@ -11,6 +11,7 @@ import {
   type TranscriptRef,
 } from '../../util/bmApi';
 import { hasBmPerm } from '../../util/session';
+import { renderBanReason } from '../../util/banFormat';
 import { DiscordAvatar } from '../components/DiscordAvatar';
 import { BMNotesPanel } from '../components/BMNotesPanel';
 import { BMBanForm } from '../components/BMBanForm';
@@ -151,7 +152,7 @@ export function PlayerProfilePage() {
                   const a = b.attributes || {};
                   return (
                     <tr key={b.id}>
-                      <td>{a.reason || ''}</td>
+                      <td>{renderBanReason(a.reason, a.expires, a.createdAt)}</td>
                       <td>{a.expires ? new Date(a.expires).toLocaleString() : 'Permanent'}</td>
                       <td>{a.createdAt ? new Date(a.createdAt).toLocaleString() : ''}</td>
                       <td><a className="btn btn-sm" target="_blank" rel="noreferrer" href={`https://www.battlemetrics.com/rcon/bans/${b.id}`}>View</a></td>

@@ -67,8 +67,10 @@ export function BMOnlinePlayerList({ server, pollMs = 30_000 }: Props) {
             {rows.map((r) => (
               <tr key={r.id}>
                 <td>
-                  <Link to={r.guid ? `/player/${r.guid}` : `/player/by-bm/${r.id}`}>{r.name}</Link>
-                  {r.guid ? <code className="muted" style={{ marginLeft: 6, fontSize: '.7rem' }}>{r.guid.slice(0, 8)}…</code> : null}
+                  <div className="bmOnlinePlayerCell">
+                    <Link className="name" to={r.guid ? `/player/${r.guid}` : `/player/by-bm/${r.id}`}>{r.name}</Link>
+                    {r.guid ? <span className="guid">{r.guid.slice(0, 8)}…{r.guid.slice(-4)}</span> : null}
+                  </div>
                 </td>
                 <td>
                   {canKick ? (

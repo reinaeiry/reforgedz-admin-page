@@ -123,8 +123,16 @@ export function buildBmRouter({ requirePerm, getPteroServers, asyncRoute }) {
   router.get('/players/:id', requirePerm('viewPlayers'), asyncRoute(async (req, res) => {
     const hasSessions = !!req.rzUser.perms?.battlemetrics?.viewSessions;
     const include = hasSessions ? 'identifier,session,server' : 'server';
-    const data = await bm.getPlayer(req.params.id, { include });
-    res.json(data);
+    try {
+      const data = await bm.getPlayer(req.params.id, { include });
+      res.json(data);
+    } catch (err) {
+      // BM 404 ("Unknown player") => surface as 404 to the SPA, not 500.
+      if (/\bbm 404\b/.test(err?.message || '')) {
+        return res.status(404).json({ error: 'not_found' });
+      }
+      throw err;
+    }
   }));
 
   router.get('/players/:id/bans', requirePerm('viewBans'), asyncRoute(async (req, res) => {
