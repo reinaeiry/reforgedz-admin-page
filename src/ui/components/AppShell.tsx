@@ -1,19 +1,22 @@
 import React from 'react';
 import { NavLink, Outlet, useLocation } from 'react-router-dom';
-import { clearSession, hasToolAccess, loginUrl, type ToolName } from '../../util/session';
+import { clearSession, hasAnyBmPerm, hasToolAccess, loginUrl } from '../../util/session';
 
-const NAV_ITEMS: { to: string; label: string; tool?: ToolName }[] = [
-  { to: '/replay', label: 'Replay', tool: 'replay' },
-  { to: '/admins', label: 'GM Management', tool: 'gmManagement' },
+type NavItem = { to: string; label: string; visible: () => boolean };
+
+const NAV_ITEMS: NavItem[] = [
+  { to: '/replay', label: 'Replay', visible: () => hasToolAccess('replay') },
+  { to: '/admins', label: 'GM Management', visible: () => hasToolAccess('gmManagement') },
+  { to: '/battlemetrics', label: 'BattleMetrics', visible: () => hasAnyBmPerm() },
 ];
 
 function pageName(pathname: string): string {
-  const item = NAV_ITEMS.find((n) => n.to === pathname);
+  const item = NAV_ITEMS.find((n) => pathname === n.to || pathname.startsWith(n.to + '/'));
   return item?.label ?? 'ReforgedZ';
 }
 
 function RailNav() {
-  const accessible = NAV_ITEMS.filter((n) => !n.tool || hasToolAccess(n.tool));
+  const accessible = NAV_ITEMS.filter((n) => n.visible());
   return (
     <>
       {accessible.map((n) => (

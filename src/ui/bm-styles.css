@@ -1,0 +1,154 @@
+/* ─── BattleMetrics dashboard ───────────────────────────────────────── */
+.bmPage { padding: 16px 20px; }
+
+.bmTabbar {
+  display: flex; gap: 4px; align-items: center;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 16px; padding-bottom: 8px;
+  flex-wrap: wrap;
+}
+.bmTab {
+  background: none; border: 1px solid transparent;
+  color: var(--text-dim); padding: 6px 14px; cursor: pointer;
+  font-size: .85rem; letter-spacing: .5px; border-radius: 6px 6px 0 0;
+}
+.bmTab:hover { color: var(--text-bright); background: rgba(255,255,255,.03); }
+.bmTab.on { color: var(--text-bright); border-color: var(--border-strong); border-bottom: 2px solid var(--cyan); background: var(--surface); }
+.bmTabbar-spacer { flex: 1; }
+
+.bmServerChips { display: flex; flex-wrap: wrap; gap: 6px; }
+.bmServerChip {
+  background: var(--surface); border: 1px solid var(--border);
+  color: var(--text-dim); padding: 4px 10px; cursor: pointer;
+  font-size: .75rem; font-weight: 600; letter-spacing: .5px;
+  border-radius: 999px;
+}
+.bmServerChip:hover { color: var(--text-bright); }
+.bmServerChip.on { background: var(--cyan-dim); border-color: var(--cyan); color: var(--text-bright); }
+.bmServerChip-eu.on { background: rgba(59,130,246,.15); border-color: #3b82f6; }
+.bmServerChip-na.on { background: rgba(239,68,68,.15); border-color: var(--cyan); }
+
+.bmTabPanel { display: flex; flex-direction: column; gap: 16px; }
+.bmGrid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+@media (max-width: 900px) { .bmGrid2 { grid-template-columns: 1fr; } }
+
+.bmServerStrip { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 8px; }
+.bmServerCard {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 8px; padding: 10px 12px;
+}
+.bmServerCard-tag { font-weight: 700; letter-spacing: 1px; color: var(--cyan); font-size: .75rem; }
+.bmServerCard-name { font-size: .75rem; color: var(--text-dim); margin: 4px 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bmServerCard-players { font-size: 1.4rem; font-weight: 700; color: var(--text-bright); }
+.bmServerCard-players .muted { font-size: .8rem; color: var(--text-dim); margin-left: 4px; }
+.bmServerCard-status { font-size: .7rem; color: var(--text-dim); text-transform: uppercase; }
+.bmServer-offline { opacity: .55; }
+
+.bmSearch { display: flex; flex-direction: column; gap: 8px; }
+.bmSearch-input {
+  width: 100%; padding: 10px 14px;
+  background: var(--bg-raised); border: 1px solid var(--border-strong);
+  color: var(--text-bright); border-radius: 6px;
+  font-size: .95rem;
+}
+.bmSearch-input:focus { outline: 1px solid var(--cyan); border-color: var(--cyan); }
+.bmSearch-status { color: var(--text-dim); font-size: .8rem; }
+.bmSearch-results { display: flex; flex-direction: column; }
+.bmSearch-row {
+  display: flex; align-items: center; gap: 12px;
+  padding: 8px 12px; background: transparent; border: 0; border-bottom: 1px solid var(--border);
+  color: var(--text); text-align: left; cursor: pointer;
+}
+.bmSearch-row:hover { background: var(--surface); }
+.bmSearch-rowText { flex: 1; }
+.bmSearch-name { font-weight: 600; color: var(--text-bright); }
+.bmSearch-meta { font-size: .75rem; color: var(--text-dim); }
+.bmSearch-source { font-size: .7rem; color: var(--text-dim); text-transform: uppercase; }
+
+.bmAvatar { display: inline-block; vertical-align: middle; overflow: hidden; }
+.bmAvatar-initials {
+  display: inline-flex; align-items: center; justify-content: center;
+  color: #fff; font-weight: 700; border-radius: 50%;
+}
+
+.bmTable { width: 100%; border-collapse: collapse; font-size: .85rem; }
+.bmTable th, .bmTable td { padding: 8px 10px; text-align: left; border-bottom: 1px solid var(--border); }
+.bmTable thead th { background: var(--surface); color: var(--text-dim); font-weight: 600; font-size: .72rem; text-transform: uppercase; letter-spacing: 1px; }
+
+.bmServersGrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+.bmServerPanel { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 12px; }
+.bmServerPanel h3 { font-size: .9rem; margin-bottom: 8px; color: var(--text-bright); }
+
+.bmActivity { background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 8px; max-height: 480px; overflow-y: auto; }
+.bmActivity-list { list-style: none; margin: 0; padding: 0; }
+.bmActivity-row { display: grid; grid-template-columns: 110px 90px 1fr; gap: 8px; padding: 4px 0; border-bottom: 1px solid var(--border); font-size: .8rem; }
+.bmActivity-ts { color: var(--text-dim); }
+.bmActivity-type { color: var(--cyan); font-weight: 600; }
+.bmActivity-msg { color: var(--text); overflow: hidden; text-overflow: ellipsis; }
+
+.bmToolbar { display: flex; gap: 8px; align-items: center; padding: 4px 0; }
+.bmInlineLabel { display: flex; align-items: center; gap: 6px; font-size: .85rem; color: var(--text-dim); }
+.bmError { background: rgba(239,68,68,.1); border: 1px solid rgba(239,68,68,.4); color: #fca5a5; padding: 8px 12px; border-radius: 4px; font-size: .85rem; }
+
+/* ─── Player profile ───────────────────────────────────────────────── */
+.bmProfile { padding: 16px 20px; max-width: 1100px; margin: 0 auto; }
+.bmProfile-header { display: flex; gap: 16px; align-items: center; padding: 16px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; margin-bottom: 20px; }
+.bmProfile-headerText { flex: 1; }
+.bmProfile-headerText h1 { font-size: 1.4rem; margin: 0; color: var(--text-bright); }
+.bmProfile-meta { color: var(--text-dim); margin: 4px 0 12px; font-size: .85rem; }
+.bmProfile-meta code { background: var(--bg-raised); padding: 1px 6px; border-radius: 3px; font-size: .8rem; }
+.bmProfile-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.bmProfile-section { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 16px; margin-bottom: 16px; }
+.bmProfile-section h2 { font-size: .95rem; margin: 0 0 12px; color: var(--text-bright); text-transform: uppercase; letter-spacing: 1px; }
+.bmProfile-idList { list-style: none; margin: 0; padding: 0; font-size: .85rem; }
+.bmProfile-idList li { padding: 3px 0; }
+.bmProfile-idList code { background: var(--bg-raised); padding: 1px 6px; border-radius: 3px; font-size: .8rem; }
+.bmProfile-transcriptList { list-style: none; margin: 0; padding: 0; }
+.bmProfile-transcriptList li { padding: 4px 0; border-bottom: 1px solid var(--border); font-size: .85rem; }
+.bmProfile-slot { opacity: .65; }
+.bmBadge { background: var(--surface-3); border: 1px solid var(--border); padding: 1px 6px; border-radius: 3px; font-size: .65rem; color: var(--text-dim); text-transform: uppercase; letter-spacing: 1px; margin-left: 6px; }
+
+/* ─── Notes ───────────────────────────────────────────────────────── */
+.bmNotes-add { display: flex; gap: 8px; margin-bottom: 12px; }
+.bmNotes-add textarea { flex: 1; padding: 8px; background: var(--bg-raised); border: 1px solid var(--border); color: var(--text); border-radius: 4px; font: inherit; resize: vertical; }
+.bmNotes-list { list-style: none; margin: 0; padding: 0; }
+.bmNotes-row { padding: 8px 0; border-bottom: 1px solid var(--border); font-size: .85rem; }
+.bmNotes-text { white-space: pre-wrap; color: var(--text-bright); }
+.bmNotes-meta { display: flex; justify-content: space-between; color: var(--text-dim); font-size: .75rem; margin-top: 4px; }
+
+/* ─── Ban form ────────────────────────────────────────────────────── */
+.bmRadioRow { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.bmRadioChip { display: inline-flex; align-items: center; gap: 4px; padding: 4px 10px; background: var(--surface); border: 1px solid var(--border); border-radius: 999px; cursor: pointer; font-size: .8rem; }
+.bmRadioChip.on { background: var(--cyan-dim); border-color: var(--cyan); color: var(--text-bright); }
+.bmRadioChip input[type="datetime-local"] { background: transparent; border: 0; color: inherit; font: inherit; padding: 0 0 0 4px; }
+.bmBanForm .field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
+.bmBanForm .field > label { color: var(--text-dim); font-size: .75rem; text-transform: uppercase; letter-spacing: 1px; }
+.bmBanForm .field input[type="text"], .bmBanForm .field textarea { padding: 8px; background: var(--bg-raised); border: 1px solid var(--border); color: var(--text); border-radius: 4px; font: inherit; }
+
+/* ─── Modal primitives ────────────────────────────────────────────── */
+.modalBackdrop { position: fixed; inset: 0; background: rgba(0,0,0,.65); backdrop-filter: blur(4px); display: flex; align-items: center; justify-content: center; padding: 24px; z-index: 200; }
+.modalCard { background: var(--bg-raised); border: 1px solid var(--border-strong); border-radius: 8px; width: 100%; max-width: 560px; max-height: 90vh; display: flex; flex-direction: column; overflow: hidden; }
+.modalHeader { padding: 14px 16px; border-bottom: 1px solid var(--border); }
+.modalHeader h3 { font-size: 1rem; margin: 0; color: var(--text-bright); text-transform: uppercase; letter-spacing: 1px; }
+.modalBody { padding: 16px; overflow-y: auto; font-size: .9rem; }
+.modalFooter { padding: 12px 16px; border-top: 1px solid var(--border); display: flex; gap: 8px; justify-content: flex-end; }
+
+.btn { background: var(--surface); border: 1px solid var(--border-strong); color: var(--text); padding: 6px 14px; border-radius: 4px; cursor: pointer; font: inherit; font-size: .8rem; }
+.btn:hover { background: var(--surface-2); }
+.btn:disabled { opacity: .5; cursor: not-allowed; }
+.btn-primary { background: var(--cyan); color: #fff; border-color: var(--cyan); }
+.btn-primary:hover { background: var(--cyan); filter: brightness(1.1); }
+.btn-danger { background: rgba(239,68,68,.15); border-color: var(--cyan); color: var(--text-bright); }
+.btn-danger:hover { background: rgba(239,68,68,.25); }
+.btn-sm { font-size: .72rem; padding: 4px 10px; }
+
+/* ─── Toasts ──────────────────────────────────────────────────────── */
+.toastStack { position: fixed; right: 16px; bottom: 16px; display: flex; flex-direction: column; gap: 8px; z-index: 300; max-width: 360px; }
+.toast { background: var(--bg-raised); border: 1px solid var(--border-strong); padding: 10px 14px; border-radius: 6px; font-size: .85rem; color: var(--text); box-shadow: 0 6px 18px rgba(0,0,0,.4); animation: fadeUp .2s ease both; }
+.toast-success { border-color: var(--green); }
+.toast-warn { border-color: var(--orange); }
+.toast-error { border-color: var(--cyan); }
+.muted { color: var(--text-dim); }
+
+/* Online list (Servers tab) */
+.bmOnlineList { font-size: .85rem; max-height: 320px; overflow-y: auto; }

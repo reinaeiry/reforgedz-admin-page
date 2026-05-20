@@ -11,6 +11,10 @@ import cookieParser from 'cookie-parser';
 import { Client as SshClient } from 'ssh2';
 
 import { createRzAuth } from './lib/rz-auth.js';
+import * as bmClient from './lib/battlemetrics.js';
+import { buildBmRouter } from './routes/bm.js';
+import bmWebhookRouter from './routes/bm-webhook.js';
+import { buildBmSseRouter } from './routes/bm-sse.js';
 
 import { createCanvas } from '@napi-rs/canvas';
 import gifenc from 'gifenc';
@@ -23,6 +27,10 @@ const app = express();
 app.disable('x-powered-by');
 app.set('trust proxy', true);
 app.use(compression());
+
+// BM webhook needs the raw request body so HMAC verifies against the exact
+// bytes BM signed — mount it BEFORE express.json() consumes the stream.
+app.use('/api/bm/webhook', express.raw({ type: '*/*', limit: '256kb' }), bmWebhookRouter);
 
 const JSON_LIMIT = process.env.JSON_LIMIT || '10mb';
 app.use(express.json({ limit: JSON_LIMIT }));
@@ -1077,6 +1085,17 @@ function requireTool(tool) {
   };
 }
 
+// requireBmPerm — closure factory for the BattleMetrics dashboard router.
+// Chained behind attachSession; returns 401 if no session, 403 if missing perm.
+function requireBmPerm(flag) {
+  return (req, res, next) => {
+    if (!req.rzUser) return res.status(401).json({ error: 'unauthorized' });
+    const bm = (req.rzUser.perms && req.rzUser.perms.battlemetrics) || {};
+    if (bm[flag] === true) return next();
+    return res.status(403).json({ error: 'forbidden', required: `battlemetrics.${flag}` });
+  };
+}
+
 function asyncRoute(handler) {
   return (req, res, next) => {
     Promise.resolve(handler(req, res, next)).catch(next);
@@ -1639,6 +1658,24 @@ app.get('/api/health', (req, res) => {
 app.get('/api/me', requireAuth, (req, res) => {
   res.json({ username: req.user.sub, tools: req.user.tools, perms: req.rzUser.perms });
 });
+
+// ─── BattleMetrics dashboard ────────────────────────────────────────────────
+// Each route in the bm router is individually permission-gated. The webhook
+// has its own HMAC scheme and is mounted at the top of the file (raw body).
+
+const bmRouter = buildBmRouter({
+  requirePerm: requireBmPerm,
+  asyncRoute,
+  getPteroServers: async () => {
+    if (!ADMIN_MGR_PTERO_URL || !ADMIN_MGR_PTERO_KEY) return [];
+    return await listReforgerServersCached();
+  }
+});
+const bmSseRouter = buildBmSseRouter({ requirePerm: requireBmPerm });
+// SSE mounted under /api/bm/events — must be registered BEFORE /api/bm so it
+// matches first (otherwise the bmRouter catches /events as a sub-path).
+app.use('/api/bm/events', bmSseRouter);
+app.use('/api/bm', bmRouter);
 
 app.get('/api/servers', requireAuth, requireTool('replay'), asyncRoute(async (req, res) => {
   const serversDir = path.join(DATA_DIR, 'servers');
@@ -2450,30 +2487,15 @@ function adminMgrIsValidPteroId(s) {
 }
 
 async function adminMgrFetchBmName(guid) {
-  if (!ADMIN_MGR_BM_TOKEN) return null;
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), 8000);
+  // Thin wrapper over the unified BM client (lib/battlemetrics.js).
+  // Keeps cache + rate-limit behaviour consistent with the dashboard.
+  if (!bmClient.isEnabled()) return null;
   try {
-    const res = await fetch('https://api.battlemetrics.com/players/match', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${ADMIN_MGR_BM_TOKEN}`,
-      },
-      body: JSON.stringify({
-        data: [{ type: 'identifier', attributes: { type: 'reforgerUUID', identifier: guid } }],
-      }),
-      signal: ctrl.signal,
-    });
-    if (!res.ok) return null;
-    const json = await res.json();
-    const player = (Array.isArray(json?.data) ? json.data : [])[0];
+    const player = await bmClient.matchPlayerByGuid(guid);
     const name = player?.attributes?.name;
     return typeof name === 'string' && name ? name : null;
   } catch {
     return null;
-  } finally {
-    clearTimeout(timer);
   }
 }
 

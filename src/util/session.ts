@@ -9,13 +9,28 @@
 export type AdminPerms = {
   replay: boolean;
   gmManagement: boolean;
+  viewIngameIps: boolean;
 };
 
 export type TranscriptPerms = { read: boolean; stats: boolean; restricted: boolean };
 
+export type BattleMetricsPerms = {
+  viewServers: boolean;
+  viewPlayers: boolean;
+  viewSessions: boolean;
+  viewChat: boolean;
+  viewActivity: boolean;
+  viewBans: boolean;
+  writeNotes: boolean;
+  kick: boolean;
+  ban: boolean;
+  manage: boolean;
+};
+
 export type Perms = {
   admin: AdminPerms;
   transcripts: TranscriptPerms;
+  battlemetrics: BattleMetricsPerms;
   manager: boolean;
 };
 
@@ -53,6 +68,7 @@ async function fetchMe(): Promise<Session | null> {
   if (!data || !data.user) return null;
   // Defensively normalize perms in case the auth service returns extra keys.
   const u = data.user;
+  const bm: any = u.perms?.battlemetrics || {};
   return {
     user: {
       ...u,
@@ -60,11 +76,24 @@ async function fetchMe(): Promise<Session | null> {
         admin: {
           replay: !!u.perms?.admin?.replay,
           gmManagement: !!u.perms?.admin?.gmManagement,
+          viewIngameIps: !!u.perms?.admin?.viewIngameIps,
         },
         transcripts: {
           read: !!u.perms?.transcripts?.read,
           stats: !!u.perms?.transcripts?.stats,
           restricted: !!u.perms?.transcripts?.restricted,
+        },
+        battlemetrics: {
+          viewServers: !!bm.viewServers,
+          viewPlayers: !!bm.viewPlayers,
+          viewSessions: !!bm.viewSessions,
+          viewChat: !!bm.viewChat,
+          viewActivity: !!bm.viewActivity,
+          viewBans: !!bm.viewBans,
+          writeNotes: !!bm.writeNotes,
+          kick: !!bm.kick,
+          ban: !!bm.ban,
+          manage: !!bm.manage,
         },
         manager: !!u.perms?.manager,
       },
@@ -100,6 +129,19 @@ export function hasToolAccess(tool: ToolName): boolean {
   const s = cached;
   if (!s) return false;
   return !!s.user.perms.admin[tool];
+}
+
+export type BmPermName = keyof BattleMetricsPerms;
+export function hasBmPerm(p: BmPermName): boolean {
+  const s = cached;
+  if (!s) return false;
+  return !!s.user.perms.battlemetrics[p];
+}
+export function hasAnyBmPerm(): boolean {
+  const s = cached;
+  if (!s) return false;
+  const bm = s.user.perms.battlemetrics;
+  return Object.values(bm).some(Boolean);
 }
 
 export function isManager(): boolean {
