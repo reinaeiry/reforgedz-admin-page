@@ -148,9 +148,9 @@ export function PlayerProfilePage() {
     : player.identifiers.filter((i) => i.type !== 'ip');
 
   function goBack() {
-    // Prefer browser back if there's history; fall back to /battlemetrics?tab=players.
+    // Prefer browser back if there's history; fall back to /moderation?tab=players.
     if (window.history.length > 1) nav(-1);
-    else nav('/battlemetrics?tab=players');
+    else nav('/moderation?tab=players');
   }
 
   return (
@@ -184,7 +184,7 @@ export function PlayerProfilePage() {
             ))}
           </ul>
         )}
-        {!canViewIps ? <div className="muted">IP addresses are hidden — requires <strong>battlemetrics.viewIps</strong>.</div> : null}
+        {!canViewIps ? <div className="muted">IP addresses are hidden — requires <strong>moderation.viewIps</strong>.</div> : null}
       </section>
 
       {canBans ? (

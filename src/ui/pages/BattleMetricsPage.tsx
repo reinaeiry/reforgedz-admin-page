@@ -71,7 +71,7 @@ export function BattleMetricsPage() {
   if (!visibleTabs.length) {
     return (
       <div className="page" style={{ padding: 24 }}>
-        Your account doesn't have any BattleMetrics permissions yet.
+        Your account doesn't have any Moderation permissions yet.
         Ask a manager at <a href="https://auth.reforgedz.net/manage">auth.reforgedz.net</a>.
       </div>
     );

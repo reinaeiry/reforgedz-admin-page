@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { Navigate, Route, Routes } from 'react-router-dom';
 import { ReplayToolPage } from './pages/ReplayToolPage';
 import { AdminManagerPage } from './pages/AdminManagerPage';
-import { BattleMetricsPage } from './pages/BattleMetricsPage';
+import { BattleMetricsPage as ModerationPage } from './pages/BattleMetricsPage';
 import { PlayerProfilePage } from './pages/PlayerProfilePage';
 import { AppShell } from './components/AppShell';
 import { ToastProvider } from './components/Toast';
@@ -41,7 +41,9 @@ export function App() {
         >
           <Route path="/replay" element={<ReplayToolPage />} />
           <Route path="/admins" element={<AdminManagerPage />} />
-          <Route path="/battlemetrics" element={<BattleMetricsPage />} />
+          <Route path="/moderation" element={<ModerationPage />} />
+          {/* Back-compat for any bookmark or in-app link still using /battlemetrics */}
+          <Route path="/battlemetrics" element={<Navigate to="/moderation" replace />} />
           <Route path="/player/:guid" element={<PlayerProfilePage />} />
           <Route path="/player/by-bm/:bmId" element={<PlayerProfilePage />} />
         </Route>

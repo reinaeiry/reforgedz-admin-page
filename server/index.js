@@ -1085,14 +1085,16 @@ function requireTool(tool) {
   };
 }
 
-// requireBmPerm — closure factory for the BattleMetrics dashboard router.
+// requireBmPerm — closure factory for the Moderation dashboard router.
 // Chained behind attachSession; returns 401 if no session, 403 if missing perm.
+// Reads from perms.moderation, falling back to perms.battlemetrics for any
+// JWTs still on the legacy shape.
 function requireBmPerm(flag) {
   return (req, res, next) => {
     if (!req.rzUser) return res.status(401).json({ error: 'unauthorized' });
-    const bm = (req.rzUser.perms && req.rzUser.perms.battlemetrics) || {};
-    if (bm[flag] === true) return next();
-    return res.status(403).json({ error: 'forbidden', required: `battlemetrics.${flag}` });
+    const mod = (req.rzUser.perms && (req.rzUser.perms.moderation || req.rzUser.perms.battlemetrics)) || {};
+    if (mod[flag] === true) return next();
+    return res.status(403).json({ error: 'forbidden', required: `moderation.${flag}` });
   };
 }
 

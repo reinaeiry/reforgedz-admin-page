@@ -1,8 +1,9 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { listGameLogs, type GameLogRow } from '../../util/bmApi';
+import { allowedLogLevels, type LogLevel } from '../../util/session';
 
-type LogType = 'anticheat' | 'shop' | 'kill' | 'death' | 'chat' | 'base';
+type LogType = LogLevel;
 
 const TYPE_OPTIONS: { key: LogType; label: string }[] = [
   { key: 'kill', label: 'Kills' },
@@ -27,7 +28,10 @@ type Props = {
 };
 
 export function BMLogs({ guid, showPlayerSearch, pageSize = 100 }: Props) {
-  const [activeTypes, setActiveTypes] = useState<Set<LogType>>(new Set(TYPE_OPTIONS.map((t) => t.key)));
+  // Only show chips the user is actually allowed to read.
+  const allowed = useMemo(() => new Set<LogLevel>(allowedLogLevels()), []);
+  const visibleOptions = useMemo(() => TYPE_OPTIONS.filter((t) => allowed.has(t.key)), [allowed]);
+  const [activeTypes, setActiveTypes] = useState<Set<LogType>>(new Set(visibleOptions.map((t) => t.key)));
   const [q, setQ] = useState('');
   const [playerName, setPlayerName] = useState('');
   const [rows, setRows] = useState<GameLogRow[]>([]);
@@ -35,14 +39,22 @@ export function BMLogs({ guid, showPlayerSearch, pageSize = 100 }: Props) {
   const [err, setErr] = useState<string | null>(null);
   const [offset, setOffset] = useState(0);
 
+  // Server-side enforcement is still the source of truth, but we also pin the
+  // request to only the user's allowed types so we don't waste bandwidth on
+  // rows that'll be filtered out.
+  const effectiveTypes = useMemo(() => {
+    const xs = Array.from(activeTypes).filter((t) => allowed.has(t));
+    return xs.length === visibleOptions.length ? Array.from(allowed) : xs;
+  }, [activeTypes, allowed, visibleOptions.length]);
+
   const filters = useMemo(() => ({
     guid: guid || undefined,
     name: !guid && playerName.trim() ? playerName.trim() : undefined,
-    types: activeTypes.size === TYPE_OPTIONS.length ? undefined : Array.from(activeTypes),
+    types: effectiveTypes,
     q: q.trim() || undefined,
     limit: pageSize,
     offset
-  }), [guid, playerName, activeTypes, q, pageSize, offset]);
+  }), [guid, playerName, effectiveTypes, q, pageSize, offset]);
 
   useEffect(() => {
     let alive = true;
@@ -74,7 +86,9 @@ export function BMLogs({ guid, showPlayerSearch, pageSize = 100 }: Props) {
     <div className="bmLogs">
       <div className="bmLogs-controls">
         <div className="bmLogs-chips">
-          {TYPE_OPTIONS.map((t) => (
+          {visibleOptions.length === 0 ? (
+            <span className="muted" style={{ fontSize: '.78rem' }}>No log types enabled on your account.</span>
+          ) : visibleOptions.map((t) => (
             <button
               key={t.key}
               type="button"

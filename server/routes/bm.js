@@ -340,9 +340,22 @@ export function buildBmRouter({ requirePerm, getPteroServers, asyncRoute }) {
   // if you wanted to split them later — for v1 we collapse under viewActivity.
 
   router.get('/logs', requirePerm('viewActivity'), asyncRoute(async (req, res) => {
-    const types = typeof req.query.types === 'string' && req.query.types
+    // Per-log-type perm intersection: even if a client asks for everything,
+    // we only return types the user is allowed to see.
+    const ALL_TYPES = ['kill', 'death', 'anticheat', 'shop', 'chat', 'base'];
+    const logsPerms = (req.rzUser?.perms?.moderation?.logs) || (req.rzUser?.perms?.battlemetrics?.logs) || {};
+    const fallbackAll = !!req.rzUser?.perms?.moderation?.viewActivity || !!req.rzUser?.perms?.battlemetrics?.viewActivity;
+    const allowed = ALL_TYPES.filter((t) => logsPerms[t] || (fallbackAll && !Object.keys(logsPerms).length));
+    if (!allowed.length) return res.json({ logs: [] });
+
+    const requested = typeof req.query.types === 'string' && req.query.types
       ? req.query.types.split(',').map((s) => s.trim()).filter(Boolean)
       : null;
+    const types = requested
+      ? requested.filter((t) => allowed.includes(t))
+      : allowed;
+    if (!types.length) return res.json({ logs: [] });
+
     const servers = typeof req.query.servers === 'string' && req.query.servers
       ? req.query.servers.split(',').map((s) => s.trim()).filter(Boolean)
       : null;

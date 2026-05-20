@@ -1,13 +1,13 @@
 import React from 'react';
 import { NavLink, Outlet, useLocation } from 'react-router-dom';
-import { clearSession, hasAnyBmPerm, hasToolAccess, loginUrl } from '../../util/session';
+import { clearSession, hasToolAccess, loginUrl } from '../../util/session';
 
 type NavItem = { to: string; label: string; visible: () => boolean };
 
 const NAV_ITEMS: NavItem[] = [
   { to: '/replay', label: 'Replay', visible: () => hasToolAccess('replay') },
   { to: '/admins', label: 'GM Management', visible: () => hasToolAccess('gmManagement') },
-  { to: '/battlemetrics', label: 'BattleMetrics', visible: () => hasAnyBmPerm() },
+  { to: '/moderation', label: 'Moderation', visible: () => hasToolAccess('moderation') },
 ];
 
 function pageName(pathname: string): string {
