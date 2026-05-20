@@ -109,12 +109,12 @@ export async function relayMessage(channelId, req) {
   try { return JSON.parse(text); } catch { return {}; }
 }
 
-export async function closeTicket(channelId, { closedByDiscordId, closedByName, reason }) {
+export async function closeTicket(channelId, { closedByUsername, closedByName, reason }) {
   if (!isEnabled()) throw new Error('ticket-bot not configured');
   const res = await botFetch(`/api/internal/tickets/${encodeURIComponent(channelId)}/close`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ closedByDiscordId, closedByName, reason })
+    body: JSON.stringify({ closedByUsername, closedByName, reason })
   });
   invalidate(channelId);
   return await res.json();

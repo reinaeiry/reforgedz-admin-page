@@ -7,8 +7,8 @@ type NavItem = { to: string; label: string; visible: () => boolean; group: 'mode
 const NAV_ITEMS: NavItem[] = [
   { to: '/replay', label: 'Replay', visible: () => hasToolAccess('replay'), group: 'moderation' },
   { to: '/moderation', label: 'Moderation', visible: () => hasToolAccess('moderation'), group: 'moderation' },
-  { to: '/admins', label: 'GM Management', visible: () => hasToolAccess('gmManagement'), group: 'management' },
-  { to: '/tickets', label: 'Tickets', visible: () => hasToolAccess('tickets'), group: 'management' }
+  { to: '/tickets', label: 'Tickets', visible: () => hasToolAccess('tickets'), group: 'moderation' },
+  { to: '/admins', label: 'GM Management', visible: () => hasToolAccess('gmManagement'), group: 'management' }
 ];
 
 const GROUP_ORDER: NavItem['group'][] = ['moderation', 'management'];

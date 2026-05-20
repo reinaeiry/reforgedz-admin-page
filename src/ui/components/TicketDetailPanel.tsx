@@ -47,23 +47,26 @@ export function TicketDetailPanel({ channelId, onClosed }: Props) {
   useEffect(() => {
     bmEvents.start();
     const unsub = bmEvents.subscribe((evt) => {
-      if (!evt || !evt.payload) return;
-      // The relay wraps every event so channelId is on the top-level
-      // SseEvent (we stuffed it through `payload?.payload ?? payload` in
-      // sseClient, but channelId rides alongside ts at the top — read both).
-      const eventChannelId = (evt as any).channelId || evt.payload?.channelId;
+      if (!evt) return;
+      // Top-level channelId comes from the eventBus envelope; fall back to
+      // payload for older event sources that didn't populate it.
+      const eventChannelId = evt.channelId || evt.payload?.channelId;
       if (eventChannelId !== channelId) return;
       switch (evt.type) {
         case 'ticket.message':
+          if (!evt.payload?.id) return;
           setMessages((cur) => {
             if (cur.some((m) => m.id === evt.payload.id)) return cur;
             return [...cur, evt.payload as TicketMessageT];
           });
+          markTicketSeen(channelId);
           break;
         case 'ticket.message.update':
+          if (!evt.payload?.id) return;
           setMessages((cur) => cur.map((m) => (m.id === evt.payload.id ? (evt.payload as TicketMessageT) : m)));
           break;
         case 'ticket.message.delete':
+          if (!evt.payload?.messageId) return;
           setMessages((cur) => cur.filter((m) => m.id !== evt.payload.messageId));
           break;
         case 'ticket.close':

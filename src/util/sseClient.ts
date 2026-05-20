@@ -4,7 +4,15 @@
 
 import { eventStreamUrl } from './bmApi';
 
-export type SseEvent = { type: string; ts: number; payload?: any };
+export type SseEvent = {
+  type: string;
+  ts: number;
+  payload?: any;
+  // Top-level routing keys set by the server-side eventBus envelope. For
+  // ticket events these are populated; for ban/kick events they're absent.
+  channelId?: string;
+  permKey?: string;
+};
 type Listener = (event: SseEvent) => void;
 
 export class BmEventStream {
@@ -63,9 +71,15 @@ export class BmEventStream {
   }
 
   private dispatch(type: string, data: string): void {
-    let payload: any = null;
-    try { payload = data ? JSON.parse(data) : null; } catch { payload = data; }
-    const event: SseEvent = { type, ts: payload?.ts || Date.now(), payload: payload?.payload ?? payload };
+    let parsed: any = null;
+    try { parsed = data ? JSON.parse(data) : null; } catch { parsed = data; }
+    const event: SseEvent = {
+      type,
+      ts: parsed?.ts || Date.now(),
+      payload: parsed?.payload ?? parsed,
+      channelId: parsed?.channelId,
+      permKey: parsed?.permKey
+    };
     for (const fn of this.listeners) {
       try { fn(event); } catch { /* listener errored, ignore */ }
     }

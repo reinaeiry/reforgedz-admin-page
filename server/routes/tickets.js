@@ -37,23 +37,41 @@ export function buildTicketsRouter({ requireAuth, asyncRoute }) {
 
   router.use(requireAuth, requireTicketsGate);
 
+  // Translate a thrown bot-fetch error into a clean HTTP response.
+  // Bot 503 (discord_client_unavailable) shouldn't bubble up as a 500.
+  function relayError(res, err, fallback = 'internal_error') {
+    if (err && err.status === 503) {
+      res.set('Cache-Control', 'no-store');
+      return res.status(503).json({ error: 'ticket_bot_unavailable' });
+    }
+    if (err && typeof err.status === 'number') {
+      return res.status(err.status).json({ error: fallback, detail: String(err.message || '').slice(0, 200) });
+    }
+    return res.status(500).json({ error: fallback });
+  }
+
   router.get('/', asyncRoute(async (req, res) => {
     const allowed = userAllowedCategories(req);
     if (!allowed.length) return res.json({ tickets: [] });
-    // Intersect: client filter (if any) ∩ user's allowed categories.
     const requested = typeof req.query.categories === 'string' && req.query.categories
       ? req.query.categories.split(',').map((s) => s.trim()).filter(Boolean)
       : allowed;
     const final = requested.filter((c) => allowed.includes(c));
     if (!final.length) return res.json({ tickets: [] });
     const status = String(req.query.status || 'open');
-    const list = await tickets.listTickets({ status, categories: final });
-    res.set('Cache-Control', 'private, max-age=5');
-    res.json({ tickets: list });
+    try {
+      const list = await tickets.listTickets({ status, categories: final });
+      res.set('Cache-Control', 'private, max-age=5');
+      res.json({ tickets: list });
+    } catch (err) {
+      relayError(res, err);
+    }
   }));
 
   router.get('/:channelId', asyncRoute(async (req, res) => {
-    const t = await tickets.getTicket(req.params.channelId);
+    let t;
+    try { t = await tickets.getTicket(req.params.channelId); }
+    catch (err) { return relayError(res, err); }
     if (!t) return res.status(404).json({ error: 'not_found' });
     if (!canSeeCategory(req, t.permKey)) {
       return res.status(403).json({ error: 'forbidden', required: `tickets.${t.permKey}` });
@@ -63,15 +81,21 @@ export function buildTicketsRouter({ requireAuth, asyncRoute }) {
   }));
 
   router.get('/:channelId/messages', asyncRoute(async (req, res) => {
-    const t = await tickets.getTicket(req.params.channelId);
+    let t;
+    try { t = await tickets.getTicket(req.params.channelId); }
+    catch (err) { return relayError(res, err); }
     if (!t) return res.status(404).json({ error: 'not_found' });
     if (!canSeeCategory(req, t.permKey)) {
       return res.status(403).json({ error: 'forbidden', required: `tickets.${t.permKey}` });
     }
     const limit = Math.min(parseInt(req.query.limit, 10) || 50, 100);
     const before = req.query.before || undefined;
-    const messages = await tickets.getMessages(req.params.channelId, { before, limit });
-    res.json({ messages });
+    try {
+      const messages = await tickets.getMessages(req.params.channelId, { before, limit });
+      res.json({ messages });
+    } catch (err) {
+      relayError(res, err);
+    }
   }));
 
   router.post('/:channelId/messages', asyncRoute(async (req, res) => {
@@ -122,7 +146,7 @@ export function buildTicketsRouter({ requireAuth, asyncRoute }) {
     const reason = String(req.body?.reason || 'Closed via admin panel').slice(0, 500);
     try {
       const out = await tickets.closeTicket(req.params.channelId, {
-        closedByDiscordId: '0',
+        closedByUsername: req.rzUser.username,
         closedByName: req.rzUser.username,
         reason
       });
