@@ -122,7 +122,9 @@ export function buildBmRouter({ requirePerm, getPteroServers, asyncRoute }) {
 
   router.get('/players/:id', requirePerm('viewPlayers'), asyncRoute(async (req, res) => {
     const hasSessions = !!req.rzUser.perms?.battlemetrics?.viewSessions;
-    const include = hasSessions ? 'identifier,session,server' : 'server';
+    // Valid include options on /players: server, identifier, playerCounter,
+    // playerFlag, flagPlayer. (Sessions are fetched separately if needed.)
+    const include = hasSessions ? 'identifier,server,playerCounter,playerFlag' : 'server';
     try {
       const data = await bm.getPlayer(req.params.id, { include });
       res.json(data);
