@@ -204,9 +204,11 @@ export async function getPlayer(playerId, { include = 'identifier,session,server
   return bmFetch(path, {}, { cacheKey: key, ttl: TTL.player_single });
 }
 
-// Resolve a Reforger GUID to a BattleMetrics player. Returns the player resource
-// (or null) — replaces the old adminMgrFetchBmName, which can now derive the
-// name from .data[0].attributes.name.
+// Resolve a Reforger GUID to a BattleMetrics player.
+//
+// /players/match returns an *identifier* resource (not a player). The actual
+// player ID lives at `data[0].relationships.player.data.id`. We then fetch
+// the full player record so callers get a consistent shape.
 export async function matchPlayerByGuid(guid) {
   if (!guid) return null;
   try {
@@ -216,7 +218,15 @@ export async function matchPlayerByGuid(guid) {
         data: [{ type: 'identifier', attributes: { type: 'reforgerUUID', identifier: guid } }]
       })
     });
-    return (data.data || [])[0] || null;
+    const idRes = (data.data || [])[0];
+    if (!idRes) return null;
+    const playerId = idRes.relationships?.player?.data?.id;
+    if (!playerId) return null;
+    // Return a minimal player stub so callers that only need the id can use
+    // it. For the full player object, call getPlayer(playerId).
+    const player = await getPlayer(playerId, { include: 'identifier' }).catch(() => null);
+    if (player?.data) return player.data;
+    return { type: 'player', id: playerId };
   } catch {
     return null;
   }
