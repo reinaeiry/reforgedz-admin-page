@@ -2,8 +2,11 @@
 // Ticket-Bot's /api/internal endpoints. Small in-memory TTL cache so we
 // don't hammer the bot.
 
-const BOT_BASE = (process.env.TICKET_BOT_API_BASE || '').replace(/\/+$/, '');
-const BOT_KEY = process.env.TICKET_BOT_INTERNAL_KEY || '';
+// Env reads are LAZY so imports don't fire before dotenv.config() runs in
+// server/index.js. Reading process.env at module top-level would silently
+// return empty strings on a cold boot and isEnabled() would stay false.
+function botBase() { return (process.env.TICKET_BOT_API_BASE || '').replace(/\/+$/, ''); }
+function botKey() { return process.env.TICKET_BOT_INTERNAL_KEY || ''; }
 
 const TTL_MS = 5 * 60 * 1000;
 const cache = new Map();
@@ -20,14 +23,14 @@ function setC(k, value) {
 }
 
 export function isEnabled() {
-  return !!(BOT_BASE && BOT_KEY);
+  return !!(botBase() && botKey());
 }
 
 async function botGet(path) {
   if (!isEnabled()) return null;
   try {
-    const res = await fetch(`${BOT_BASE}${path}`, {
-      headers: { 'Authorization': `Bearer ${BOT_KEY}` }
+    const res = await fetch(`${botBase()}${path}`, {
+      headers: { 'Authorization': `Bearer ${botKey()}` }
     });
     if (res.status === 404) return null;
     if (!res.ok) {
