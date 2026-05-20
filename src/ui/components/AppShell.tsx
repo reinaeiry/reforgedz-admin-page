@@ -2,13 +2,20 @@ import React from 'react';
 import { NavLink, Outlet, useLocation } from 'react-router-dom';
 import { clearSession, hasToolAccess, loginUrl } from '../../util/session';
 
-type NavItem = { to: string; label: string; visible: () => boolean };
+type NavItem = { to: string; label: string; visible: () => boolean; group: 'moderation' | 'management' };
 
 const NAV_ITEMS: NavItem[] = [
-  { to: '/replay', label: 'Replay', visible: () => hasToolAccess('replay') },
-  { to: '/admins', label: 'GM Management', visible: () => hasToolAccess('gmManagement') },
-  { to: '/moderation', label: 'Moderation', visible: () => hasToolAccess('moderation') },
+  { to: '/replay', label: 'Replay', visible: () => hasToolAccess('replay'), group: 'moderation' },
+  { to: '/moderation', label: 'Moderation', visible: () => hasToolAccess('moderation'), group: 'moderation' },
+  { to: '/admins', label: 'GM Management', visible: () => hasToolAccess('gmManagement'), group: 'management' },
+  { to: '/tickets', label: 'Tickets', visible: () => hasToolAccess('tickets'), group: 'management' }
 ];
+
+const GROUP_ORDER: NavItem['group'][] = ['moderation', 'management'];
+const GROUP_LABELS: Record<NavItem['group'], string> = {
+  moderation: 'Moderation',
+  management: 'Management'
+};
 
 function pageName(pathname: string): string {
   const item = NAV_ITEMS.find((n) => pathname === n.to || pathname.startsWith(n.to + '/'));
@@ -16,19 +23,27 @@ function pageName(pathname: string): string {
 }
 
 function RailNav() {
-  const accessible = NAV_ITEMS.filter((n) => n.visible());
   return (
     <>
-      {accessible.map((n) => (
-        <NavLink
-          key={n.to}
-          to={n.to}
-          className={({ isActive }) => `railItem${isActive ? ' railItemActive' : ''}`}
-          data-tooltip={n.label}
-        >
-          {n.label}
-        </NavLink>
-      ))}
+      {GROUP_ORDER.map((group) => {
+        const items = NAV_ITEMS.filter((n) => n.group === group && n.visible());
+        if (!items.length) return null;
+        return (
+          <React.Fragment key={group}>
+            <div className="railSectionLabel">{GROUP_LABELS[group]}</div>
+            {items.map((n) => (
+              <NavLink
+                key={n.to}
+                to={n.to}
+                className={({ isActive }) => `railItem${isActive ? ' railItemActive' : ''}`}
+                data-tooltip={n.label}
+              >
+                {n.label}
+              </NavLink>
+            ))}
+          </React.Fragment>
+        );
+      })}
     </>
   );
 }

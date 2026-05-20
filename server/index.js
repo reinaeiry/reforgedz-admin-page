@@ -14,6 +14,8 @@ import { createRzAuth } from './lib/rz-auth.js';
 import * as bmClient from './lib/battlemetrics.js';
 import { buildBmRouter } from './routes/bm.js';
 import bmWebhookRouter from './routes/bm-webhook.js';
+import { buildTicketsRouter } from './routes/tickets.js';
+import * as ticketEventRelay from './lib/ticketEventRelay.js';
 import { buildBmSseRouter } from './routes/bm-sse.js';
 
 import { createCanvas } from '@napi-rs/canvas';
@@ -1678,6 +1680,13 @@ const bmSseRouter = buildBmSseRouter({ requirePerm: requireBmPerm });
 // matches first (otherwise the bmRouter catches /events as a sub-path).
 app.use('/api/bm/events', bmSseRouter);
 app.use('/api/bm', bmRouter);
+
+const ticketsRouter = buildTicketsRouter({ requireAuth, asyncRoute });
+app.use('/api/tickets', ticketsRouter);
+
+// Tail the ticket-bot's SSE stream so events flow into our shared eventBus
+// (which bmSseRouter pipes to admin SPA clients over /api/bm/events).
+ticketEventRelay.start();
 
 app.get('/api/servers', requireAuth, requireTool('replay'), asyncRoute(async (req, res) => {
   const serversDir = path.join(DATA_DIR, 'servers');

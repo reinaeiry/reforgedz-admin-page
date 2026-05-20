@@ -10,6 +10,7 @@ export type AdminPerms = {
   replay: boolean;
   gmManagement: boolean;
   moderation: boolean;
+  tickets: boolean;
 };
 
 export type TranscriptPerms = { read: boolean; stats: boolean; restricted: boolean };
@@ -49,10 +50,30 @@ export type ModerationPerms = {
 // at its own pace.
 export type BattleMetricsPerms = ModerationPerms;
 
+export type TicketCategoryKey =
+  | 'devApplications' | 'gmApplications' | 'banAppeals'
+  | 'na1' | 'na2' | 'eu1' | 'eu2'
+  | 'shopSupport' | 'managementSupport';
+
+export const TICKET_CATEGORIES: { key: TicketCategoryKey; label: string }[] = [
+  { key: 'devApplications', label: 'Dev Applications' },
+  { key: 'gmApplications', label: 'GM Applications' },
+  { key: 'banAppeals', label: 'Ban Appeals' },
+  { key: 'na1', label: 'NA1 Support' },
+  { key: 'na2', label: 'NA2 Support' },
+  { key: 'eu1', label: 'EU1 Support' },
+  { key: 'eu2', label: 'EU2 Support' },
+  { key: 'shopSupport', label: 'Shop Support' },
+  { key: 'managementSupport', label: 'Management Support' }
+];
+
+export type TicketPerms = Partial<Record<TicketCategoryKey, boolean>>;
+
 export type Perms = {
   admin: AdminPerms;
   transcripts: TranscriptPerms;
   moderation: ModerationPerms;
+  tickets: TicketPerms;
   manager: boolean;
 };
 
@@ -110,6 +131,13 @@ async function fetchMe(): Promise<Session | null> {
   const adminMod = !!u.perms?.admin?.moderation
     || ['viewServers','viewPlayers','viewIps','viewActivity','viewBans','writeNotes','kick','ban','manage']
       .some((k) => !!mod[k]);
+  // Tickets — read per-category booleans; auto-grant admin.tickets when
+  // any category is enabled so a one-shot grant in /manage flows through.
+  const ticketsRaw: any = u.perms?.tickets || {};
+  const tickets: TicketPerms = {};
+  for (const { key } of TICKET_CATEGORIES) tickets[key] = !!ticketsRaw[key];
+  const adminTickets = !!u.perms?.admin?.tickets
+    || TICKET_CATEGORIES.some(({ key }) => !!ticketsRaw[key]);
   return {
     user: {
       ...u,
@@ -118,6 +146,7 @@ async function fetchMe(): Promise<Session | null> {
           replay: !!u.perms?.admin?.replay,
           gmManagement: !!u.perms?.admin?.gmManagement,
           moderation: adminMod,
+          tickets: adminTickets,
         },
         transcripts: {
           read: !!u.perms?.transcripts?.read,
@@ -136,6 +165,7 @@ async function fetchMe(): Promise<Session | null> {
           manage: !!mod.manage,
           logs,
         },
+        tickets,
         manager: !!u.perms?.manager,
       },
     },
@@ -228,6 +258,26 @@ export function hasAnyModPerm(): boolean {
 export type BmPermName = ModPermName;
 export function hasBmPerm(p: BmPermName): boolean { return hasModPerm(p); }
 export function hasAnyBmPerm(): boolean { return hasAnyModPerm(); }
+
+// Tickets helpers.
+export function hasTicketCategory(cat: TicketCategoryKey): boolean {
+  return !!cached?.user.perms.tickets?.[cat];
+}
+export function allowedTicketCategories(): TicketCategoryKey[] {
+  const s = cached;
+  if (!s) return [];
+  const out: TicketCategoryKey[] = [];
+  for (const { key } of TICKET_CATEGORIES) {
+    if (s.user.perms.tickets?.[key]) out.push(key);
+  }
+  return out;
+}
+// Closing requires manager OR moderation.manage, mirror of the server-side gate.
+export function canCloseTickets(): boolean {
+  const s = cached;
+  if (!s) return false;
+  return !!(s.user.perms.manager || s.user.perms.moderation?.manage);
+}
 
 export function isManager(): boolean {
   return !!cached?.user.isManager;

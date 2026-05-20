@@ -47,7 +47,14 @@ export class BmEventStream {
       this.es.onmessage = (ev) => this.dispatch('message', ev.data);
       const wrap = (type: string) => (ev: MessageEvent) => this.dispatch(type, ev.data);
       // Common types we publish from the server.
-      for (const t of ['hello', 'ban.create', 'ban.update', 'ban.delete', 'kick', 'bm.note.create', 'bm.note.update']) {
+      for (const t of [
+        'hello',
+        'ban.create', 'ban.update', 'ban.delete',
+        'kick',
+        'bm.note.create', 'bm.note.update',
+        'ticket.message', 'ticket.message.update', 'ticket.message.delete',
+        'ticket.create', 'ticket.close'
+      ]) {
         this.es.addEventListener(t, wrap(t) as EventListener);
       }
     } catch {
