@@ -1,22 +1,13 @@
 /**
  * Cookie-based SSO session, backed by auth.reforgedz.net.
  *
- * The `rz_session` cookie is set on `.reforgedz.net` and is HttpOnly, so JS
- * can't read it directly. Instead we call `GET /api/auth/me` on the auth
- * service once at boot and cache the result in memory.
+ * The `rz_session` cookie is set on `.reforgedz.net` and is HttpOnly. We
+ * call `GET /api/auth/me` on the auth service once at boot and cache the
+ * result in memory.
  */
 
 export type AdminPerms = {
   replay: boolean;
-  admin: boolean;
-  dev: boolean;
-  players: boolean;
-  bans: boolean;
-  mutes: boolean;
-  events: boolean;
-  health: boolean;
-  playerLookup: boolean;
-  pii: boolean;
   gmManagement: boolean;
 };
 
@@ -62,7 +53,26 @@ async function fetchMe(): Promise<Session | null> {
   if (!res.ok) return null;
   const data = (await res.json()) as { user: SessionUser };
   if (!data || !data.user) return null;
-  return { user: data.user };
+  // Defensively normalize perms in case the auth service returns extra keys.
+  const u = data.user;
+  return {
+    user: {
+      ...u,
+      perms: {
+        admin: {
+          replay: !!u.perms?.admin?.replay,
+          gmManagement: !!u.perms?.admin?.gmManagement,
+        },
+        transcripts: {
+          read: !!u.perms?.transcripts?.read,
+          delete: !!u.perms?.transcripts?.delete,
+          appeals: !!u.perms?.transcripts?.appeals,
+        },
+        restricted: { access: !!u.perms?.restricted?.access },
+        manager: !!u.perms?.manager,
+      },
+    },
+  };
 }
 
 export function getSession(): Session | null {
@@ -93,16 +103,6 @@ export function hasToolAccess(tool: ToolName): boolean {
   const s = cached;
   if (!s) return false;
   return !!s.user.perms.admin[tool];
-}
-
-export function hasTranscriptPerm(perm: keyof TranscriptPerms): boolean {
-  const s = cached;
-  if (!s) return false;
-  return !!s.user.perms.transcripts[perm];
-}
-
-export function hasRestrictedAccess(): boolean {
-  return !!cached?.user.perms.restricted.access;
 }
 
 export function isManager(): boolean {

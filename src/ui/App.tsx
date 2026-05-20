@@ -1,12 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Navigate, Route, Routes } from 'react-router-dom';
 import { ReplayToolPage } from './pages/ReplayToolPage';
-import { HomePage } from './pages/HomePage';
 import { AdminManagerPage } from './pages/AdminManagerPage';
-import { DevPage } from './pages/DevPage';
-import { PlayersPage } from './pages/PlayersPage';
-import { ModerationPage } from './pages/ModerationPage';
-import { ServerPage } from './pages/ServerPage';
 import { AppShell } from './components/AppShell';
 import { getSession, loadSession, loginUrl } from '../util/session';
 
@@ -40,16 +35,11 @@ export function App() {
           </RequireAuth>
         }
       >
-        <Route path="/" element={<HomePage />} />
         <Route path="/replay" element={<ReplayToolPage />} />
-        <Route path="/players" element={<PlayersPage />} />
-        <Route path="/moderation" element={<ModerationPage />} />
-        <Route path="/server" element={<ServerPage />} />
         <Route path="/admins" element={<AdminManagerPage />} />
-        <Route path="/dev" element={<DevPage />} />
       </Route>
 
-      <Route path="*" element={<Navigate to="/" replace />} />
+      <Route path="*" element={<Navigate to="/replay" replace />} />
     </Routes>
   );
 }

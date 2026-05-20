@@ -1,57 +1,27 @@
-import { getSession } from './session';
-
 function requireApiBaseUrl(): string {
   const base = import.meta.env.VITE_API_BASE_URL as string | undefined;
-  if (base && base.length > 0) {
-    return base.replace(/\/$/, '');
-  }
-
-  // If the client is hosted at https://admin.reforgedz.net, this automatically targets that.
+  if (base && base.length > 0) return base.replace(/\/$/, '');
   return window.location.origin;
 }
 
-export type ServerInfo = {
-  id: string;
-  name: string;
-};
-
-export async function login(username: string, password: string): Promise<{ token: string }> {
-  const base = requireApiBaseUrl();
-
-  const res = await fetch(`${base}/api/auth/login`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ username, password }),
-  });
-
+async function jsonOk<T>(res: Response, what: string): Promise<T> {
   if (!res.ok) {
     const text = await res.text();
-    throw new Error(text || `Login failed (${res.status})`);
+    throw new Error(text || `${what} (${res.status})`);
   }
-
-  return (await res.json()) as { token: string };
+  return (await res.json()) as T;
 }
+
+// ─── Servers ────────────────────────────────────────────────────────────────
+
+export type ServerInfo = { id: string; name: string };
 
 export async function listServers(): Promise<ServerInfo[]> {
-  const base = requireApiBaseUrl();
-  const session = getSession();
-  if (!session) {
-    throw new Error('Not authenticated');
-  }
-
-  const res = await fetch(`${base}/api/servers`, {
-    credentials: 'include',
-  });
-
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(text || `Failed to list servers (${res.status})`);
-  }
-
-  return (await res.json()) as ServerInfo[];
+  const res = await fetch(`${requireApiBaseUrl()}/api/servers`, { credentials: 'include' });
+  return jsonOk<ServerInfo[]>(res, 'Failed to list servers');
 }
+
+// ─── Replay ─────────────────────────────────────────────────────────────────
 
 export type ReplayStatus = {
   serverId: string;
@@ -67,43 +37,11 @@ export type ReplayStatus = {
   mapId: string | null;
 };
 
-export async function getReplayStatus(serverId: string): Promise<ReplayStatus> {
-  const base = requireApiBaseUrl();
-  const session = getSession();
-  if (!session) {
-    throw new Error('Not authenticated');
-  }
-
-  const res = await fetch(`${base}/api/replay/status?serverId=${encodeURIComponent(serverId)}`, {
-    credentials: 'include',
-  });
-
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(text || `Failed to get replay status (${res.status})`);
-  }
-
-  return (await res.json()) as ReplayStatus;
-}
-
 export async function getReplayStatusAll(): Promise<ReplayStatus[]> {
-  const base = requireApiBaseUrl();
-  const session = getSession();
-  if (!session) {
-    throw new Error('Not authenticated');
-  }
-
-  const res = await fetch(`${base}/api/replay/statusAll`, {
-    credentials: 'include',
-  });
-
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(text || `Failed to get replay status for all servers (${res.status})`);
-  }
-
-  return (await res.json()) as ReplayStatus[];
+  const res = await fetch(`${requireApiBaseUrl()}/api/replay/statusAll`, { credentials: 'include' });
+  return jsonOk<ReplayStatus[]>(res, 'Failed to get replay status');
 }
+
 export type ReplayRange = {
   serverId: string;
   minTsMs: number | null;
@@ -111,46 +49,15 @@ export type ReplayRange = {
 };
 
 export async function getReplayRange(serverId: string): Promise<ReplayRange> {
-  const base = requireApiBaseUrl();
-  const session = getSession();
-  if (!session) {
-    throw new Error('Not authenticated');
-  }
-
-  const res = await fetch(`${base}/api/replay/range?serverId=${encodeURIComponent(serverId)}`, {
-    credentials: 'include',
-  });
-
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(text || `Failed to get replay range (${res.status})`);
-  }
-
-  return (await res.json()) as ReplayRange;
+  const res = await fetch(`${requireApiBaseUrl()}/api/replay/range?serverId=${encodeURIComponent(serverId)}`, { credentials: 'include' });
+  return jsonOk<ReplayRange>(res, 'Failed to get replay range');
 }
 
-export type ReplayPlayer = {
-  playerId: number;
-  name: string;
-};
+export type ReplayPlayer = { playerId: number; name: string };
 
 export async function listReplayPlayers(serverId: string): Promise<ReplayPlayer[]> {
-  const base = requireApiBaseUrl();
-  const session = getSession();
-  if (!session) {
-    throw new Error('Not authenticated');
-  }
-
-  const res = await fetch(`${base}/api/replay/players?serverId=${encodeURIComponent(serverId)}`, {
-    credentials: 'include',
-  });
-
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(text || `Failed to list replay players (${res.status})`);
-  }
-
-  return (await res.json()) as ReplayPlayer[];
+  const res = await fetch(`${requireApiBaseUrl()}/api/replay/players?serverId=${encodeURIComponent(serverId)}`, { credentials: 'include' });
+  return jsonOk<ReplayPlayer[]>(res, 'Failed to list replay players');
 }
 
 export type IngestRecord = {
@@ -168,12 +75,6 @@ export async function getReplayEvents(params: {
   types?: string;
   sampleIntervalMs?: number;
 }): Promise<IngestRecord[]> {
-  const base = requireApiBaseUrl();
-  const session = getSession();
-  if (!session) {
-    throw new Error('Not authenticated');
-  }
-
   const qs = new URLSearchParams();
   qs.set('serverId', params.serverId);
   if (typeof params.sinceTsMs === 'number') qs.set('sinceTsMs', String(params.sinceTsMs));
@@ -182,17 +83,8 @@ export async function getReplayEvents(params: {
   if (params.tail) qs.set('tail', '1');
   if (params.types) qs.set('types', params.types);
   if (typeof params.sampleIntervalMs === 'number' && params.sampleIntervalMs > 0) qs.set('sampleIntervalMs', String(params.sampleIntervalMs));
-
-  const res = await fetch(`${base}/api/replay/events?${qs.toString()}`, {
-    credentials: 'include',
-  });
-
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(text || `Failed to get replay events (${res.status})`);
-  }
-
-  return (await res.json()) as IngestRecord[];
+  const res = await fetch(`${requireApiBaseUrl()}/api/replay/events?${qs.toString()}`, { credentials: 'include' });
+  return jsonOk<IngestRecord[]>(res, 'Failed to get replay events');
 }
 
 export interface VehicleIndexEntry {
@@ -211,30 +103,18 @@ export interface VehicleIndex {
 }
 
 export async function getReplayVehicles(serverId: string): Promise<VehicleIndex> {
-  const base = requireApiBaseUrl();
-  const session = getSession();
-  if (!session) throw new Error('Not authenticated');
-
-  const res = await fetch(`${base}/api/replay/vehicles?serverId=${encodeURIComponent(serverId)}`, {
-    credentials: 'include',
-  });
-  if (!res.ok) throw new Error(await res.text() || `Failed (${res.status})`);
-  return (await res.json()) as VehicleIndex;
+  const res = await fetch(`${requireApiBaseUrl()}/api/replay/vehicles?serverId=${encodeURIComponent(serverId)}`, { credentials: 'include' });
+  return jsonOk<VehicleIndex>(res, 'Failed to get replay vehicles');
 }
 
 export async function requestVehicleDetail(serverId: string, entityId: string): Promise<{ ok: boolean; requestId: string }> {
-  const base = requireApiBaseUrl();
-  const session = getSession();
-  if (!session) throw new Error('Not authenticated');
-
-  const res = await fetch(`${base}/api/replay/vehicleDetail`, {
+  const res = await fetch(`${requireApiBaseUrl()}/api/replay/vehicleDetail`, {
     method: 'POST',
     credentials: 'include',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ serverId, entityId }),
   });
-  if (!res.ok) throw new Error(await res.text() || `Failed (${res.status})`);
-  return (await res.json()) as { ok: boolean; requestId: string };
+  return jsonOk<{ ok: boolean; requestId: string }>(res, 'Failed to request vehicle detail');
 }
 
 export interface VehicleDetail {
@@ -245,17 +125,11 @@ export interface VehicleDetail {
 }
 
 export async function pollVehicleDetail(serverId: string, requestId: string): Promise<VehicleDetail | null> {
-  const base = requireApiBaseUrl();
-  const session = getSession();
-  if (!session) throw new Error('Not authenticated');
-
-  const res = await fetch(`${base}/api/replay/vehicleDetail?serverId=${encodeURIComponent(serverId)}&requestId=${encodeURIComponent(requestId)}`, {
+  const res = await fetch(`${requireApiBaseUrl()}/api/replay/vehicleDetail?serverId=${encodeURIComponent(serverId)}&requestId=${encodeURIComponent(requestId)}`, {
     credentials: 'include',
   });
-  if (!res.ok) throw new Error(await res.text() || `Failed (${res.status})`);
-  const data = await res.json();
-  if (data.pending) return null;
-  return data as VehicleDetail;
+  if (res.status === 404) return null;
+  return jsonOk<VehicleDetail>(res, 'Failed to poll vehicle detail');
 }
 
 export async function sendReplayGmPing(params: {
@@ -265,280 +139,36 @@ export async function sendReplayGmPing(params: {
   title?: string;
   reporterPlayerId?: number | null;
 }): Promise<{ ok: true }> {
-  const base = requireApiBaseUrl();
-  const session = getSession();
-  if (!session) {
-    throw new Error('Not authenticated');
-  }
-
-  const res = await fetch(`${base}/api/replay/gmPing`, {
+  const res = await fetch(`${requireApiBaseUrl()}/api/replay/gmPing`, {
     method: 'POST',
     credentials: 'include',
-    headers: {
-      'Content-Type': 'application/json',
-    },
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(params),
   });
-
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(text || `Failed to send GM ping (${res.status})`);
-  }
-
-  return (await res.json()) as { ok: true };
+  return jsonOk<{ ok: true }>(res, 'Failed to send GM ping');
 }
 
 export type MapTerrain = {
   mapId: string;
-  worldFile?: string;
-  bbMin: unknown;
-  bbMax: unknown;
-  gridW: number;
-  gridH: number;
-  heights: number[];
-  createdAt?: number;
-  updatedAt?: number;
+  resolution: number;
+  worldSize: number;
+  data: number[][];
+  origin: { x: number; y: number; z: number };
 };
 
 export async function getReplayMapTerrain(serverId: string): Promise<MapTerrain> {
-  const base = requireApiBaseUrl();
-  const session = getSession();
-  if (!session) throw new Error('Not authenticated');
-
-  const res = await fetch(`${base}/api/replay/mapTerrain?serverId=${encodeURIComponent(serverId)}`, {
-    credentials: 'include',
-  });
-
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(text || `Failed to get map terrain (${res.status})`);
-  }
-
-  return (await res.json()) as MapTerrain;
+  const res = await fetch(`${requireApiBaseUrl()}/api/replay/mapTerrain?serverId=${encodeURIComponent(serverId)}`, { credentials: 'include' });
+  return jsonOk<MapTerrain>(res, 'Failed to get map terrain');
 }
-
-export type MapTowns = {
-  mapId: string;
-  worldFile?: string;
-  towns?: Array<{ name: string; pos: unknown; baseType?: number }>;
-  createdAt?: number;
-  updatedAt?: number;
-};
 
 export type MapDescriptors = {
   mapId: string;
-  worldFile?: string;
-  // Newer exporters may send `descriptors`; older ones use `towns`.
-  descriptors?: Array<{ name?: string; pos: unknown; baseType?: number; type?: string }>;
-  towns?: Array<{ name?: string; pos: unknown; baseType?: number; type?: string }>;
-  createdAt?: number;
-  updatedAt?: number;
+  towns: Array<{ name: string; pos: { x: number; y: number; z: number }; type?: string; size?: number }>;
 };
 
 export async function getReplayMapDescriptors(serverId: string): Promise<MapDescriptors> {
-  const base = requireApiBaseUrl();
-  const session = getSession();
-  if (!session) throw new Error('Not authenticated');
-
-  const res = await fetch(`${base}/api/replay/mapDescriptors?serverId=${encodeURIComponent(serverId)}`, {
-    credentials: 'include',
-  });
-
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(text || `Failed to get map descriptors (${res.status})`);
-  }
-
-  return (await res.json()) as MapDescriptors;
-}
-
-export async function getReplayMapTowns(serverId: string): Promise<MapTowns> {
-  const base = requireApiBaseUrl();
-  const session = getSession();
-  if (!session) throw new Error('Not authenticated');
-
-  const res = await fetch(`${base}/api/replay/mapTowns?serverId=${encodeURIComponent(serverId)}`, {
-    credentials: 'include',
-  });
-
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(text || `Failed to get map towns (${res.status})`);
-  }
-
-  return (await res.json()) as MapTowns;
-}
-
-export type ToolAccess = {
-  replay: boolean;
-  admin: boolean;
-  dev: boolean;
-  players: boolean;
-  bans: boolean;
-  mutes: boolean;
-  events: boolean;
-  health: boolean;
-  playerLookup: boolean;
-  gmManagement: boolean;
-};
-
-export type AdminUser = {
-  username: string;
-  tools: Partial<ToolAccess>;
-};
-
-export async function listUsers(): Promise<AdminUser[]> {
-  const base = requireApiBaseUrl();
-  const session = getSession();
-  if (!session) throw new Error('Not authenticated');
-
-  const res = await fetch(`${base}/api/admin/users`, {
-    credentials: 'include',
-  });
-  if (!res.ok) throw new Error((await res.text()) || `Failed to list users (${res.status})`);
-  return (await res.json()) as AdminUser[];
-}
-
-export async function createUser(payload: { username: string; password: string; tools: ToolAccess }): Promise<{ ok: true }> {
-  const base = requireApiBaseUrl();
-  const session = getSession();
-  if (!session) throw new Error('Not authenticated');
-
-  const res = await fetch(`${base}/api/admin/users`, {
-    method: 'POST',
-    credentials: 'include',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(payload),
-  });
-  if (!res.ok) throw new Error((await res.text()) || `Failed to create user (${res.status})`);
-  return (await res.json()) as { ok: true };
-}
-
-export async function updateUserTools(username: string, tools: ToolAccess): Promise<{ ok: true }> {
-  const base = requireApiBaseUrl();
-  const session = getSession();
-  if (!session) throw new Error('Not authenticated');
-
-  const res = await fetch(`${base}/api/admin/users/${encodeURIComponent(username)}`, {
-    method: 'PUT',
-    credentials: 'include',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ tools }),
-  });
-  if (!res.ok) throw new Error((await res.text()) || `Failed to update user (${res.status})`);
-  return (await res.json()) as { ok: true };
-}
-
-export async function deleteUser(username: string): Promise<{ ok: true }> {
-  const base = requireApiBaseUrl();
-  const session = getSession();
-  if (!session) throw new Error('Not authenticated');
-
-  const res = await fetch(`${base}/api/admin/users/${encodeURIComponent(username)}`, {
-    method: 'DELETE',
-    credentials: 'include',
-  });
-  if (!res.ok) throw new Error((await res.text()) || `Failed to delete user (${res.status})`);
-  return (await res.json()) as { ok: true };
-}
-
-export type DevServerInfo = {
-  id: string;
-  name?: string;
-  keyHint?: string;
-};
-
-export async function listDevServers(): Promise<DevServerInfo[]> {
-  const base = requireApiBaseUrl();
-  const session = getSession();
-  if (!session) throw new Error('Not authenticated');
-
-  const res = await fetch(`${base}/api/dev/servers`, {
-    credentials: 'include',
-  });
-  if (!res.ok) throw new Error((await res.text()) || `Failed to list dev servers (${res.status})`);
-  return (await res.json()) as DevServerInfo[];
-}
-
-export async function addDevServer(payload: { serverId: string; serverKey: string; name?: string }): Promise<{ ok: true }> {
-  const base = requireApiBaseUrl();
-  const session = getSession();
-  if (!session) throw new Error('Not authenticated');
-
-  const res = await fetch(`${base}/api/dev/servers`, {
-    method: 'POST',
-    credentials: 'include',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(payload),
-  });
-  if (!res.ok) throw new Error((await res.text()) || `Failed to add dev server (${res.status})`);
-  return (await res.json()) as { ok: true };
-}
-
-export async function clearServerHistory(serverId: string): Promise<{ ok: true }> {
-  const base = requireApiBaseUrl();
-  const session = getSession();
-  if (!session) throw new Error('Not authenticated');
-
-  const res = await fetch(`${base}/api/dev/servers/clear?serverId=${encodeURIComponent(serverId)}`, {
-    method: 'POST',
-    credentials: 'include',
-  });
-  if (!res.ok) throw new Error((await res.text()) || `Failed to clear history (${res.status})`);
-  return (await res.json()) as { ok: true };
-}
-
-export async function regenerateTerrainData(serverId: string): Promise<{ ok: true }> {
-  const base = requireApiBaseUrl();
-  const session = getSession();
-  if (!session) throw new Error('Not authenticated');
-
-  const res = await fetch(`${base}/api/dev/servers/regenerateTerrain?serverId=${encodeURIComponent(serverId)}`, {
-    method: 'POST',
-    credentials: 'include',
-  });
-  if (!res.ok) throw new Error((await res.text()) || `Failed to regenerate terrain (${res.status})`);
-  return (await res.json()) as { ok: true };
-}
-
-export type DevDiscordWebhookStatus = {
-  isSet: boolean;
-  masked: string;
-};
-
-export async function getDevDiscordWebhook(): Promise<DevDiscordWebhookStatus> {
-  const base = requireApiBaseUrl();
-  const session = getSession();
-  if (!session) throw new Error('Not authenticated');
-
-  const res = await fetch(`${base}/api/dev/discordWebhook`, {
-    credentials: 'include',
-  });
-  if (!res.ok) throw new Error((await res.text()) || `Failed to load webhook (${res.status})`);
-  return (await res.json()) as DevDiscordWebhookStatus;
-}
-
-export async function setDevDiscordWebhook(webhookUrl: string): Promise<{ ok: true }> {
-  const base = requireApiBaseUrl();
-  const session = getSession();
-  if (!session) throw new Error('Not authenticated');
-
-  const res = await fetch(`${base}/api/dev/discordWebhook`, {
-    method: 'POST',
-    credentials: 'include',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ webhookUrl }),
-  });
-  if (!res.ok) throw new Error((await res.text()) || `Failed to save webhook (${res.status})`);
-  return (await res.json()) as { ok: true };
+  const res = await fetch(`${requireApiBaseUrl()}/api/replay/mapDescriptors?serverId=${encodeURIComponent(serverId)}`, { credentials: 'include' });
+  return jsonOk<MapDescriptors>(res, 'Failed to get map descriptors');
 }
 
 export async function exportReplayEventToDiscord(params: {
@@ -549,340 +179,16 @@ export async function exportReplayEventToDiscord(params: {
   focusPlayerId?: number | null;
   playerIds?: number[] | null;
 }): Promise<{ ok: true }> {
-  const base = requireApiBaseUrl();
-  const session = getSession();
-  if (!session) throw new Error('Not authenticated');
-
-  const res = await fetch(`${base}/api/replay/exportDiscord`, {
+  const res = await fetch(`${requireApiBaseUrl()}/api/replay/exportDiscord`, {
     method: 'POST',
     credentials: 'include',
-    headers: {
-      'Content-Type': 'application/json',
-    },
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(params),
   });
-  if (!res.ok) throw new Error((await res.text()) || `Failed to export to Discord (${res.status})`);
-  return (await res.json()) as { ok: true };
+  return jsonOk<{ ok: true }>(res, 'Failed to export to Discord');
 }
 
-// ─── Admin Bridge API ──────────────────────────────────────────────
-
-export type ServerHealth = {
-  serverId: string;
-  fps: number;
-  playerCount: number;
-  tsMs: number;
-};
-
-export async function getServerHealth(serverId: string): Promise<ServerHealth> {
-  const base = requireApiBaseUrl();
-  const session = getSession();
-  if (!session) throw new Error('Not authenticated');
-
-  const res = await fetch(`${base}/api/admin/health?serverId=${encodeURIComponent(serverId)}`, {
-    credentials: 'include',
-  });
-  if (!res.ok) throw new Error((await res.text()) || `Failed to get server health (${res.status})`);
-  return (await res.json()) as ServerHealth;
-}
-
-export type BanEntry = {
-  playerUID: string;
-  playerName: string;
-  reason: string;
-  timestamp: number;
-  duration: number;
-  bannedBy: string;
-};
-
-export async function getBans(serverId: string): Promise<BanEntry[]> {
-  const base = requireApiBaseUrl();
-  const session = getSession();
-  if (!session) throw new Error('Not authenticated');
-
-  const res = await fetch(`${base}/api/admin/bans?serverId=${encodeURIComponent(serverId)}`, {
-    credentials: 'include',
-  });
-  if (!res.ok) throw new Error((await res.text()) || `Failed to get bans (${res.status})`);
-  return (await res.json()) as BanEntry[];
-}
-
-export async function addBan(params: {
-  serverId: string;
-  playerUID: string;
-  playerName: string;
-  reason: string;
-  duration: number;
-  bannedBy: string;
-}): Promise<{ ok: true }> {
-  const base = requireApiBaseUrl();
-  const session = getSession();
-  if (!session) throw new Error('Not authenticated');
-
-  const res = await fetch(`${base}/api/admin/bans`, {
-    method: 'POST',
-    credentials: 'include',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(params),
-  });
-  if (!res.ok) throw new Error((await res.text()) || `Failed to add ban (${res.status})`);
-  return (await res.json()) as { ok: true };
-}
-
-export async function removeBan(serverId: string, playerUID: string): Promise<{ ok: true }> {
-  const base = requireApiBaseUrl();
-  const session = getSession();
-  if (!session) throw new Error('Not authenticated');
-
-  const res = await fetch(`${base}/api/admin/bans/${encodeURIComponent(playerUID)}?serverId=${encodeURIComponent(serverId)}`, {
-    method: 'DELETE',
-    credentials: 'include',
-  });
-  if (!res.ok) throw new Error((await res.text()) || `Failed to remove ban (${res.status})`);
-  return (await res.json()) as { ok: true };
-}
-
-export type MuteEntry = {
-  playerUID: string;
-  playerName: string;
-  reason: string;
-  timestamp: number;
-  duration: number;
-  mutedBy: string;
-};
-
-export async function getMutes(serverId: string): Promise<MuteEntry[]> {
-  const base = requireApiBaseUrl();
-  const session = getSession();
-  if (!session) throw new Error('Not authenticated');
-
-  const res = await fetch(`${base}/api/admin/mutes?serverId=${encodeURIComponent(serverId)}`, {
-    credentials: 'include',
-  });
-  if (!res.ok) throw new Error((await res.text()) || `Failed to get mutes (${res.status})`);
-  return (await res.json()) as MuteEntry[];
-}
-
-export async function addMute(params: {
-  serverId: string;
-  playerUID: string;
-  playerName: string;
-  reason: string;
-  duration: number;
-  mutedBy: string;
-}): Promise<{ ok: true }> {
-  const base = requireApiBaseUrl();
-  const session = getSession();
-  if (!session) throw new Error('Not authenticated');
-
-  const res = await fetch(`${base}/api/admin/mutes`, {
-    method: 'POST',
-    credentials: 'include',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(params),
-  });
-  if (!res.ok) throw new Error((await res.text()) || `Failed to add mute (${res.status})`);
-  return (await res.json()) as { ok: true };
-}
-
-export async function removeMute(serverId: string, playerUID: string): Promise<{ ok: true }> {
-  const base = requireApiBaseUrl();
-  const session = getSession();
-  if (!session) throw new Error('Not authenticated');
-
-  const res = await fetch(`${base}/api/admin/mutes/${encodeURIComponent(playerUID)}?serverId=${encodeURIComponent(serverId)}`, {
-    method: 'DELETE',
-    credentials: 'include',
-  });
-  if (!res.ok) throw new Error((await res.text()) || `Failed to remove mute (${res.status})`);
-  return (await res.json()) as { ok: true };
-}
-
-export async function kickPlayer(params: {
-  serverId: string;
-  playerUID: string;
-  reason: string;
-}): Promise<{ ok: true }> {
-  const base = requireApiBaseUrl();
-  const session = getSession();
-  if (!session) throw new Error('Not authenticated');
-
-  const res = await fetch(`${base}/api/admin/kick`, {
-    method: 'POST',
-    credentials: 'include',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(params),
-  });
-  if (!res.ok) throw new Error((await res.text()) || `Failed to kick player (${res.status})`);
-  return (await res.json()) as { ok: true };
-}
-
-export async function sendGlobalMessage(params: {
-  serverId: string;
-  title?: string;
-  message: string;
-}): Promise<{ ok: true }> {
-  const base = requireApiBaseUrl();
-  const session = getSession();
-  if (!session) throw new Error('Not authenticated');
-
-  const res = await fetch(`${base}/api/admin/globalMessage`, {
-    method: 'POST',
-    credentials: 'include',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(params),
-  });
-  if (!res.ok) throw new Error((await res.text()) || `Failed to send global message (${res.status})`);
-  return (await res.json()) as { ok: true };
-}
-
-export type LivePlayer = {
-  playerId: number;
-  name: string;
-  identityId: string;
-  pos: { x: number; y: number; z: number } | null;
-  inVehicle: boolean;
-  vehicle: { name: string; prefab: string } | null;
-  weapon: { name: string; prefab: string } | null;
-};
-
-export async function getLivePlayers(serverId: string): Promise<LivePlayer[]> {
-  const base = requireApiBaseUrl();
-  const session = getSession();
-  if (!session) throw new Error('Not authenticated');
-
-  const res = await fetch(`${base}/api/admin/players?serverId=${encodeURIComponent(serverId)}`, {
-    credentials: 'include',
-  });
-  if (!res.ok) throw new Error((await res.text()) || `Failed to get live players (${res.status})`);
-  return (await res.json()) as LivePlayer[];
-}
-
-export type EventLogEntry = {
-  type: string;
-  tsMs: number;
-  receivedAt: number;
-  event: Record<string, unknown>;
-};
-
-export async function getEventLog(params: {
-  serverId: string;
-  types?: string;
-  sinceTsMs?: number;
-  untilTsMs?: number;
-  limit?: number;
-}): Promise<EventLogEntry[]> {
-  const base = requireApiBaseUrl();
-  const session = getSession();
-  if (!session) throw new Error('Not authenticated');
-
-  const qs = new URLSearchParams();
-  qs.set('serverId', params.serverId);
-  if (params.types) qs.set('types', params.types);
-  if (typeof params.sinceTsMs === 'number') qs.set('sinceTsMs', String(params.sinceTsMs));
-  if (typeof params.untilTsMs === 'number') qs.set('untilTsMs', String(params.untilTsMs));
-  if (typeof params.limit === 'number') qs.set('limit', String(params.limit));
-
-  const res = await fetch(`${base}/api/admin/events?${qs.toString()}`, {
-    credentials: 'include',
-  });
-  if (!res.ok) throw new Error((await res.text()) || `Failed to get event log (${res.status})`);
-  return (await res.json()) as EventLogEntry[];
-}
-
-export type PlayerProfile = {
-  playerUID: string;
-  playerName: string;
-  lastSeen: number | null;
-  totalKills: number;
-  totalDeaths: number;
-  bans: BanEntry[];
-  mutes: MuteEntry[];
-};
-
-export async function getPlayerProfile(serverId: string, playerUID: string): Promise<PlayerProfile> {
-  const base = requireApiBaseUrl();
-  const session = getSession();
-  if (!session) throw new Error('Not authenticated');
-
-  const res = await fetch(
-    `${base}/api/admin/player/${encodeURIComponent(playerUID)}?serverId=${encodeURIComponent(serverId)}`,
-    { credentials: 'include' }
-  );
-  if (!res.ok) throw new Error((await res.text()) || `Failed to get player profile (${res.status})`);
-  return (await res.json()) as PlayerProfile;
-}
-
-// ─── Shutoff ─────────────────────────────────────────────────────────────────
-
-export async function getShutoff(serverId: string): Promise<{ shutoff: boolean }> {
-  const base = requireApiBaseUrl();
-  const session = getSession();
-  if (!session) throw new Error('Not authenticated');
-
-  const res = await fetch(`${base}/api/admin/shutoff?serverId=${encodeURIComponent(serverId)}`, {
-    credentials: 'include',
-  });
-  if (!res.ok) throw new Error((await res.text()) || `Failed to get shutoff status (${res.status})`);
-  return (await res.json()) as { shutoff: boolean };
-}
-
-export async function setShutoff(serverId: string, enabled: boolean): Promise<{ ok: true; shutoff: boolean }> {
-  const base = requireApiBaseUrl();
-  const session = getSession();
-  if (!session) throw new Error('Not authenticated');
-
-  const res = await fetch(`${base}/api/admin/shutoff`, {
-    method: 'POST',
-    credentials: 'include',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ serverId, enabled }),
-  });
-  if (!res.ok) throw new Error((await res.text()) || `Failed to set shutoff (${res.status})`);
-  return (await res.json()) as { ok: true; shutoff: boolean };
-}
-
-// ─── PII ─────────────────────────────────────────────────────────────────────
-
-export type PiiPlayer = {
-  uid: string;
-  names: string[];
-  ips: string[];
-  firstSeen: number;
-  lastSeen: number;
-  sessionCount: number;
-  altUids: string[];
-};
-
-export type PiiResponse = {
-  players: PiiPlayer[];
-  total: number;
-};
-
-export async function getPiiPlayers(serverId: string): Promise<PiiResponse> {
-  const base = requireApiBaseUrl();
-  const session = getSession();
-  if (!session) throw new Error('Not authenticated');
-
-  const res = await fetch(
-    `${base}/api/admin/pii?serverId=${encodeURIComponent(serverId)}`,
-    { credentials: 'include' }
-  );
-  if (!res.ok) throw new Error((await res.text()) || `Failed to get PII data (${res.status})`);
-  return (await res.json()) as PiiResponse;
-}
-
-// ─── Admin Manager ───────────────────────────────────────────────────────────
+// ─── GM Management (Admin Manager) ──────────────────────────────────────────
 
 export type ReforgerServer = {
   pteroId: string;
@@ -916,35 +222,18 @@ export type AdminManagerSnapshot = {
   fromCache?: boolean;
 };
 
-export async function getAdminManagerServers(): Promise<{ servers: ReforgerServer[]; dryRun: boolean }> {
-  const base = requireApiBaseUrl();
-  const res = await fetch(`${base}/api/adminmgr/servers`, { credentials: 'include' });
-  if (!res.ok) throw new Error((await res.text()) || `Failed to list servers (${res.status})`);
-  return (await res.json()) as { servers: ReforgerServer[]; dryRun: boolean };
-}
-
 export async function getAdminManagerSnapshot(opts?: { force?: boolean; sinceVersion?: number }): Promise<AdminManagerSnapshot | null> {
-  const base = requireApiBaseUrl();
   const qs = new URLSearchParams();
   if (opts?.force) qs.set('force', '1');
   if (opts?.sinceVersion) qs.set('since', String(opts.sinceVersion));
-  const url = `${base}/api/adminmgr/admins${qs.toString() ? '?' + qs.toString() : ''}`;
-  const res = await fetch(url, { credentials: 'include', });
+  const url = `${requireApiBaseUrl()}/api/adminmgr/admins${qs.toString() ? '?' + qs.toString() : ''}`;
+  const res = await fetch(url, { credentials: 'include' });
   if (res.status === 304) return null;
-  if (!res.ok) throw new Error((await res.text()) || `Failed to load admins (${res.status})`);
-  return (await res.json()) as AdminManagerSnapshot;
-}
-
-export async function getAdminManagerDryRun(): Promise<{ enabled: boolean }> {
-  const base = requireApiBaseUrl();
-  const res = await fetch(`${base}/api/adminmgr/dryrun`, { credentials: 'include', });
-  if (!res.ok) throw new Error((await res.text()) || `Failed to get dry-run state (${res.status})`);
-  return (await res.json()) as { enabled: boolean };
+  return jsonOk<AdminManagerSnapshot>(res, 'Failed to load admins');
 }
 
 export async function addAdminToCache(guid: string, displayName?: string): Promise<void> {
-  const base = requireApiBaseUrl();
-  const res = await fetch(`${base}/api/adminmgr/admin`, {
+  const res = await fetch(`${requireApiBaseUrl()}/api/adminmgr/admin`, {
     method: 'POST',
     credentials: 'include',
     headers: { 'Content-Type': 'application/json' },
@@ -954,8 +243,7 @@ export async function addAdminToCache(guid: string, displayName?: string): Promi
 }
 
 export async function renameAdmin(guid: string, displayName: string): Promise<void> {
-  const base = requireApiBaseUrl();
-  const res = await fetch(`${base}/api/adminmgr/admin/${encodeURIComponent(guid)}`, {
+  const res = await fetch(`${requireApiBaseUrl()}/api/adminmgr/admin/${encodeURIComponent(guid)}`, {
     method: 'PUT',
     credentials: 'include',
     headers: { 'Content-Type': 'application/json' },
@@ -971,13 +259,11 @@ export type AdminDeleteResult = {
 };
 
 export async function deleteAdmin(guid: string): Promise<AdminDeleteResult> {
-  const base = requireApiBaseUrl();
-  const res = await fetch(`${base}/api/adminmgr/admin/${encodeURIComponent(guid)}`, {
+  const res = await fetch(`${requireApiBaseUrl()}/api/adminmgr/admin/${encodeURIComponent(guid)}`, {
     method: 'DELETE',
     credentials: 'include',
   });
-  if (!res.ok) throw new Error((await res.text()) || `Failed to delete admin (${res.status})`);
-  return (await res.json()) as AdminDeleteResult;
+  return jsonOk<AdminDeleteResult>(res, 'Failed to delete admin');
 }
 
 export type AdminToggleResult = {
@@ -989,15 +275,13 @@ export type AdminToggleResult = {
 };
 
 export async function toggleAdminOnServer(guid: string, pteroId: string, present: boolean): Promise<AdminToggleResult> {
-  const base = requireApiBaseUrl();
-  const res = await fetch(`${base}/api/adminmgr/toggle`, {
+  const res = await fetch(`${requireApiBaseUrl()}/api/adminmgr/toggle`, {
     method: 'POST',
     credentials: 'include',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ guid, pteroId, present }),
   });
-  if (!res.ok) throw new Error((await res.text()) || `Failed to toggle admin (${res.status})`);
-  return (await res.json()) as AdminToggleResult;
+  return jsonOk<AdminToggleResult>(res, 'Failed to toggle admin');
 }
 
 // ─── Priority Queue (shop-backed) ───────────────────────────────────────────
@@ -1019,28 +303,24 @@ export type PriorityQueueSnapshot = {
 };
 
 export async function getPriorityQueue(): Promise<PriorityQueueSnapshot> {
-  const base = requireApiBaseUrl();
-  const res = await fetch(`${base}/api/priority-queue`, { credentials: 'include', });
-  if (!res.ok) throw new Error((await res.text()) || `Failed to load priority queue (${res.status})`);
-  return (await res.json()) as PriorityQueueSnapshot;
+  const res = await fetch(`${requireApiBaseUrl()}/api/priority-queue`, { credentials: 'include' });
+  return jsonOk<PriorityQueueSnapshot>(res, 'Failed to load priority queue');
 }
 
 export async function addManualPriorityQueue(
   guid: string,
   opts?: { displayName?: string; serverId?: string },
 ): Promise<{ ok: true; entry: PriorityQueueEntry }> {
-  const base = requireApiBaseUrl();
   const body: Record<string, unknown> = { guid };
   if (opts?.displayName) body.displayName = opts.displayName;
   if (opts?.serverId) body.serverId = opts.serverId;
-  const res = await fetch(`${base}/api/priority-queue`, {
+  const res = await fetch(`${requireApiBaseUrl()}/api/priority-queue`, {
     method: 'POST',
     credentials: 'include',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
-  if (!res.ok) throw new Error((await res.text()) || `Failed to add (${res.status})`);
-  return (await res.json()) as { ok: true; entry: PriorityQueueEntry };
+  return jsonOk<{ ok: true; entry: PriorityQueueEntry }>(res, 'Failed to add to priority queue');
 }
 
 export async function togglePriorityQueueServer(
@@ -1049,37 +329,19 @@ export async function togglePriorityQueueServer(
   present: boolean,
   displayName?: string,
 ): Promise<{ ok: true; entry: PriorityQueueEntry }> {
-  const base = requireApiBaseUrl();
-  const res = await fetch(`${base}/api/priority-queue/toggle`, {
+  const res = await fetch(`${requireApiBaseUrl()}/api/priority-queue/toggle`, {
     method: 'POST',
     credentials: 'include',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ guid, serverId, present, displayName }),
   });
-  if (!res.ok) throw new Error((await res.text()) || `Failed to toggle (${res.status})`);
-  return (await res.json()) as { ok: true; entry: PriorityQueueEntry };
+  return jsonOk<{ ok: true; entry: PriorityQueueEntry }>(res, 'Failed to toggle priority queue');
 }
 
 export async function deletePriorityQueue(guid: string): Promise<{ ok: true; removed: number }> {
-  const base = requireApiBaseUrl();
-  const res = await fetch(`${base}/api/priority-queue/${encodeURIComponent(guid)}`, {
+  const res = await fetch(`${requireApiBaseUrl()}/api/priority-queue/${encodeURIComponent(guid)}`, {
     method: 'DELETE',
     credentials: 'include',
   });
-  if (!res.ok) throw new Error((await res.text()) || `Failed to delete (${res.status})`);
-  return (await res.json()) as { ok: true; removed: number };
-}
-
-export type BackfillResult = { ok: true; resolved: number; unknown: number; total: number };
-
-export async function runAdminBackfill(useBattleMetrics: boolean): Promise<BackfillResult> {
-  const base = requireApiBaseUrl();
-  const res = await fetch(`${base}/api/adminmgr/backfill`, {
-    method: 'POST',
-    credentials: 'include',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ useBattleMetrics }),
-  });
-  if (!res.ok) throw new Error((await res.text()) || `Backfill failed (${res.status})`);
-  return (await res.json()) as BackfillResult;
+  return jsonOk<{ ok: true; removed: number }>(res, 'Failed to delete priority queue entry');
 }
