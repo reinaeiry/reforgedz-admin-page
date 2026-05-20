@@ -276,6 +276,10 @@ export async function createBan({ playerId, identifiers, reason, note, expires, 
   //   "must have required property 'identifiers'" at /data/attributes.
   // When the caller only passed `playerId` we resolve a usable set of
   // identifier IDs from the player so BM has something to lock against.
+  // Allow-list the identifier types we auto-include. `name` identifiers
+  // would ban any future player picking the same name; ip identifiers can
+  // hardware-ban a household. We default to the stable account-level IDs.
+  const DEFAULT_BANNABLE_TYPES = new Set(['reforgerUUID', 'steamID', 'mobileDeviceID', 'hwid']);
   let idList = (identifiers || []).map(String);
   if (!idList.length && playerId) {
     try {
@@ -283,12 +287,7 @@ export async function createBan({ playerId, identifiers, reason, note, expires, 
       const included = player?.included || [];
       idList = included
         .filter((inc) => inc?.type === 'identifier')
-        .filter((inc) => {
-          const t = inc?.attributes?.type;
-          // Skip ip identifiers in the default set — BM bans on those
-          // are too aggressive without an explicit caller request.
-          return t && t !== 'ip';
-        })
+        .filter((inc) => DEFAULT_BANNABLE_TYPES.has(inc?.attributes?.type))
         .map((inc) => String(inc.id));
     } catch (err) {
       // Fall through with an empty list — BM will reject with a clean

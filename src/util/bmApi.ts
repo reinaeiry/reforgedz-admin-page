@@ -10,7 +10,17 @@ function base(): string {
 async function jsonOk<T>(res: Response, what: string): Promise<T> {
   if (!res.ok) {
     const text = await res.text();
-    throw new Error(text || `${what} (${res.status})`);
+    // Prefer the server-side `detail` field (or `error`) over the raw
+    // body so failures surface a clean human-readable message in the
+    // catch handler.
+    let pretty = text;
+    try {
+      const j = JSON.parse(text);
+      if (typeof j === 'object' && j) {
+        pretty = j.detail || j.error || text;
+      }
+    } catch { /* keep raw text */ }
+    throw new Error(pretty || `${what} (${res.status})`);
   }
   return (await res.json()) as T;
 }

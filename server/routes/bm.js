@@ -198,7 +198,7 @@ export function buildBmRouter({ requirePerm, getPteroServers, asyncRoute }) {
       playerId, identifiers, reason, note, expires, orgWide, serverIds, dualWrite
     } = req.body || {};
 
-    const created = await bm.createBan({
+    const args = {
       playerId,
       identifiers,
       reason,
@@ -206,7 +206,37 @@ export function buildBmRouter({ requirePerm, getPteroServers, asyncRoute }) {
       expires,
       orgWide: orgWide !== false,
       serverIds
-    });
+    };
+
+    let created;
+    try {
+      created = await bm.createBan(args);
+    } catch (err) {
+      // Pass BM's HTTP status + message through cleanly so the UI can show
+      // the actual reason ("Forbidden", "Invalid Form Body", etc.) instead
+      // of a generic 500. Also auto-retry org-wide → per-server if BM
+      // forbids the org-wide write (common when the API token is scoped
+      // to specific servers rather than the whole org).
+      const msg = String(err?.message || '');
+      if (msg.startsWith('bm 403') && args.orgWide) {
+        try {
+          const fallbackServers = (Array.isArray(args.serverIds) && args.serverIds.length)
+            ? args.serverIds
+            : bmServers.listAll().map((s) => s.bmServerId);
+          created = await bm.createBan({ ...args, orgWide: false, serverIds: fallbackServers });
+        } catch (err2) {
+          return res.status(parseStatus(err2) || 500).json({
+            error: 'bm_ban_failed',
+            detail: stripBmPrefix(err2?.message || msg)
+          });
+        }
+      } else {
+        return res.status(parseStatus(err) || 500).json({
+          error: 'bm_ban_failed',
+          detail: stripBmPrefix(msg)
+        });
+      }
+    }
 
     postAuditEvent({
       actorUsername: req.rzUser.username,
@@ -229,6 +259,15 @@ export function buildBmRouter({ requirePerm, getPteroServers, asyncRoute }) {
     // adminmgr code path.
     res.json({ ban: created, dualWritten: false });
   }));
+
+  // Pull a numeric HTTP status off our `bm <code>: ...` error messages.
+  function parseStatus(err) {
+    const m = /^bm (\d{3})/.exec(String(err?.message || ''));
+    return m ? parseInt(m[1], 10) : null;
+  }
+  function stripBmPrefix(msg) {
+    return String(msg || '').replace(/^bm \d{3}:\s*/, '').slice(0, 400);
+  }
 
   router.patch('/bans/:id', requirePerm('ban'), asyncRoute(async (req, res) => {
     const updated = await bm.updateBan(req.params.id, req.body || {});
