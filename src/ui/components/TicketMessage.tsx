@@ -2,20 +2,75 @@ import React from 'react';
 import type { TicketAttachment, TicketMessage as TicketMessageT } from '../../util/ticketsApi';
 
 const URL_RE = /\bhttps?:\/\/[^\s<>"]+/g;
+const IMAGE_EXT_RE = /\.(png|jpe?g|gif|webp|bmp|avif)(?:\?|#|$)/i;
+const VIDEO_EXT_RE = /\.(mp4|webm|mov|m4v)(?:\?|#|$)/i;
+const AUDIO_EXT_RE = /\.(mp3|ogg|wav|m4a)(?:\?|#|$)/i;
+const DISCORD_CDN_RE = /^https?:\/\/(?:cdn|media)\.discord(?:app)?\.(?:com|net)\//i;
+const TENOR_RE = /^https?:\/\/(?:www\.)?tenor\.com\//i;
+const GIPHY_RE = /^https?:\/\/(?:www\.)?giphy\.com\//i;
 
-function autoLink(text: string): React.ReactNode[] {
-  if (!text) return [];
-  const parts: React.ReactNode[] = [];
+type UrlKind = 'image' | 'video' | 'audio' | 'tenor' | 'giphy' | 'link';
+
+function classifyUrl(url: string): UrlKind {
+  // Strip URL fragment / query for extension detection.
+  if (IMAGE_EXT_RE.test(url)) return 'image';
+  if (VIDEO_EXT_RE.test(url)) return 'video';
+  if (AUDIO_EXT_RE.test(url)) return 'audio';
+  // Discord CDN attachments typically end with the extension before `?ex=`
+  // but the regexes above already catch those. Some Discord URLs lack
+  // extensions (e.g. forwarded sticker URLs); the URL_RE filter handles
+  // the common path.
+  if (TENOR_RE.test(url)) return 'tenor';
+  if (GIPHY_RE.test(url)) return 'giphy';
+  return 'link';
+}
+
+function MediaEmbed({ url, kind }: { url: string; kind: UrlKind }) {
+  if (kind === 'image') {
+    return (
+      <a href={url} target="_blank" rel="noreferrer" className="ticketAttachment-img">
+        <img src={url} alt="" loading="lazy" />
+      </a>
+    );
+  }
+  if (kind === 'video') {
+    return (
+      <video controls preload="metadata" className="ticketAttachment-video">
+        <source src={url} />
+      </video>
+    );
+  }
+  if (kind === 'audio') {
+    return <audio controls preload="metadata" src={url} className="ticketAttachment-audio" />;
+  }
+  // tenor / giphy don't expose direct media URLs without scraping; just link them.
+  return <a href={url} target="_blank" rel="noreferrer">{url}</a>;
+}
+
+// Splits the content into linkable inline parts. Embeddable URLs get
+// rendered as block elements (images/videos) AFTER the textual block so
+// they don't disrupt the inline flow.
+function renderContent(text: string): { inline: React.ReactNode[]; embeds: { url: string; kind: UrlKind }[] } {
+  if (!text) return { inline: [], embeds: [] };
+  const inline: React.ReactNode[] = [];
+  const embeds: { url: string; kind: UrlKind }[] = [];
+  const seen = new Set<string>();
   let cursor = 0;
   let match: RegExpExecArray | null;
   URL_RE.lastIndex = 0;
   while ((match = URL_RE.exec(text)) !== null) {
-    if (match.index > cursor) parts.push(text.slice(cursor, match.index));
-    parts.push(<a key={match.index} href={match[0]} target="_blank" rel="noreferrer">{match[0]}</a>);
-    cursor = match.index + match[0].length;
+    if (match.index > cursor) inline.push(text.slice(cursor, match.index));
+    const url = match[0];
+    const kind = classifyUrl(url);
+    inline.push(<a key={match.index} href={url} target="_blank" rel="noreferrer">{url}</a>);
+    if ((kind === 'image' || kind === 'video' || kind === 'audio') && !seen.has(url)) {
+      embeds.push({ url, kind });
+      seen.add(url);
+    }
+    cursor = match.index + url.length;
   }
-  if (cursor < text.length) parts.push(text.slice(cursor));
-  return parts;
+  if (cursor < text.length) inline.push(text.slice(cursor));
+  return { inline, embeds };
 }
 
 function isImage(att: TicketAttachment): boolean {
@@ -55,7 +110,19 @@ export function TicketMessage({ msg }: { msg: TicketMessageT }) {
           {!isRelay && msg.author.isBot ? <span className="ticketMessage-bot">bot</span> : null}
           <span className="ticketMessage-time">{fmtTime(msg.ts)}</span>
         </header>
-        {msg.content ? <div className="ticketMessage-content">{autoLink(msg.content)}</div> : null}
+        {msg.content ? (() => {
+          const { inline, embeds } = renderContent(msg.content);
+          return (
+            <>
+              <div className="ticketMessage-content">{inline}</div>
+              {embeds.length ? (
+                <div className="ticketMessage-mediaEmbeds">
+                  {embeds.map((e, i) => <MediaEmbed key={i} url={e.url} kind={e.kind} />)}
+                </div>
+              ) : null}
+            </>
+          );
+        })() : null}
         {msg.attachments.length ? (
           <div className="ticketMessage-attachments">
             {msg.attachments.map((a, i) => isImage(a) ? (

@@ -70,8 +70,11 @@ export function TicketsPage() {
       if (evt.type === 'ticket.message') {
         if (!id) return;
         setLastEvent((cur) => ({ ...cur, [id]: Date.now() }));
+        const t = ticketsRef.current.find((x) => x.channelId === id);
+        // First time we see this channel — the bot probably just emitted
+        // ticket.create but our SSE connect was after; pull a fresh list.
+        if (!t) refresh();
         if (selectedRef.current !== id) {
-          const t = ticketsRef.current.find((x) => x.channelId === id);
           const who = evt.payload?.author?.name || 'someone';
           const preview = (evt.payload?.content || '').slice(0, 80);
           toast.push(

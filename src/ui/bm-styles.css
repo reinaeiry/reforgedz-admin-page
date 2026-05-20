@@ -464,10 +464,25 @@
 .ticketMessage-attachments {
   display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px;
 }
+.ticketMessage-mediaEmbeds {
+  display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px;
+}
 .ticketAttachment-img img {
-  max-width: 280px; max-height: 280px;
+  max-width: 360px; max-height: 360px;
   border-radius: 4px;
   border: 1px solid var(--border);
+  display: block;
+}
+.ticketAttachment-video {
+  max-width: 480px;
+  max-height: 360px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: #000;
+}
+.ticketAttachment-audio {
+  width: 320px;
+  max-width: 100%;
 }
 .ticketAttachment-file {
   display: flex; gap: 8px; align-items: center;
