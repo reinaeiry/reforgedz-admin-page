@@ -257,15 +257,29 @@ export function buildBmRouter({ requirePerm, getPteroServers, asyncRoute }) {
   // ─── Kick ────────────────────────────────────────────────────────────────
 
   router.post('/kick', requirePerm('kick'), asyncRoute(async (req, res) => {
+    // "Kick" is implemented as a 10-second BM ban scoped to the requested
+    // server only. BM's RCON kick endpoint doesn't work reliably on Reforger,
+    // so a server-scoped short ban achieves the same effect (player drops,
+    // can rejoin ~10s later from any other server immediately).
     const { serverId, playerId, identifier, reason } = req.body || {};
     if (!serverId || (!playerId && !identifier)) {
       return res.status(400).json({ error: 'missing_target' });
     }
-    await bm.rconKick(serverId, { playerId, identifier, reason });
+    const expires = new Date(Date.now() + 10_000).toISOString();
+    const ban = await bm.createBan({
+      playerId: playerId || undefined,
+      identifiers: identifier ? [identifier] : undefined,
+      reason: reason || 'Kick',
+      note: `Kick by ${req.rzUser.username}`,
+      expires,
+      orgWide: false,
+      serverIds: [serverId],
+      autoAddEnabled: false
+    });
     postAuditEvent({
       actorUsername: req.rzUser.username,
       action: 'bm.kick',
-      detail: { serverId, playerId, identifier, reason },
+      detail: { serverId, playerId, identifier, reason, via: 'short-ban', banId: ban?.id || null },
       ctx: ctxFromReq(req)
     });
     publish({ type: 'kick', payload: { by: req.rzUser.username, serverId, playerId } });
