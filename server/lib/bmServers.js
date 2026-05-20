@@ -10,17 +10,18 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { listOrgServers } from './battlemetrics.js';
 
-const DATA_DIR = process.env.DATA_DIR || 'data';
-const CACHE_PATH = path.join(DATA_DIR, 'bmServers.json');
 const REFRESH_MS = 60 * 60 * 1000; // 1 hour
-const BM_ORG_ID = process.env.BATTLEMETRICS_ORG_ID || '';
+
+function dataDir() { return process.env.DATA_DIR || 'data'; }
+function cachePath() { return path.join(dataDir(), 'bmServers.json'); }
+function bmOrgId() { return process.env.BATTLEMETRICS_ORG_ID || ''; }
 
 let cached = null; // { mapping: {pteroId: {...}}, byBmId: {...}, builtAt }
 let inFlight = null;
 
 async function readDiskCache() {
   try {
-    const txt = await fs.readFile(CACHE_PATH, 'utf8');
+    const txt = await fs.readFile(cachePath(), 'utf8');
     return JSON.parse(txt);
   } catch {
     return null;
@@ -28,10 +29,10 @@ async function readDiskCache() {
 }
 
 async function writeDiskCache(value) {
-  await fs.mkdir(path.dirname(CACHE_PATH), { recursive: true });
-  const tmp = CACHE_PATH + '.tmp';
+  await fs.mkdir(path.dirname(cachePath()), { recursive: true });
+  const tmp = cachePath() + '.tmp';
   await fs.writeFile(tmp, JSON.stringify(value, null, 2), 'utf8');
-  await fs.rename(tmp, CACHE_PATH);
+  await fs.rename(tmp, cachePath());
 }
 
 function isFresh(snap) {
@@ -60,10 +61,10 @@ function matchOne(pteroServer, bmServers) {
 }
 
 async function rebuild(pteroServers) {
-  if (!BM_ORG_ID) {
+  if (!bmOrgId()) {
     throw new Error('bmServers: BATTLEMETRICS_ORG_ID not set');
   }
-  const bm = await listOrgServers(BM_ORG_ID);
+  const bm = await listOrgServers(bmOrgId());
   const mapping = {};
   const byBmId = {};
   const unmatched = [];
@@ -84,7 +85,7 @@ async function rebuild(pteroServers) {
   }
   const snap = {
     builtAt: Date.now(),
-    bmOrgId: BM_ORG_ID,
+    bmOrgId: bmOrgId(),
     mapping,
     byBmId,
     unmatched

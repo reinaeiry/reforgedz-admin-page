@@ -59,7 +59,23 @@ export function buildBmRouter({ requirePerm, getPteroServers, asyncRoute }) {
 
   router.get('/search', requirePerm('viewPlayers'), asyncRoute(async (req, res) => {
     const q = String(req.query.q || '').trim();
-    const serverIds = getRequestedServerIds(req);
+    // Always scope to OUR org's servers — never search the global BM dataset.
+    // If the caller passed a subset of server IDs, use that; otherwise default
+    // to every BM server in our org so we only see players that have joined us.
+    const explicit = typeof req.query.servers === 'string' && req.query.servers.trim()
+      ? req.query.servers.split(',').map((s) => s.trim()).filter(Boolean)
+      : [];
+    let serverIds = explicit;
+    if (serverIds.length === 0) {
+      const pteros = await getPteroServers();
+      await bmServers.ensure(pteros);
+      serverIds = bmServers.listAll().map((s) => s.bmServerId);
+    }
+    if (serverIds.length === 0) {
+      // Mapping not built yet (e.g. Ptero unreachable) — return empty rather
+      // than searching globally, which would expose non-org players.
+      return res.json({ players: [] });
+    }
     const bmResp = await bm.searchPlayers({ q, serverIds, limit: 25 });
     // included identifiers are normalized into each player's identifiers array
     const idById = {};

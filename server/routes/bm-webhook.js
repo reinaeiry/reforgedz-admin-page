@@ -18,8 +18,14 @@ router.post('/', (req, res) => {
 
   // express.raw sets req.body to a Buffer; if something else parsed it, fall back.
   const raw = Buffer.isBuffer(req.body) ? req.body : Buffer.from(JSON.stringify(req.body || {}), 'utf8');
-  const sig = req.headers['x-battlemetrics-signature'] || req.headers['x-bm-signature'];
+  // BM uses one of: BM-Webhook-Signature, X-BattleMetrics-Signature, X-BM-Signature
+  const sig =
+    req.headers['bm-webhook-signature'] ||
+    req.headers['x-battlemetrics-signature'] ||
+    req.headers['x-bm-signature'] ||
+    req.headers['x-hub-signature-256'];
   if (!verifyWebhookSignature(raw, String(sig || ''), secret)) {
+    console.warn('[bm-webhook] bad signature. header:', sig, ' body bytes:', raw.length);
     return res.status(401).json({ error: 'bad_signature' });
   }
 

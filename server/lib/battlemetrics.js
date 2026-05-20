@@ -211,12 +211,27 @@ export async function listBansForPlayer(playerId) {
 }
 
 export async function listBans({ serverIds, includeExpired = false } = {}) {
-  const params = ['page[size]=100'];
+  const params = ['page[size]=100', 'include=player'];
   if (serverIds && serverIds.length) params.push(`filter[servers]=${serverIds.join(',')}`);
   if (!includeExpired) params.push('filter[expired]=false');
   const path = `/bans?${params.join('&')}`;
   const key = `bans-list:${(serverIds || []).join(',')}:${includeExpired ? 1 : 0}`;
   const data = await bmFetch(path, {}, { cacheKey: key, ttl: TTL.bans_list });
+  // Decorate each ban with the player name (from the included resources)
+  // so the dashboard table doesn't have to do a second lookup.
+  const playerById = {};
+  for (const inc of data.included || []) {
+    if (inc.type === 'player') playerById[inc.id] = inc;
+  }
+  for (const ban of data.data || []) {
+    const pRel = ban.relationships?.player?.data;
+    if (pRel && playerById[pRel.id]) {
+      ban.player = {
+        id: pRel.id,
+        name: playerById[pRel.id].attributes?.name || null
+      };
+    }
+  }
   return data.data || [];
 }
 

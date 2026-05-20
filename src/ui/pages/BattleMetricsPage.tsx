@@ -191,9 +191,17 @@ function BansTab({ servers, serverIds }: { servers: BmDashServer[]; serverIds: s
             <tr><td colSpan={5} className="muted">No bans.</td></tr>
           ) : bans.map((b) => {
             const a = b.attributes || {};
+            // Names come from three possible places — prefer the included
+            // player resource (set by the backend), then the identifiers list.
+            const idName = a.identifiers?.find((i: any) => i.type === 'name')?.identifier;
+            const playerName = b.player?.name || idName || a.note?.split('\n')[0] || '(unknown)';
             return (
               <tr key={b.id}>
-                <td>{a.identifiers?.find((i: any) => i.type === 'name')?.identifier || '(unknown)'}</td>
+                <td>
+                  {b.player?.id
+                    ? <a href="#" onClick={(e) => { e.preventDefault(); nav(`/player/by-bm/${b.player.id}`); }}>{playerName}</a>
+                    : playerName}
+                </td>
                 <td>{a.reason || ''}</td>
                 <td>{a.expires ? new Date(a.expires).toLocaleString() : 'Permanent'}</td>
                 <td>{a.createdAt ? new Date(a.createdAt).toLocaleString() : ''}</td>
