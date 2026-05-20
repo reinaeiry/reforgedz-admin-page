@@ -108,7 +108,7 @@ export function BattleMetricsPage() {
             <div>
               <h2>Recent logs</h2>
               {hasBmPerm('viewActivity')
-                ? <BMLogs pageSize={20} />
+                ? <BMLogs pageSize={20} scopes={bmIdsToScopes(filter, servers)} />
                 : <div className="muted">You don't have View Activity permission.</div>}
             </div>
           </div>
@@ -147,12 +147,26 @@ export function BattleMetricsPage() {
       {activeTab?.key === 'logs' ? (
         <section className="bmTabPanel">
           <h2>Game logs</h2>
-          <BMLogs showPlayerSearch />
+          <BMLogs showPlayerSearch scopes={bmIdsToScopes(filter, servers)} />
         </section>
       ) : null}
 
     </div>
   );
+}
+
+// Map the top-right server filter (which carries BattleMetrics IDs) into
+// the scope tags the logs API expects (NA1 / NA2 / EU1 / EU2). When no
+// server is selected we return undefined so the query falls back to "all
+// allowed scopes". If selected servers don't carry a tag we just drop them.
+function bmIdsToScopes(filter: string[], servers: BmDashServer[]): string[] | undefined {
+  if (!filter.length) return undefined;
+  const out: string[] = [];
+  for (const id of filter) {
+    const s = servers.find((x) => x.bmServerId === id);
+    if (s?.tag) out.push(s.tag);
+  }
+  return out.length ? out : undefined;
 }
 
 function BansTab({ servers, serverIds }: { servers: BmDashServer[]; serverIds: string[] }) {

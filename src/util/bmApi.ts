@@ -179,7 +179,13 @@ export async function listActivity(opts?: { serverIds?: string[]; limit?: number
 
 // ─── Linkages (Discord + transcripts) ──────────────────────────────────────
 
-export type Linkage = { discordId: string; discordUsername: string; guid: string | null; lastSeenAt: number };
+export type Linkage = {
+  discordId: string;
+  discordUsername: string;
+  discordAvatarUrl?: string | null;
+  guid: string | null;
+  lastSeenAt: number;
+};
 export type TranscriptRef = {
   id: string;
   ticketId: number | null;

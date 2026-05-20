@@ -159,12 +159,21 @@ export function PlayerProfilePage() {
         <button className="btn" onClick={goBack}>← Back</button>
       </div>
       <header className="bmProfile-header">
-        <DiscordAvatar name={player.name} guid={player.guid} size={64} />
+        <DiscordAvatar
+          name={player.name}
+          guid={player.guid}
+          avatarUrl={linkage?.discordAvatarUrl}
+          size={64}
+        />
         <div className="bmProfile-headerText">
           <h1>{player.name || '(unknown)'}</h1>
           <div className="bmProfile-meta">
             {player.guid ? <code>{player.guid}</code> : <em>no guid</em>}
-            {linkage?.discordUsername ? <span> · Discord: <strong>{linkage.discordUsername}</strong></span> : null}
+            {linkage?.discordUsername ? (
+              <span> · Discord: <strong>{linkage.discordUsername}</strong>
+                {linkage.discordId ? <span className="muted"> ({linkage.discordId})</span> : null}
+              </span>
+            ) : null}
           </div>
           <div className="bmProfile-actions">
             <a className="btn" href={bmUrl} target="_blank" rel="noreferrer">View on BattleMetrics</a>

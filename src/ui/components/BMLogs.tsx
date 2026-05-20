@@ -25,9 +25,13 @@ type Props = {
   guid?: string;
   showPlayerSearch?: boolean;
   pageSize?: number;
+  // Sticky server filter from the dashboard chips. Per-server scopes
+  // (NA1/NA2/EU1/EU2) only — region/global scopes (NA/EU/ALL) are kept
+  // unless explicitly excluded.
+  scopes?: string[];
 };
 
-export function BMLogs({ guid, showPlayerSearch, pageSize = 100 }: Props) {
+export function BMLogs({ guid, showPlayerSearch, pageSize = 100, scopes }: Props) {
   // Only show chips the user is actually allowed to read.
   const allowed = useMemo(() => new Set<LogLevel>(allowedLogLevels()), []);
   const visibleOptions = useMemo(() => TYPE_OPTIONS.filter((t) => allowed.has(t.key)), [allowed]);
@@ -51,11 +55,16 @@ export function BMLogs({ guid, showPlayerSearch, pageSize = 100 }: Props) {
     guid: guid || undefined,
     name: !guid && playerName.trim() ? playerName.trim() : undefined,
     types: effectiveTypes,
+    servers: scopes && scopes.length ? scopes : undefined,
     q: q.trim() || undefined,
     limit: pageSize,
     offset
-  }), [guid, playerName, effectiveTypes, q, pageSize, offset]);
+  }), [guid, playerName, effectiveTypes, scopes, q, pageSize, offset]);
 
+  // Polling: refetch every 15s while the tab is visible. Lines up with the
+  // server-side Cache-Control max-age=15, so most polls are a cheap 304 from
+  // the browser cache and never hit the bot.
+  const [tick, setTick] = useState(0);
   useEffect(() => {
     let alive = true;
     setLoading(true);
@@ -71,7 +80,24 @@ export function BMLogs({ guid, showPlayerSearch, pageSize = 100 }: Props) {
       }
     }, q || playerName ? 300 : 0);
     return () => { alive = false; clearTimeout(t); };
-  }, [filters, q, playerName]);
+  }, [filters, q, playerName, tick]);
+
+  useEffect(() => {
+    let timer: number | null = null;
+    function start() {
+      stop();
+      timer = window.setInterval(() => setTick((n) => n + 1), 15_000);
+    }
+    function stop() {
+      if (timer != null) { clearInterval(timer); timer = null; }
+    }
+    function onVis() {
+      if (document.visibilityState === 'visible') start(); else stop();
+    }
+    if (document.visibilityState === 'visible') start();
+    document.addEventListener('visibilitychange', onVis);
+    return () => { stop(); document.removeEventListener('visibilitychange', onVis); };
+  }, []);
 
   function toggleType(t: LogType) {
     setOffset(0);
@@ -170,8 +196,11 @@ function labelFor(t: string) {
 
 function PlayerLink({ name, guid }: { name: string | null; guid: string | null }) {
   if (!name) return null;
-  if (guid) return <Link to={`/player/${guid}`} className="bmLogPlayer">{name}</Link>;
-  return <span className="bmLogPlayer">{name}</span>;
+  // Direct GUID link when we have one (server-side already resolves most names
+  // via the name_to_guid table). When we don't, route through a name-resolver
+  // page that searches BM and redirects to the canonical profile.
+  const to = guid ? `/player/${guid}` : `/player/by-name/${encodeURIComponent(name)}`;
+  return <Link to={to} className="bmLogPlayer">{name}</Link>;
 }
 
 function LogBody({ row }: { row: GameLogRow }) {

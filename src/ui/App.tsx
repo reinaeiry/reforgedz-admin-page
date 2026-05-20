@@ -4,6 +4,7 @@ import { ReplayToolPage } from './pages/ReplayToolPage';
 import { AdminManagerPage } from './pages/AdminManagerPage';
 import { BattleMetricsPage as ModerationPage } from './pages/BattleMetricsPage';
 import { PlayerProfilePage } from './pages/PlayerProfilePage';
+import { PlayerByNamePage } from './pages/PlayerByNamePage';
 import { AppShell } from './components/AppShell';
 import { ToastProvider } from './components/Toast';
 import { getSession, loadSession, loginUrl } from '../util/session';
@@ -46,6 +47,7 @@ export function App() {
           <Route path="/battlemetrics" element={<Navigate to="/moderation" replace />} />
           <Route path="/player/:guid" element={<PlayerProfilePage />} />
           <Route path="/player/by-bm/:bmId" element={<PlayerProfilePage />} />
+          <Route path="/player/by-name/:name" element={<PlayerByNamePage />} />
         </Route>
 
         <Route path="*" element={<Navigate to="/replay" replace />} />
