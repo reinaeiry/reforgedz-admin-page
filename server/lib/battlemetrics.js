@@ -269,7 +269,12 @@ export async function listBans({ serverIds, includeExpired = false } = {}) {
   return data.data || [];
 }
 
-export async function createBan({ playerId, identifiers, reason, note, expires, banListId, autoAddEnabled = true, orgWide = true, serverIds }) {
+// Internal: one BM ban request scoped to (at most) one server. The public
+// createBan wrapper below fans out to a per-server ban when the caller
+// passes multiple serverIds — BM's `relationships.server.data` is a single
+// object, NOT an array, so an array shape returns:
+//   400: data/relationships/server/data must be object
+async function createSingleBan({ playerId, identifiers, reason, note, expires, banListId, autoAddEnabled, orgWide, serverId }) {
   // BM's POST /bans schema: `identifiers` is REQUIRED and lives in
   // attributes (as an array of identifier IDs), NOT in relationships.
   // The relationship-shape we used before returned a 400:
@@ -310,14 +315,36 @@ export async function createBan({ playerId, identifiers, reason, note, expires, 
   if (banListId) {
     relationships.banList = { data: { type: 'banList', id: String(banListId) } };
   }
-  if (!orgWide && serverIds && serverIds.length) {
-    relationships.server = { data: serverIds.map((id) => ({ type: 'server', id: String(id) })) };
+  if (!orgWide && serverId) {
+    relationships.server = { data: { type: 'server', id: String(serverId) } };
   }
   const body = { data: { type: 'ban', attributes, relationships } };
   const data = await bmFetch('/bans', { method: 'POST', body: JSON.stringify(body) });
   invalidatePrefix('bans-list:');
   invalidatePrefix(`bans-player:${playerId || ''}`);
   return data.data;
+}
+
+// Public ban entry point. Fans a per-server ban out when serverIds has
+// more than one entry (BM only accepts one server per ban). Returns the
+// first ban's resource by default so callers that don't care about
+// per-server detail still get a usable object back.
+export async function createBan({ playerId, identifiers, reason, note, expires, banListId, autoAddEnabled = true, orgWide = true, serverIds }) {
+  const baseArgs = { playerId, identifiers, reason, note, expires, banListId, autoAddEnabled };
+  if (orgWide) {
+    return await createSingleBan({ ...baseArgs, orgWide: true });
+  }
+  const ids = Array.isArray(serverIds) ? serverIds.filter(Boolean) : [];
+  if (!ids.length) {
+    // No explicit servers and not org-wide — let BM reject with its real
+    // error so the caller's catch surfaces it cleanly.
+    return await createSingleBan({ ...baseArgs, orgWide: false });
+  }
+  const out = [];
+  for (const id of ids) {
+    out.push(await createSingleBan({ ...baseArgs, orgWide: false, serverId: id }));
+  }
+  return out[0];
 }
 
 export async function deleteBan(banId) {
