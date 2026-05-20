@@ -203,6 +203,30 @@
 .bmLogPos { color: var(--text-ghost); font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: .7rem; margin-left: 6px; }
 .bmLogs-pager { display: flex; gap: 12px; align-items: center; padding-top: 8px; }
 
+/* ─── Stats panel ─────────────────────────────────────────────────── */
+.bmStats { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; }
+.bmStat {
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 12px 14px;
+  display: flex; flex-direction: column; gap: 2px;
+}
+.bmStat-value {
+  font-size: 1.55rem;
+  font-weight: 600;
+  color: var(--text-bright);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.1;
+}
+.bmStat-label {
+  font-size: .72rem;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+.bmStat-sub { font-size: .68rem; color: var(--text-ghost); margin-top: 4px; }
+
 /* ─── Notes ───────────────────────────────────────────────────────── */
 .bmNotes-add { display: flex; gap: 8px; margin-bottom: 12px; }
 .bmNotes-add textarea { flex: 1; padding: 8px; background: var(--bg-raised); border: 1px solid var(--border); color: var(--text); border-radius: 4px; font: inherit; resize: vertical; }

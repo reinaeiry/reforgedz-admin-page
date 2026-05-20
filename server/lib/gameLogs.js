@@ -94,6 +94,16 @@ export async function listLogs(opts = {}) {
   return rows;
 }
 
+export async function playerStats(guid) {
+  if (!guid) return null;
+  const key = `stats:${guid}`;
+  const hit = cacheGet(key);
+  if (hit) return hit;
+  const out = await botGet(`/api/internal/logs/stats/${encodeURIComponent(guid)}`);
+  if (out) cacheSet(key, out);
+  return out;
+}
+
 export async function rememberLink(name, guid, atMs) {
   if (!name || !guid) return;
   await botPost('/api/internal/logs/remember-link', { name, guid, atMs });

@@ -300,6 +300,21 @@ export type ListLogsOpts = {
   offset?: number;
 };
 
+export type PlayerStats = {
+  kills: number;
+  deaths: number;
+  kdr: number;
+  avgAliveSec: number | null;
+  samples: number;
+  firstSeenMs: number | null;
+  lastSeenMs: number | null;
+};
+
+export async function getPlayerStats(guid: string): Promise<PlayerStats> {
+  const res = await fetch(`${base()}/api/bm/logs/stats/${encodeURIComponent(guid)}`, { credentials: 'include' });
+  return jsonOk(res, 'Failed to load stats');
+}
+
 export async function listGameLogs(opts: ListLogsOpts = {}): Promise<{ logs: GameLogRow[] }> {
   const params = new URLSearchParams();
   if (opts.guid) params.set('guid', opts.guid);

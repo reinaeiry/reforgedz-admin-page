@@ -194,6 +194,19 @@ function labelFor(t: string) {
   }
 }
 
+function prettifyWeapon(raw: string | undefined | null): string {
+  if (!raw) return '';
+  let s = String(raw).trim();
+  // Strip localization-key prefix/suffix produced by ReforgedZ's kill log:
+  //   "#AR-Weapon_M9Bayonet_Name" -> "M9 Bayonet"
+  //   "#AR-Weapon_AK74_Name"      -> "AK74"
+  if (s.startsWith('#AR-Weapon_')) s = s.slice('#AR-Weapon_'.length);
+  if (s.endsWith('_Name')) s = s.slice(0, -'_Name'.length);
+  // Split CamelCase boundaries and replace underscores so "M9Bayonet" -> "M9 Bayonet".
+  s = s.replace(/_+/g, ' ').replace(/([a-z])([A-Z])/g, '$1 $2');
+  return s;
+}
+
 function PlayerLink({ name, guid }: { name: string | null; guid: string | null }) {
   if (!name) return null;
   // Direct GUID link when we have one (server-side already resolves most names
@@ -206,17 +219,18 @@ function PlayerLink({ name, guid }: { name: string | null; guid: string | null }
 function LogBody({ row }: { row: GameLogRow }) {
   const d = row.details || {};
   switch (row.log_type) {
-  case 'kill':
+  case 'kill': {
+    const weapon = prettifyWeapon(d.weapon);
     return (
       <>
         <PlayerLink name={row.player_name} guid={row.player_guid} />
         <span className="muted"> killed </span>
         <PlayerLink name={row.target_name} guid={row.target_guid} />
-        {d.weapon ? <> <span className="bmLogTag">{d.weapon}</span></> : null}
+        {weapon ? <> <span className="bmLogTag">{weapon}</span></> : null}
         {typeof d.distance === 'number' ? <> <span className="muted">{Math.round(d.distance)}m</span></> : null}
-        {typeof d.points === 'number' ? <> <span className="muted">{d.points} pts</span></> : null}
       </>
     );
+  }
   case 'death':
     return (
       <>

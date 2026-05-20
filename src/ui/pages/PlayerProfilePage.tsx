@@ -19,6 +19,7 @@ import { DiscordAvatar } from '../components/DiscordAvatar';
 import { BMNotesPanel } from '../components/BMNotesPanel';
 import { BMBanForm } from '../components/BMBanForm';
 import { BMLogs } from '../components/BMLogs';
+import { BMPlayerStats } from '../components/BMPlayerStats';
 
 type ResolvedPlayer = {
   bmPlayerId: string;
@@ -307,11 +308,12 @@ export function PlayerProfilePage() {
         </section>
       ) : null}
 
-      {/* Slot for future stats merge. */}
-      <section className="bmProfile-section bmProfile-slot">
-        <h2>Stats <span className="bmBadge">future</span></h2>
-        <div className="muted">Will surface kills / playtime / shop activity once the stats module lands.</div>
-      </section>
+      {canViewLogs && player.guid ? (
+        <section className="bmProfile-section">
+          <h2>Stats</h2>
+          <BMPlayerStats guid={player.guid} />
+        </section>
+      ) : null}
 
       {banFormOpen ? (
         <BMBanForm

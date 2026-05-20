@@ -405,6 +405,12 @@ export function buildBmRouter({ requirePerm, getPteroServers, asyncRoute }) {
     res.json({ logs });
   }));
 
+  router.get('/logs/stats/:guid', requirePerm('viewActivity'), asyncRoute(async (req, res) => {
+    const out = await gameLogs.playerStats(String(req.params.guid).toLowerCase());
+    res.set('Cache-Control', 'private, max-age=15');
+    res.json(out || { kills: 0, deaths: 0, kdr: 0, avgAliveSec: null });
+  }));
+
   router.get('/linkages/by-guid/:guid', requirePerm('viewPlayers'), asyncRoute(async (req, res) => {
     const link = await linkages.getLinkageByGuid(req.params.guid);
     const transcripts = await linkages.getTranscriptsByGuid(req.params.guid, 20);
