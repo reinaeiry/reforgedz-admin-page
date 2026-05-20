@@ -11,13 +11,11 @@ export type AdminPerms = {
   gmManagement: boolean;
 };
 
-export type TranscriptPerms = { read: boolean; delete: boolean; appeals: boolean };
-export type RestrictedPerms = { access: boolean };
+export type TranscriptPerms = { read: boolean; stats: boolean; restricted: boolean };
 
 export type Perms = {
   admin: AdminPerms;
   transcripts: TranscriptPerms;
-  restricted: RestrictedPerms;
   manager: boolean;
 };
 
@@ -65,10 +63,9 @@ async function fetchMe(): Promise<Session | null> {
         },
         transcripts: {
           read: !!u.perms?.transcripts?.read,
-          delete: !!u.perms?.transcripts?.delete,
-          appeals: !!u.perms?.transcripts?.appeals,
+          stats: !!u.perms?.transcripts?.stats,
+          restricted: !!u.perms?.transcripts?.restricted,
         },
-        restricted: { access: !!u.perms?.restricted?.access },
         manager: !!u.perms?.manager,
       },
     },
