@@ -5,6 +5,7 @@ import {
   getPlayer,
   getPlayerBans,
   getPlayerByGuid,
+  linkageByDiscordId,
   linkageByGuid,
   listBmServers,
   type BmDashServer,
@@ -34,6 +35,8 @@ export function PlayerProfilePage() {
   const [bans, setBans] = useState<any[]>([]);
   const [servers, setServers] = useState<BmDashServer[]>([]);
   const [err, setErr] = useState<string | null>(null);
+  const [transcriptsErr, setTranscriptsErr] = useState<string | null>(null);
+  const [bansErr, setBansErr] = useState<string | null>(null);
   const [banFormOpen, setBanFormOpen] = useState(false);
   const [ipAlts, setIpAlts] = useState<IpAltsResponse | null>(null);
   const nav = useNavigate();
@@ -78,14 +81,39 @@ export function PlayerProfilePage() {
 
         // Fan-out: linkage, transcripts, bans, servers
         const promises: Promise<any>[] = [];
-        if (guid) promises.push(linkageByGuid(guid).then((l) => {
-          if (!alive) return;
-          setLinkage(l.linkage);
-          setTranscripts(l.transcripts || []);
-        }).catch(() => {}));
+        if (guid) {
+          promises.push((async () => {
+            try {
+              const l = await linkageByGuid(guid!);
+              if (!alive) return;
+              setLinkage(l.linkage);
+              let merged: TranscriptRef[] = l.transcripts || [];
+              // Also pull by discord ID and merge - catches tickets where the
+              // GUID never appeared in messages content but the Discord user
+              // matches a known linkage.
+              if (l.linkage?.discordId) {
+                try {
+                  const d = await linkageByDiscordId(l.linkage.discordId);
+                  if (alive && d.transcripts?.length) {
+                    const seen = new Set(merged.map((t) => t.id));
+                    for (const t of d.transcripts) {
+                      if (!seen.has(t.id)) { merged.push(t); seen.add(t.id); }
+                    }
+                    merged.sort((a, b) => (b.closedAt || 0) - (a.closedAt || 0));
+                  }
+                } catch { /* discord-side enrichment optional */ }
+              }
+              if (alive) setTranscripts(merged);
+            } catch (e: any) {
+              if (alive) setTranscriptsErr(e?.message || 'Failed to load transcripts');
+            }
+          })());
+        }
         if (canBans) promises.push(getPlayerBans(resolved!.bmPlayerId).then((b) => {
           if (alive) setBans(b.bans);
-        }).catch(() => {}));
+        }).catch((e: any) => {
+          if (alive) setBansErr(e?.message || 'Failed to load bans');
+        }));
         promises.push(listBmServers().then((s) => {
           if (alive) setServers(s.servers);
         }).catch(() => {}));
@@ -160,7 +188,8 @@ export function PlayerProfilePage() {
       {canBans ? (
         <section className="bmProfile-section">
           <h2>Bans ({bans.length})</h2>
-          {bans.length === 0 ? <div className="muted">No bans on record.</div> : (
+          {bansErr ? <div className="bmError">Failed to load bans: {bansErr}</div> : null}
+          {bans.length === 0 && !bansErr ? <div className="muted">No bans on record.</div> : (
             <table className="bmTable">
               <thead><tr><th>Reason</th><th>Expires</th><th>Created</th><th></th></tr></thead>
               <tbody>
@@ -188,7 +217,8 @@ export function PlayerProfilePage() {
 
       <section className="bmProfile-section">
         <h2>Transcripts ({transcripts.length})</h2>
-        {transcripts.length === 0 ? <div className="muted">No transcripts matching this player.</div> : (
+        {transcriptsErr ? <div className="bmError">Failed to load transcripts: {transcriptsErr}</div> : null}
+        {transcripts.length === 0 && !transcriptsErr ? <div className="muted">No transcripts matching this player.</div> : (
           <ul className="bmProfile-transcriptList">
             {transcripts.map((t) => (
               <li key={t.id}>
