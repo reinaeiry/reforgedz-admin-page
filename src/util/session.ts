@@ -43,6 +43,10 @@ export type ModerationPerms = {
   kick: boolean;
   ban: boolean;
   manage: boolean;
+  viewIngameBans: boolean;
+  editIngameBans: boolean;
+  viewIngameMutes: boolean;
+  editIngameMutes: boolean;
   logs: LogPerms;
 };
 
@@ -163,6 +167,10 @@ async function fetchMe(): Promise<Session | null> {
           kick: !!mod.kick,
           ban: !!mod.ban,
           manage: !!mod.manage,
+          viewIngameBans: !!mod.viewIngameBans,
+          editIngameBans: !!mod.editIngameBans,
+          viewIngameMutes: !!mod.viewIngameMutes,
+          editIngameMutes: !!mod.editIngameMutes,
           logs,
         },
         tickets,

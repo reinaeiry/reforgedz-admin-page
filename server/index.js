@@ -17,6 +17,7 @@ import bmWebhookRouter from './routes/bm-webhook.js';
 import { buildTicketsRouter } from './routes/tickets.js';
 import * as ticketEventRelay from './lib/ticketEventRelay.js';
 import { buildBmSseRouter } from './routes/bm-sse.js';
+import { postAuditEvent, ctxFromReq } from './lib/bmAudit.js';
 
 import { createCanvas } from '@napi-rs/canvas';
 import gifenc from 'gifenc';
@@ -1687,6 +1688,13 @@ app.use('/api/tickets', ticketsRouter);
 // Tail the ticket-bot's SSE stream so events flow into our shared eventBus
 // (which bmSseRouter pipes to admin SPA clients over /api/bm/events).
 ticketEventRelay.start();
+
+// ─── In-game bans + mutes ─────────────────────────────────────────────────
+// Per-server JSON files (profile/profile/ReforgedZBans.json,
+// ReforgedZMutes.json) on each game server's Pterodactyl volume. Edited
+// here over SSH using the same helpers that GM Management uses for
+// config.json. See "ingame-bans-mutes" section further down.
+mountIngameBansMutes(app, { requireAuth, requireBmPerm, asyncRoute });
 
 app.get('/api/servers', requireAuth, requireTool('replay'), asyncRoute(async (req, res) => {
   const serversDir = path.join(DATA_DIR, 'servers');
@@ -3434,6 +3442,263 @@ app.post('/api/replay/ingest', async (req, res) => {
     res.status(500).send('Ingest failed');
   }
 });
+
+// ─── In-game bans + mutes implementation ───────────────────────────────────
+// Reads/writes ReforgedZBans.json + ReforgedZMutes.json on each game server
+// volume via the same SSH helpers GM Management uses for config.json. Routes
+// gated by moderation.viewIngameBans / editIngameBans / viewIngameMutes /
+// editIngameMutes.
+
+const INGAME_BANS_PATH  = '/profile/profile/ReforgedZBans.json';
+const INGAME_MUTES_PATH = '/profile/profile/ReforgedZMutes.json';
+const INGAME_RESERVED_TAGS = new Set(['na3', 'eu3']); // no longer running
+
+function ingameVolumePath(volumeUuid, suffix) {
+  return `/var/lib/pterodactyl/volumes/${volumeUuid}${suffix}`;
+}
+
+function ingameKindMeta(kind) {
+  if (kind === 'bans') {
+    return {
+      suffix: INGAME_BANS_PATH,
+      listKey: 'bans',
+      fields: {
+        uid: 'uid', name: 'name', reason: 'reason',
+        timestamp: 'timestamp', duration: 'duration', by: 'bannedBy'
+      }
+    };
+  }
+  if (kind === 'mutes') {
+    return {
+      suffix: INGAME_MUTES_PATH,
+      listKey: 'mutes',
+      fields: {
+        uid: 'm_sPlayerUID', name: 'm_sPlayerName', reason: 'm_sMuteReason',
+        timestamp: 'm_iMuteTimestamp', duration: 'm_iMuteDuration', by: 'm_sMutedBy'
+      }
+    };
+  }
+  return null;
+}
+
+function ingameToApi(rec, meta) {
+  const f = meta.fields;
+  return {
+    uid: rec[f.uid],
+    name: rec[f.name],
+    reason: rec[f.reason],
+    timestamp: rec[f.timestamp],
+    duration: rec[f.duration],
+    by: rec[f.by]
+  };
+}
+
+function ingameFromApi(api, meta) {
+  const f = meta.fields;
+  return {
+    [f.uid]: String(api.uid || '').toLowerCase(),
+    [f.name]: String(api.name || ''),
+    [f.reason]: String(api.reason || ''),
+    [f.timestamp]: Number(api.timestamp) || Math.floor(Date.now() / 1000),
+    [f.duration]: Number(api.duration) || 0,
+    [f.by]: String(api.by || '')
+  };
+}
+
+async function loadIngameServers() {
+  const all = await listReforgerServersCached();
+  return all.filter((s) => !INGAME_RESERVED_TAGS.has(String(s.tag || '').toLowerCase()));
+}
+
+async function readIngameJson(server, kind) {
+  const meta = ingameKindMeta(kind);
+  const remote = ingameVolumePath(server.volumeUuid, meta.suffix);
+  const json = await sshReadFile(server.region, remote).catch((e) => {
+    if (String(e?.message || '').includes('parse_failed')) return { [meta.listKey]: [] };
+    throw e;
+  });
+  if (!json) return { [meta.listKey]: [] };
+  if (!Array.isArray(json[meta.listKey])) json[meta.listKey] = [];
+  return json;
+}
+
+async function writeIngameJson(server, kind, body) {
+  const meta = ingameKindMeta(kind);
+  const remote = ingameVolumePath(server.volumeUuid, meta.suffix);
+  await sshWriteFile(server.region, remote, body);
+}
+
+function ingameRequireView(kind) {
+  return kind === 'mutes' ? requireBmPerm('viewIngameMutes') : requireBmPerm('viewIngameBans');
+}
+function ingameRequireEdit(kind) {
+  return kind === 'mutes' ? requireBmPerm('editIngameMutes') : requireBmPerm('editIngameBans');
+}
+
+function mountIngameBansMutes(app, { requireAuth, requireBmPerm: _bm, asyncRoute }) {
+  // _bm is passed in for clarity but we use the closure-scoped requireBmPerm.
+  const KINDS = ['bans', 'mutes'];
+
+  for (const kind of KINDS) {
+    const meta = ingameKindMeta(kind);
+
+    // GET /api/ingame/{bans|mutes}?server=eu1|all (default: all)
+    app.get(`/api/ingame/${kind}`, requireAuth, ingameRequireView(kind), asyncRoute(async (req, res) => {
+      const filter = String(req.query.server || 'all').toLowerCase();
+      const servers = await loadIngameServers();
+      const targets = filter === 'all' ? servers : servers.filter((s) => String(s.tag || '').toLowerCase() === filter);
+      if (!targets.length && filter !== 'all') return res.json({ records: [], servers: [] });
+
+      const out = [];
+      const errors = [];
+      for (const server of targets) {
+        try {
+          const body = await readIngameJson(server, kind);
+          for (const rec of body[meta.listKey] || []) {
+            out.push({ server: server.tag || server.pteroId, region: server.region, ...ingameToApi(rec, meta) });
+          }
+        } catch (err) {
+          errors.push({ server: server.tag, error: String(err?.message || err) });
+        }
+      }
+      out.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+      res.json({
+        records: out,
+        servers: servers.map((s) => ({ tag: s.tag, region: s.region })),
+        errors: errors.length ? errors : undefined
+      });
+    }));
+
+    // POST /api/ingame/{bans|mutes}
+    // Body: { uid, name, reason, duration, servers: ['eu1','eu2'] | [] (= all) }
+    app.post(`/api/ingame/${kind}`, requireAuth, ingameRequireEdit(kind), asyncRoute(async (req, res) => {
+      const body = req.body || {};
+      if (!adminMgrIsValidGuid(body.uid)) return res.status(400).json({ error: 'invalid_uid' });
+      const name = String(body.name || '').trim();
+      if (!name) return res.status(400).json({ error: 'missing_name' });
+      const reason = String(body.reason || '').trim() || 'No reason given';
+      const duration = Math.max(0, parseInt(body.duration, 10) || 0);
+      const allServers = await loadIngameServers();
+      const requested = Array.isArray(body.servers) && body.servers.length
+        ? body.servers.map((t) => String(t).toLowerCase())
+        : allServers.map((s) => String(s.tag || '').toLowerCase());
+      const targets = allServers.filter((s) => requested.includes(String(s.tag || '').toLowerCase()));
+      if (!targets.length) return res.status(400).json({ error: 'no_servers' });
+
+      const recordApi = {
+        uid: body.uid.toLowerCase(),
+        name, reason, duration,
+        timestamp: Math.floor(Date.now() / 1000),
+        by: req.rzUser.username
+      };
+
+      const results = [];
+      for (const server of targets) {
+        try {
+          await withIngestLock(`ingame:${server.pteroId}:${kind}`, async () => {
+            const json = await readIngameJson(server, kind);
+            const list = json[meta.listKey];
+            const idx = list.findIndex((r) => String(r[meta.fields.uid] || '').toLowerCase() === recordApi.uid);
+            const newRec = ingameFromApi(recordApi, meta);
+            if (idx >= 0) list[idx] = newRec; else list.push(newRec);
+            await writeIngameJson(server, kind, json);
+          });
+          results.push({ server: server.tag, ok: true });
+        } catch (err) {
+          results.push({ server: server.tag, ok: false, error: String(err?.message || err) });
+        }
+      }
+      postAuditEvent({
+        actorUsername: req.rzUser.username,
+        action: kind === 'mutes' ? 'ingame.mute.add' : 'ingame.ban.add',
+        detail: { uid: recordApi.uid, name, reason, duration, servers: targets.map((s) => s.tag) },
+        ctx: ctxFromReq(req)
+      });
+      res.json({ ok: true, record: recordApi, results });
+    }));
+
+    // PATCH /api/ingame/{bans|mutes}/:uid
+    // Body: { servers?: [...] (default: all), patch: { reason?, duration?, name? } }
+    app.patch(`/api/ingame/${kind}/:uid`, requireAuth, ingameRequireEdit(kind), asyncRoute(async (req, res) => {
+      const uid = String(req.params.uid || '').toLowerCase();
+      if (!adminMgrIsValidGuid(uid)) return res.status(400).json({ error: 'invalid_uid' });
+      const patch = req.body?.patch || {};
+      const allServers = await loadIngameServers();
+      const requested = Array.isArray(req.body?.servers) && req.body.servers.length
+        ? req.body.servers.map((t) => String(t).toLowerCase())
+        : allServers.map((s) => String(s.tag || '').toLowerCase());
+      const targets = allServers.filter((s) => requested.includes(String(s.tag || '').toLowerCase()));
+
+      const results = [];
+      for (const server of targets) {
+        try {
+          await withIngestLock(`ingame:${server.pteroId}:${kind}`, async () => {
+            const json = await readIngameJson(server, kind);
+            const list = json[meta.listKey];
+            const idx = list.findIndex((r) => String(r[meta.fields.uid] || '').toLowerCase() === uid);
+            if (idx < 0) {
+              results.push({ server: server.tag, ok: false, error: 'not_found' });
+              return;
+            }
+            const cur = list[idx];
+            if (patch.reason !== undefined) cur[meta.fields.reason] = String(patch.reason);
+            if (patch.name !== undefined) cur[meta.fields.name] = String(patch.name);
+            if (patch.duration !== undefined) cur[meta.fields.duration] = Math.max(0, parseInt(patch.duration, 10) || 0);
+            await writeIngameJson(server, kind, json);
+            results.push({ server: server.tag, ok: true });
+          });
+        } catch (err) {
+          results.push({ server: server.tag, ok: false, error: String(err?.message || err) });
+        }
+      }
+      postAuditEvent({
+        actorUsername: req.rzUser.username,
+        action: kind === 'mutes' ? 'ingame.mute.update' : 'ingame.ban.update',
+        detail: { uid, patch, servers: targets.map((s) => s.tag) },
+        ctx: ctxFromReq(req)
+      });
+      res.json({ ok: true, results });
+    }));
+
+    // DELETE /api/ingame/{bans|mutes}/:uid?servers=eu1,eu2 (no servers = all)
+    app.delete(`/api/ingame/${kind}/:uid`, requireAuth, ingameRequireEdit(kind), asyncRoute(async (req, res) => {
+      const uid = String(req.params.uid || '').toLowerCase();
+      if (!adminMgrIsValidGuid(uid)) return res.status(400).json({ error: 'invalid_uid' });
+      const allServers = await loadIngameServers();
+      const requested = typeof req.query.servers === 'string' && req.query.servers
+        ? req.query.servers.split(',').map((s) => s.trim().toLowerCase()).filter(Boolean)
+        : allServers.map((s) => String(s.tag || '').toLowerCase());
+      const targets = allServers.filter((s) => requested.includes(String(s.tag || '').toLowerCase()));
+
+      const results = [];
+      for (const server of targets) {
+        try {
+          await withIngestLock(`ingame:${server.pteroId}:${kind}`, async () => {
+            const json = await readIngameJson(server, kind);
+            const list = json[meta.listKey];
+            const before = list.length;
+            json[meta.listKey] = list.filter((r) => String(r[meta.fields.uid] || '').toLowerCase() !== uid);
+            if (json[meta.listKey].length !== before) {
+              await writeIngameJson(server, kind, json);
+              results.push({ server: server.tag, ok: true, removed: true });
+            } else {
+              results.push({ server: server.tag, ok: true, removed: false });
+            }
+          });
+        } catch (err) {
+          results.push({ server: server.tag, ok: false, error: String(err?.message || err) });
+        }
+      }
+      postAuditEvent({
+        actorUsername: req.rzUser.username,
+        action: kind === 'mutes' ? 'ingame.mute.remove' : 'ingame.ban.remove',
+        detail: { uid, servers: targets.map((s) => s.tag) },
+        ctx: ctxFromReq(req)
+      });
+      res.json({ ok: true, results });
+    }));
+  }
+}
 
 // Serve static frontend if built (dist/)
 const distDir = path.resolve('dist');

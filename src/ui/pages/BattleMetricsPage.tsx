@@ -11,6 +11,8 @@ import { BMLogs } from '../components/BMLogs';
 import { BMOnlinePlayerList } from '../components/BMOnlinePlayerList';
 import { ServerFilterChips } from '../components/ServerFilterChips';
 import { BMBanForm } from '../components/BMBanForm';
+import { IngameTable } from '../components/IngameTable';
+import { IngameActionForm } from '../components/IngameActionForm';
 import { useToast } from '../components/Toast';
 import { bmEvents } from '../../util/sseClient';
 
@@ -19,7 +21,7 @@ type TabKey = 'overview' | 'players' | 'bans' | 'ipbans' | 'servers' | 'logs';
 const TABS: { key: TabKey; label: string; perm: () => boolean }[] = [
   { key: 'overview', label: 'Overview', perm: () => hasBmPerm('viewServers') || hasBmPerm('viewActivity') },
   { key: 'players', label: 'Players', perm: () => hasBmPerm('viewPlayers') },
-  { key: 'bans', label: 'Bans', perm: () => hasBmPerm('viewBans') },
+  { key: 'bans', label: 'Bans and Mutes', perm: () => hasBmPerm('viewBans') || hasBmPerm('viewIngameBans') || hasBmPerm('viewIngameMutes') },
   { key: 'ipbans', label: 'IP Bans', perm: () => hasBmPerm('viewIps') },
   { key: 'servers', label: 'Servers', perm: () => hasBmPerm('viewServers') },
   { key: 'logs', label: 'Logs', perm: () => hasBmPerm('viewActivity') },
@@ -123,7 +125,7 @@ export function BattleMetricsPage() {
       ) : null}
 
       {activeTab?.key === 'bans' ? (
-        <BansTab servers={servers} serverIds={filter} />
+        <BansAndMutesTab servers={servers} serverIds={filter} />
       ) : null}
 
       {activeTab?.key === 'ipbans' ? (
@@ -167,6 +169,104 @@ function bmIdsToScopes(filter: string[], servers: BmDashServer[]): string[] | un
     if (s?.tag) out.push(s.tag);
   }
   return out.length ? out : undefined;
+}
+
+type BanSource = 'bm' | 'ingameBans' | 'ingameMutes';
+
+function BansAndMutesTab({ servers, serverIds }: { servers: BmDashServer[]; serverIds: string[] }) {
+  const [source, setSource] = useState<BanSource>(() => {
+    if (hasBmPerm('viewBans')) return 'bm';
+    if (hasBmPerm('viewIngameBans')) return 'ingameBans';
+    return 'ingameMutes';
+  });
+  const [adding, setAdding] = useState<'bans' | 'mutes' | null>(null);
+  const [pickedPlayer, setPickedPlayer] = useState<{ uid: string; name: string } | null>(null);
+  const [refreshKey, setRefreshKey] = useState(0);
+
+  const sources: { key: BanSource; label: string; visible: boolean }[] = [
+    { key: 'bm', label: 'BattleMetrics Bans', visible: hasBmPerm('viewBans') },
+    { key: 'ingameBans', label: 'In-game Bans', visible: hasBmPerm('viewIngameBans') },
+    { key: 'ingameMutes', label: 'In-game Mutes', visible: hasBmPerm('viewIngameMutes') }
+  ];
+
+  const activeServerTag = useMemo(() => {
+    if (!serverIds.length) return 'all';
+    if (serverIds.length > 1) return 'all';
+    const s = servers.find((x) => x.bmServerId === serverIds[0]);
+    return s?.tag || 'all';
+  }, [serverIds, servers]);
+
+  const allServerTags = useMemo(
+    () => servers.map((s) => s.tag).filter((t): t is string => !!t && t !== 'NA3' && t !== 'EU3'),
+    [servers]
+  );
+
+  const canEditIngameBans = hasBmPerm('editIngameBans');
+  const canEditIngameMutes = hasBmPerm('editIngameMutes');
+
+  function startAdd(kind: 'bans' | 'mutes') {
+    setPickedPlayer(null);
+    setAdding(kind);
+  }
+
+  return (
+    <section className="bmTabPanel">
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12, gap: 8, flexWrap: 'wrap' }}>
+        <div className="bmLogs-chips">
+          {sources.filter((s) => s.visible).map((s) => (
+            <button
+              key={s.key}
+              type="button"
+              className={`bmChip ${source === s.key ? 'bmChip-on' : ''}`}
+              onClick={() => setSource(s.key)}
+            >{s.label}</button>
+          ))}
+        </div>
+        {source === 'ingameBans' && canEditIngameBans ? (
+          <button className="btn btn-primary" onClick={() => startAdd('bans')}>+ Add in-game ban</button>
+        ) : null}
+        {source === 'ingameMutes' && canEditIngameMutes ? (
+          <button className="btn btn-primary" onClick={() => startAdd('mutes')}>+ Add in-game mute</button>
+        ) : null}
+      </div>
+      {source === 'bm' ? <BansTab servers={servers} serverIds={serverIds} /> : null}
+      {source === 'ingameBans' ? <IngameTable key={`bans-${refreshKey}`} kind="bans" serverFilter={activeServerTag} /> : null}
+      {source === 'ingameMutes' ? <IngameTable key={`mutes-${refreshKey}`} kind="mutes" serverFilter={activeServerTag} /> : null}
+
+      {adding && !pickedPlayer ? (
+        <div className="modalBackdrop" onClick={(e) => { if (e.target === e.currentTarget) setAdding(null); }}>
+          <div className="modalCard">
+            <header className="modalHeader"><h3>Pick a player to {adding === 'mutes' ? 'mute' : 'ban'}</h3></header>
+            <div className="modalBody">
+              <BMPlayerSearch
+                navigateOnPick={false}
+                onPick={(p) => {
+                  if (!p.guid) {
+                    alert('Player has no GUID — cannot apply in-game action.');
+                    return;
+                  }
+                  setPickedPlayer({ uid: p.guid, name: p.name });
+                }}
+              />
+            </div>
+            <footer className="modalFooter">
+              <button className="btn" onClick={() => setAdding(null)}>Cancel</button>
+            </footer>
+          </div>
+        </div>
+      ) : null}
+
+      {adding && pickedPlayer ? (
+        <IngameActionForm
+          kind={adding}
+          player={pickedPlayer}
+          servers={allServerTags}
+          onClose={() => { setAdding(null); setPickedPlayer(null); }}
+          onCreated={() => setRefreshKey((k) => k + 1)}
+        />
+      ) : null}
+    </section>
+  );
 }
 
 function BansTab({ servers, serverIds }: { servers: BmDashServer[]; serverIds: string[] }) {

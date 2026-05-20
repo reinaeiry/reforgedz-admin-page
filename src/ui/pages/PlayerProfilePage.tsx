@@ -20,6 +20,7 @@ import { BMNotesPanel } from '../components/BMNotesPanel';
 import { BMBanForm } from '../components/BMBanForm';
 import { BMLogs } from '../components/BMLogs';
 import { BMPlayerStats } from '../components/BMPlayerStats';
+import { IngameActionForm } from '../components/IngameActionForm';
 
 type ResolvedPlayer = {
   bmPlayerId: string;
@@ -40,6 +41,7 @@ export function PlayerProfilePage() {
   const [transcriptsErr, setTranscriptsErr] = useState<string | null>(null);
   const [bansErr, setBansErr] = useState<string | null>(null);
   const [banFormOpen, setBanFormOpen] = useState(false);
+  const [ingameAction, setIngameAction] = useState<'bans' | 'mutes' | null>(null);
   const [ipAlts, setIpAlts] = useState<IpAltsResponse | null>(null);
   const nav = useNavigate();
 
@@ -49,6 +51,8 @@ export function PlayerProfilePage() {
   const canBans = hasBmPerm('viewBans');
   const canWriteNotes = hasBmPerm('writeNotes');
   const canBan = hasBmPerm('ban');
+  const canIngameBan = hasBmPerm('editIngameBans');
+  const canIngameMute = hasBmPerm('editIngameMutes');
   const canViewLogs = hasBmPerm('viewActivity');
 
   useEffect(() => {
@@ -180,6 +184,12 @@ export function PlayerProfilePage() {
             <a className="btn" href={bmUrl} target="_blank" rel="noreferrer">View on BattleMetrics</a>
             {canBan ? (
               <button className="btn btn-danger" onClick={() => setBanFormOpen(true)}>Ban</button>
+            ) : null}
+            {canIngameBan && player.guid ? (
+              <button className="btn btn-danger" onClick={() => setIngameAction('bans')}>In-game ban</button>
+            ) : null}
+            {canIngameMute && player.guid ? (
+              <button className="btn btn-danger" onClick={() => setIngameAction('mutes')}>Mute</button>
             ) : null}
           </div>
         </div>
@@ -325,6 +335,16 @@ export function PlayerProfilePage() {
           servers={servers}
           onClose={() => setBanFormOpen(false)}
           onCreated={() => setBanFormOpen(false)}
+        />
+      ) : null}
+
+      {ingameAction && player.guid ? (
+        <IngameActionForm
+          kind={ingameAction}
+          player={{ uid: player.guid, name: player.name }}
+          servers={servers.map((s) => s.tag).filter((t): t is string => !!t && t !== 'NA3' && t !== 'EU3')}
+          onClose={() => setIngameAction(null)}
+          onCreated={() => setIngameAction(null)}
         />
       ) : null}
     </div>
