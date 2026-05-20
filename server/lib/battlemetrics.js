@@ -349,13 +349,15 @@ export async function listPlayerNotes(playerId) {
 }
 
 export async function createPlayerNote(playerId, { note, shared = true }) {
-  const data = await bmFetch('/notes', {
+  // BM's player-note endpoint lives under the player resource, not a
+  // top-level /notes collection (POST /notes returns 405). The relationship
+  // is implicit in the URL.
+  const data = await bmFetch(`/players/${encodeURIComponent(playerId)}/relationships/notes`, {
     method: 'POST',
     body: JSON.stringify({
       data: {
-        type: 'note',
-        attributes: { note, shared },
-        relationships: { player: { data: { type: 'player', id: String(playerId) } } }
+        type: 'playerNote',
+        attributes: { note, shared }
       }
     })
   });
@@ -369,7 +371,7 @@ export async function updatePlayerNote(noteId, { note, shared }) {
   if (shared !== undefined) attributes.shared = !!shared;
   const data = await bmFetch(`/notes/${encodeURIComponent(noteId)}`, {
     method: 'PATCH',
-    body: JSON.stringify({ data: { type: 'note', id: String(noteId), attributes } })
+    body: JSON.stringify({ data: { type: 'playerNote', id: String(noteId), attributes } })
   });
   invalidatePrefix('notes:');
   return data.data;
