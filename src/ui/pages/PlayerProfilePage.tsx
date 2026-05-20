@@ -12,7 +12,7 @@ import {
   type Linkage,
   type TranscriptRef,
 } from '../../util/bmApi';
-import { hasBmPerm, hasToolAccess } from '../../util/session';
+import { hasBmPerm } from '../../util/session';
 import { renderBanReason } from '../../util/banFormat';
 import { DiscordAvatar } from '../components/DiscordAvatar';
 import { BMNotesPanel } from '../components/BMNotesPanel';
@@ -38,11 +38,12 @@ export function PlayerProfilePage() {
   const [ipAlts, setIpAlts] = useState<IpAltsResponse | null>(null);
   const nav = useNavigate();
 
-  const canSessions = hasBmPerm('viewSessions');
+  // viewIps is the single PII gate now — covers BM IPs + in-game-log IPs +
+  // IP-ban CRUD. Steam/hardware IDs come under viewPlayers (basic profile).
+  const canViewIps = hasBmPerm('viewIps');
   const canBans = hasBmPerm('viewBans');
   const canWriteNotes = hasBmPerm('writeNotes');
   const canBan = hasBmPerm('ban');
-  const canViewIngameIps = hasToolAccess('viewIngameIps');
 
   useEffect(() => {
     let alive = true;
@@ -88,7 +89,7 @@ export function PlayerProfilePage() {
         promises.push(listBmServers().then((s) => {
           if (alive) setServers(s.servers);
         }).catch(() => {}));
-        if (guid && canViewIngameIps) {
+        if (guid && canViewIps) {
           promises.push(getIpAlts(guid).then((a) => {
             if (alive) setIpAlts(a);
           }).catch(() => {}));
@@ -100,7 +101,7 @@ export function PlayerProfilePage() {
     }
     load();
     return () => { alive = false; };
-  }, [guidParam, bmId, canBans]);
+  }, [guidParam, bmId, canBans, canViewIps]);
 
   if (err) {
     return <div className="page" style={{ padding: 24 }}><div className="bmError">{err}</div></div>;
@@ -110,9 +111,11 @@ export function PlayerProfilePage() {
   }
 
   const bmUrl = `https://www.battlemetrics.com/players/${player.bmPlayerId}`;
-  const identifiersForPii = canSessions
+  // Steam IDs, mobile device IDs, and hardware IDs are now part of viewPlayers
+  // (basic). Only IPs are gated behind viewIps.
+  const identifiersForPii = canViewIps
     ? player.identifiers
-    : player.identifiers.filter((i) => !['ip', 'steamID', 'mobileDeviceID', 'hwid'].includes(i.type));
+    : player.identifiers.filter((i) => i.type !== 'ip');
 
   function goBack() {
     // Prefer browser back if there's history; fall back to /battlemetrics?tab=players.
@@ -151,7 +154,7 @@ export function PlayerProfilePage() {
             ))}
           </ul>
         )}
-        {!canSessions ? <div className="muted">Some identifiers (IPs, Steam, hardware) are hidden — requires <strong>battlemetrics.viewSessions</strong>.</div> : null}
+        {!canViewIps ? <div className="muted">IP addresses are hidden — requires <strong>battlemetrics.viewIps</strong>.</div> : null}
       </section>
 
       {canBans ? (
@@ -200,7 +203,7 @@ export function PlayerProfilePage() {
         )}
       </section>
 
-      {canViewIngameIps && ipAlts ? (
+      {canViewIps && ipAlts ? (
         <section className="bmProfile-section">
           <h2>Ingame-log IPs &amp; Associated Accounts</h2>
           {ipAlts.error === 'forbidden' ? (

@@ -44,3 +44,39 @@ export async function getPlayersByIp(ip) {
   if (!ip) return null;
   return get(`/api/admin/ip/${encodeURIComponent(ip)}`);
 }
+
+export async function listBans() {
+  return get('/api/admin/ipbans');
+}
+
+async function send(method, path, body) {
+  if (!isEnabled()) return null;
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
+  try {
+    const res = await fetch(`${base()}${path}`, {
+      method,
+      headers: {
+        Authorization: `Bearer ${key()}`,
+        'Content-Type': 'application/json'
+      },
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+      signal: ctrl.signal
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      throw new Error(`ipban ${res.status}: ${text.slice(0, 200)}`);
+    }
+    return await res.json();
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export async function addBan({ ip, username, be_guid, reason, banned_by }) {
+  return send('POST', '/api/admin/ipbans', { ip, username, be_guid, reason, banned_by });
+}
+
+export async function removeBan(ip) {
+  return send('DELETE', `/api/admin/ipbans/${encodeURIComponent(ip)}`);
+}

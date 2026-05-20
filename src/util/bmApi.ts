@@ -240,6 +240,29 @@ export async function getIpAlts(guid: string): Promise<IpAltsResponse> {
   return jsonOk(res, 'Failed to load IP alts');
 }
 
+export async function listIpBans(): Promise<{ bans: IpBanInfo[] }> {
+  const res = await fetch(`${base()}/api/bm/ipbans`, { credentials: 'include' });
+  return jsonOk(res, 'Failed to load IP bans');
+}
+
+export async function addIpBan(body: { ip: string; username?: string; be_guid?: string | null; reason?: string }): Promise<any> {
+  const res = await fetch(`${base()}/api/bm/ipbans`, {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  });
+  return jsonOk(res, 'Failed to add IP ban');
+}
+
+export async function removeIpBan(ip: string): Promise<{ ok: true }> {
+  const res = await fetch(`${base()}/api/bm/ipbans/${encodeURIComponent(ip)}`, {
+    method: 'DELETE',
+    credentials: 'include'
+  });
+  return jsonOk(res, 'Failed to remove IP ban');
+}
+
 // ─── SSE URL helper ────────────────────────────────────────────────────────
 
 export function eventStreamUrl(): string {

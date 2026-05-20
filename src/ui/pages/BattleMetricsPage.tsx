@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { hasBmPerm } from '../../util/session';
-import { type BmDashServer, deleteBan, listBans, listBmServers, updateBan } from '../../util/bmApi';
+import { addIpBan, type BmDashServer, deleteBan, type IpBanInfo, listBans, listBmServers, listIpBans, removeIpBan, updateBan } from '../../util/bmApi';
 import { renderBanReason } from '../../util/banFormat';
 import { ConfirmModal } from '../components/ConfirmModal';
 import { load as loadFilter, save as saveFilter } from '../../util/serverFilter';
@@ -14,12 +14,13 @@ import { BMBanForm } from '../components/BMBanForm';
 import { useToast } from '../components/Toast';
 import { bmEvents } from '../../util/sseClient';
 
-type TabKey = 'overview' | 'players' | 'bans' | 'servers' | 'activity';
+type TabKey = 'overview' | 'players' | 'bans' | 'ipbans' | 'servers' | 'activity';
 
 const TABS: { key: TabKey; label: string; perm: () => boolean }[] = [
   { key: 'overview', label: 'Overview', perm: () => hasBmPerm('viewServers') || hasBmPerm('viewActivity') },
   { key: 'players', label: 'Players', perm: () => hasBmPerm('viewPlayers') },
   { key: 'bans', label: 'Bans', perm: () => hasBmPerm('viewBans') },
+  { key: 'ipbans', label: 'IP Bans', perm: () => hasBmPerm('viewIps') },
   { key: 'servers', label: 'Servers', perm: () => hasBmPerm('viewServers') },
   { key: 'activity', label: 'Activity', perm: () => hasBmPerm('viewActivity') },
 ];
@@ -125,6 +126,10 @@ export function BattleMetricsPage() {
         <BansTab servers={servers} serverIds={filter} />
       ) : null}
 
+      {activeTab?.key === 'ipbans' ? (
+        <IpBansTab />
+      ) : null}
+
       {activeTab?.key === 'servers' ? (
         <section className="bmTabPanel">
           <BMServerStatusStrip onServersLoaded={setServers} />
@@ -219,7 +224,11 @@ function BansTab({ servers, serverIds }: { servers: BmDashServer[]; serverIds: s
                 <td>{a.expires ? new Date(a.expires).toLocaleString() : 'Permanent'}</td>
                 <td>{a.createdAt ? new Date(a.createdAt).toLocaleString() : ''}</td>
                 <td className="bmBanActions">
-                  <a className="btn btn-sm" href={`https://www.battlemetrics.com/rcon/bans/${b.id}`} target="_blank" rel="noreferrer">BM</a>
+                  {b.player?.id ? (
+                    <button className="btn btn-sm" onClick={() => nav(`/player/by-bm/${b.player.id}`)}>View</button>
+                  ) : (
+                    <a className="btn btn-sm" href={`https://www.battlemetrics.com/rcon/bans/${b.id}`} target="_blank" rel="noreferrer">BM</a>
+                  )}
                   {canBan ? (
                     <>
                       <button className="btn btn-sm" onClick={() => setEditing(b)}>Edit</button>
@@ -348,6 +357,163 @@ function EditBanModal({ ban, onClose, onSaved }: { ban: any; onClose: () => void
         <footer className="modalFooter">
           <button className="btn" onClick={onClose} disabled={busy}>Cancel</button>
           <button className="btn btn-primary" onClick={save} disabled={busy}>Save</button>
+        </footer>
+      </div>
+    </div>
+  );
+}
+
+function IpBansTab() {
+  const [bans, setBans] = useState<IpBanInfo[]>([]);
+  const [err, setErr] = useState<string | null>(null);
+  const [search, setSearch] = useState('');
+  const [showAdd, setShowAdd] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [removeConfirm, setRemoveConfirm] = useState<IpBanInfo | null>(null);
+  const canManage = hasBmPerm('viewIps');
+
+  async function load() {
+    try {
+      const out = await listIpBans();
+      setBans(out.bans || []);
+      setErr(null);
+    } catch (e: any) {
+      setErr(e?.message || 'Failed to load');
+    }
+  }
+  useEffect(() => { load(); }, []);
+
+  async function doRemove() {
+    if (!removeConfirm) return;
+    setBusy(true);
+    try {
+      await removeIpBan(removeConfirm.ip);
+      setRemoveConfirm(null);
+      await load();
+    } catch (e: any) {
+      setErr(e?.message || 'Failed to remove');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const filtered = search.trim()
+    ? bans.filter((b) => [b.ip, b.username, b.be_guid, b.banned_by, b.reason].some((v) => (v || '').toLowerCase().includes(search.trim().toLowerCase())))
+    : bans;
+
+  return (
+    <section className="bmTabPanel">
+      <div className="bmToolbar">
+        <input className="bmSearch-input" style={{ maxWidth: 320 }} placeholder="Filter by IP, name, GUID, reason…" value={search} onChange={(e) => setSearch(e.target.value)} />
+        <button className="btn" onClick={load}>Refresh</button>
+        {canManage ? <button className="btn btn-primary" onClick={() => setShowAdd(true)}>+ Add IP ban</button> : null}
+      </div>
+      {err ? <div className="bmError">{err}</div> : null}
+      <table className="bmTable">
+        <thead>
+          <tr><th>IP</th><th>Last name</th><th>GUID</th><th>Banned by</th><th>Reason</th><th></th></tr>
+        </thead>
+        <tbody>
+          {filtered.length === 0 ? (
+            <tr><td colSpan={6} className="muted">{bans.length === 0 ? 'No IP bans recorded.' : 'No matches.'}</td></tr>
+          ) : filtered.map((b) => (
+            <tr key={b.ip}>
+              <td><code>{b.ip}</code></td>
+              <td>{b.username || '(unknown)'}</td>
+              <td>{b.be_guid ? <Link to={`/player/${b.be_guid}`} className="bmGuid">{b.be_guid}</Link> : <span className="muted">—</span>}</td>
+              <td>{b.banned_by || ''}</td>
+              <td>{b.reason || ''}</td>
+              <td className="bmBanActions">
+                {canManage ? <button className="btn btn-sm btn-danger" onClick={() => setRemoveConfirm(b)}>Remove</button> : null}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {showAdd ? (
+        <AddIpBanModal
+          onClose={() => setShowAdd(false)}
+          onAdded={() => { setShowAdd(false); load(); }}
+        />
+      ) : null}
+      {removeConfirm ? (
+        <ConfirmModal
+          title="Remove IP ban?"
+          danger
+          busy={busy}
+          confirmLabel="Remove"
+          body={(
+            <div>
+              <p>Remove the IP ban on <code>{removeConfirm.ip}</code> ({removeConfirm.username || 'unknown'})?</p>
+              <p className="muted" style={{ fontSize: '.78rem' }}>
+                The ipban-controller will queue an UNBAN action to every listener — the firewall rule will be removed from each game-server host on the next poll.
+              </p>
+            </div>
+          )}
+          onConfirm={doRemove}
+          onCancel={() => setRemoveConfirm(null)}
+        />
+      ) : null}
+    </section>
+  );
+}
+
+function AddIpBanModal({ onClose, onAdded }: { onClose: () => void; onAdded: () => void }) {
+  const [ip, setIp] = useState('');
+  const [username, setUsername] = useState('');
+  const [be_guid, setGuid] = useState('');
+  const [reason, setReason] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function submit() {
+    if (!ip.trim()) { setErr('IP is required'); return; }
+    setBusy(true);
+    setErr(null);
+    try {
+      await addIpBan({
+        ip: ip.trim(),
+        username: username.trim() || undefined,
+        be_guid: be_guid.trim() || null,
+        reason: reason.trim() || undefined
+      });
+      onAdded();
+    } catch (e: any) {
+      setErr(e?.message || 'Failed to add IP ban');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="modalBackdrop" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div className="modalCard bmBanForm">
+        <header className="modalHeader"><h3>Add IP ban</h3></header>
+        <div className="modalBody">
+          {err ? <div className="bmError">{err}</div> : null}
+          <div className="field">
+            <label>IP address</label>
+            <input type="text" value={ip} onChange={(e) => setIp(e.target.value)} placeholder="1.2.3.4" autoFocus />
+          </div>
+          <div className="field">
+            <label>Last-seen name (optional)</label>
+            <input type="text" value={username} onChange={(e) => setUsername(e.target.value)} />
+          </div>
+          <div className="field">
+            <label>Reforger GUID (optional)</label>
+            <input type="text" value={be_guid} onChange={(e) => setGuid(e.target.value)} />
+          </div>
+          <div className="field">
+            <label>Reason</label>
+            <input type="text" value={reason} onChange={(e) => setReason(e.target.value)} placeholder="e.g. cheating, VPN abuse" />
+          </div>
+          <p className="muted" style={{ fontSize: '.78rem' }}>
+            The ipban-controller will queue a BAN action to every listener — the firewall rule will be installed on each game-server host on the next poll (~30s).
+          </p>
+        </div>
+        <footer className="modalFooter">
+          <button className="btn" onClick={onClose} disabled={busy}>Cancel</button>
+          <button className="btn btn-danger" onClick={submit} disabled={busy || !ip.trim()}>Add ban</button>
         </footer>
       </div>
     </div>

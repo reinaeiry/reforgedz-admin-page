@@ -122,10 +122,10 @@ export function buildBmRouter({ requirePerm, getPteroServers, asyncRoute }) {
   }));
 
   router.get('/players/:id', requirePerm('viewPlayers'), asyncRoute(async (req, res) => {
-    const hasSessions = !!req.rzUser.perms?.battlemetrics?.viewSessions;
-    // Valid include options on /players: server, identifier, playerCounter,
-    // playerFlag, flagPlayer. (Sessions are fetched separately if needed.)
-    const include = hasSessions ? 'identifier,server,playerCounter,playerFlag' : 'server';
+    // We always include identifier so the basic profile shows Steam/hardware IDs
+    // (those are now part of the viewPlayers tier). Only IPs are stripped
+    // client-side if the viewer lacks viewIps.
+    const include = 'identifier,server,playerCounter,playerFlag';
     try {
       const data = await bm.getPlayer(req.params.id, { include });
       res.json(data);
@@ -282,22 +282,55 @@ export function buildBmRouter({ requirePerm, getPteroServers, asyncRoute }) {
 
   // ─── Linkages (Discord + transcripts) ────────────────────────────────────
 
-  // ─── IpBan controller (in-game log IPs + alt accounts) ──────────────────
-  // Gated by admin.viewIngameIps (NOT a battlemetrics.* perm) because the
-  // data here is parsed from our game-server logs, not BM. The perm is
-  // declared on auth.reforgedz.net but checked manually here since
-  // requireBmPerm only knows about battlemetrics.*.
-  router.get('/players/by-guid/:guid/ip-alts', asyncRoute(async (req, res) => {
-    if (!req.rzUser) return res.status(401).json({ error: 'unauthorized' });
-    if (!req.rzUser.perms?.admin?.viewIngameIps) {
-      return res.status(403).json({ error: 'forbidden', required: 'admin.viewIngameIps' });
-    }
+  // ─── IpBan controller (in-game log IPs + alt accounts + IP-ban CRUD) ────
+  // All gated by battlemetrics.viewIps (the unified IP-PII gate).
+  router.get('/players/by-guid/:guid/ip-alts', requirePerm('viewIps'), asyncRoute(async (req, res) => {
     if (!ipBans.isEnabled()) {
       return res.status(503).json({ error: 'ipban_controller_not_configured' });
     }
     const out = await ipBans.getPlayerByGuid(req.params.guid);
     if (!out) return res.json({ records: [], ips: [], alts: [], ip_bans: [] });
     res.json(out);
+  }));
+
+  router.get('/ipbans', requirePerm('viewIps'), asyncRoute(async (_req, res) => {
+    if (!ipBans.isEnabled()) return res.status(503).json({ error: 'ipban_controller_not_configured' });
+    const out = await ipBans.listBans();
+    res.json({ bans: (out && out.bans) || [] });
+  }));
+
+  router.post('/ipbans', requirePerm('viewIps'), asyncRoute(async (req, res) => {
+    if (!ipBans.isEnabled()) return res.status(503).json({ error: 'ipban_controller_not_configured' });
+    const { ip, username, be_guid, reason } = req.body || {};
+    if (!ip) return res.status(400).json({ error: 'missing_ip' });
+    const out = await ipBans.addBan({
+      ip,
+      username: username || 'Unknown',
+      be_guid: be_guid || null,
+      reason: reason || '',
+      banned_by: req.rzUser.username
+    });
+    postAuditEvent({
+      actorUsername: req.rzUser.username,
+      action: 'ipban.add',
+      detail: { ip, username, be_guid, reason },
+      ctx: ctxFromReq(req)
+    });
+    publish({ type: 'ipban.add', payload: { by: req.rzUser.username, ip } });
+    res.json(out || { ok: true });
+  }));
+
+  router.delete('/ipbans/:ip', requirePerm('viewIps'), asyncRoute(async (req, res) => {
+    if (!ipBans.isEnabled()) return res.status(503).json({ error: 'ipban_controller_not_configured' });
+    const out = await ipBans.removeBan(req.params.ip);
+    postAuditEvent({
+      actorUsername: req.rzUser.username,
+      action: 'ipban.remove',
+      detail: { ip: req.params.ip },
+      ctx: ctxFromReq(req)
+    });
+    publish({ type: 'ipban.remove', payload: { by: req.rzUser.username, ip: req.params.ip } });
+    res.json(out || { ok: true });
   }));
 
   router.get('/linkages/by-guid/:guid', requirePerm('viewPlayers'), asyncRoute(async (req, res) => {

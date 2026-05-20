@@ -9,7 +9,6 @@
 export type AdminPerms = {
   replay: boolean;
   gmManagement: boolean;
-  viewIngameIps: boolean;
 };
 
 export type TranscriptPerms = { read: boolean; stats: boolean; restricted: boolean };
@@ -17,8 +16,7 @@ export type TranscriptPerms = { read: boolean; stats: boolean; restricted: boole
 export type BattleMetricsPerms = {
   viewServers: boolean;
   viewPlayers: boolean;
-  viewSessions: boolean;
-  viewChat: boolean;
+  viewIps: boolean;
   viewActivity: boolean;
   viewBans: boolean;
   writeNotes: boolean;
@@ -76,7 +74,6 @@ async function fetchMe(): Promise<Session | null> {
         admin: {
           replay: !!u.perms?.admin?.replay,
           gmManagement: !!u.perms?.admin?.gmManagement,
-          viewIngameIps: !!u.perms?.admin?.viewIngameIps,
         },
         transcripts: {
           read: !!u.perms?.transcripts?.read,
@@ -86,8 +83,7 @@ async function fetchMe(): Promise<Session | null> {
         battlemetrics: {
           viewServers: !!bm.viewServers,
           viewPlayers: !!bm.viewPlayers,
-          viewSessions: !!bm.viewSessions,
-          viewChat: !!bm.viewChat,
+          viewIps: !!bm.viewIps,
           viewActivity: !!bm.viewActivity,
           viewBans: !!bm.viewBans,
           writeNotes: !!bm.writeNotes,
