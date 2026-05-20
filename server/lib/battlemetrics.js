@@ -157,13 +157,35 @@ export async function getServer(serverId) {
 
 export async function getServerPlayers(serverId) {
   const key = `server-players:${serverId}`;
-  // include identifier to get GUIDs alongside the player names
+  // /servers/:id?include=player gives the currently-online players in the
+  // included array. We also include identifier so the dashboard can attribute
+  // GUIDs without an extra round-trip.
   const data = await bmFetch(
-    `/servers/${encodeURIComponent(serverId)}/relationships/players`,
+    `/servers/${encodeURIComponent(serverId)}?include=player,identifier`,
     {},
     { cacheKey: key, ttl: TTL.server_players }
   );
-  return data.data || [];
+  // Group identifiers by player (BM back-references player from the
+  // identifier side, not the other way around).
+  const idsByPlayer = {};
+  for (const inc of data.included || []) {
+    if (inc.type !== 'identifier') continue;
+    const pid = inc.relationships?.player?.data?.id;
+    if (!pid) continue;
+    const t = inc.attributes?.type;
+    const v = inc.attributes?.identifier;
+    if (!t || !v) continue;
+    (idsByPlayer[pid] = idsByPlayer[pid] || []).push({ type: t, identifier: v, lastSeen: inc.attributes?.lastSeen });
+  }
+  const players = (data.included || [])
+    .filter((x) => x.type === 'player')
+    .map((p) => ({
+      id: p.id,
+      name: p.attributes?.name || '',
+      identifiers: idsByPlayer[p.id] || [],
+      guid: (idsByPlayer[p.id] || []).find((i) => i.type === 'reforgerUUID')?.identifier || null
+    }));
+  return players;
 }
 
 export async function searchPlayers({ q, serverIds, limit = 25 }) {
@@ -211,11 +233,13 @@ export async function listBansForPlayer(playerId) {
 }
 
 export async function listBans({ serverIds, includeExpired = false } = {}) {
+  // The /bans endpoint does NOT accept a server filter — bans are org-wide.
+  // We ignore serverIds and rely on org scope from the token; the dashboard
+  // can filter client-side by ban.relationships.server if needed later.
   const params = ['page[size]=100', 'include=player'];
-  if (serverIds && serverIds.length) params.push(`filter[servers]=${serverIds.join(',')}`);
   if (!includeExpired) params.push('filter[expired]=false');
   const path = `/bans?${params.join('&')}`;
-  const key = `bans-list:${(serverIds || []).join(',')}:${includeExpired ? 1 : 0}`;
+  const key = `bans-list:${includeExpired ? 1 : 0}`;
   const data = await bmFetch(path, {}, { cacheKey: key, ttl: TTL.bans_list });
   // Decorate each ban with the player name (from the included resources)
   // so the dashboard table doesn't have to do a second lookup.
@@ -348,18 +372,18 @@ export async function deletePlayerNote(noteId) {
 }
 
 export async function listActivity({ serverIds, types, limit = 50 } = {}) {
+  // BM /activity filter[types] expects an object keyed by type name with
+  // truthy values: filter[types][playerJoin]=true&filter[types][chat]=true.
+  // Build that here.
   const params = [`page[size]=${Math.min(limit, 100)}`];
   if (serverIds && serverIds.length) params.push(`filter[servers]=${serverIds.join(',')}`);
-  if (types && types.length) params.push(`filter[types]=${types.join(',')}`);
+  if (types && types.length) {
+    for (const t of types) params.push(`filter[types][${encodeURIComponent(t)}]=true`);
+  }
   const path = `/activity?${params.join('&')}`;
   const key = `activity:${(serverIds || []).join(',')}:${(types || []).join(',')}:${limit}`;
   const data = await bmFetch(path, {}, { cacheKey: key, ttl: TTL.activity });
   return data.data || [];
-}
-
-// Chat is the same /activity endpoint filtered to chat types.
-export async function listChat({ serverIds, limit = 50 } = {}) {
-  return listActivity({ serverIds, types: ['chat'], limit });
 }
 
 // ─── Webhook signature verify ───────────────────────────────────────────────

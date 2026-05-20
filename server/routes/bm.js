@@ -77,16 +77,25 @@ export function buildBmRouter({ requirePerm, getPteroServers, asyncRoute }) {
       return res.json({ players: [] });
     }
     const bmResp = await bm.searchPlayers({ q, serverIds, limit: 25 });
-    // included identifiers are normalized into each player's identifiers array
-    const idById = {};
+    // Group included identifiers by their player relationship — BM's JSON:API
+    // response doesn't put identifiers under the player's relationships,
+    // they back-reference the player from the identifier side.
+    const idsByPlayer = {};
     for (const inc of bmResp.included || []) {
-      if (inc.type === 'identifier') idById[inc.id] = inc;
+      if (inc.type !== 'identifier') continue;
+      const pid = inc.relationships?.player?.data?.id;
+      if (!pid) continue;
+      const t = inc.attributes?.type;
+      const v = inc.attributes?.identifier;
+      const lastSeen = inc.attributes?.lastSeen || null;
+      if (!t || !v) continue;
+      (idsByPlayer[pid] = idsByPlayer[pid] || []).push({ type: t, identifier: v, lastSeen });
     }
     const players = (bmResp.data || []).map((p) => {
-      const ids = (p.relationships?.identifier?.data || [])
-        .map((r) => idById[r.id])
-        .filter(Boolean)
-        .map((i) => ({ type: i.attributes?.type, identifier: i.attributes?.identifier }));
+      const ids = idsByPlayer[p.id] || [];
+      // Prefer the most-recent reforgerUUID identifier as the player's "GUID".
+      const guidIds = ids.filter((i) => i.type === 'reforgerUUID');
+      guidIds.sort((a, b) => (b.lastSeen || '').localeCompare(a.lastSeen || ''));
       return {
         source: 'battlemetrics',
         bmPlayerId: p.id,
@@ -94,7 +103,7 @@ export function buildBmRouter({ requirePerm, getPteroServers, asyncRoute }) {
         firstSeen: p.attributes?.createdAt || null,
         lastSeen: p.attributes?.updatedAt || null,
         identifiers: ids,
-        guid: ids.find((i) => i.type === 'reforgerUUID')?.identifier || null
+        guid: guidIds[0]?.identifier || null
       };
     });
     // TODO: merge local PII cache results. The previous /api/admin/pii path was
@@ -257,13 +266,6 @@ export function buildBmRouter({ requirePerm, getPteroServers, asyncRoute }) {
     const serverIds = getRequestedServerIds(req);
     const limit = Math.min(parseInt(req.query.limit, 10) || 50, 100);
     const events = await bm.listActivity({ serverIds, limit });
-    res.json({ events });
-  }));
-
-  router.get('/chat', requirePerm('viewChat'), asyncRoute(async (req, res) => {
-    const serverIds = getRequestedServerIds(req);
-    const limit = Math.min(parseInt(req.query.limit, 10) || 50, 100);
-    const events = await bm.listChat({ serverIds, limit });
     res.json({ events });
   }));
 

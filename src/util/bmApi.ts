@@ -177,14 +177,6 @@ export async function listActivity(opts?: { serverIds?: string[]; limit?: number
   return jsonOk(res, 'Failed to load activity');
 }
 
-export async function listChat(opts?: { serverIds?: string[]; limit?: number }): Promise<{ events: any[] }> {
-  const params = new URLSearchParams();
-  if (opts?.serverIds && opts.serverIds.length) params.set('servers', opts.serverIds.join(','));
-  if (opts?.limit) params.set('limit', String(opts.limit));
-  const res = await fetch(`${base()}/api/bm/chat?${params}`, { credentials: 'include' });
-  return jsonOk(res, 'Failed to load chat');
-}
-
 // ─── Linkages (Discord + transcripts) ──────────────────────────────────────
 
 export type Linkage = { discordId: string; discordUsername: string; guid: string | null; lastSeenAt: number };

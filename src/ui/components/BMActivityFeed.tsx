@@ -1,15 +1,13 @@
 import React, { useEffect, useState } from 'react';
-import { listActivity, listChat } from '../../util/bmApi';
+import { listActivity } from '../../util/bmApi';
 import { bmEvents, type SseEvent } from '../../util/sseClient';
 
 type Props = {
   serverIds?: string[];
-  /** Show chat-only events (uses /api/bm/chat). */
-  chatOnly?: boolean;
   pollMs?: number;
 };
 
-export function BMActivityFeed({ serverIds, chatOnly, pollMs = 30_000 }: Props) {
+export function BMActivityFeed({ serverIds, pollMs = 30_000 }: Props) {
   const [events, setEvents] = useState<any[]>([]);
   const [err, setErr] = useState<string | null>(null);
 
@@ -17,9 +15,7 @@ export function BMActivityFeed({ serverIds, chatOnly, pollMs = 30_000 }: Props) 
     let alive = true;
     async function load() {
       try {
-        const out = chatOnly
-          ? await listChat({ serverIds, limit: 100 })
-          : await listActivity({ serverIds, limit: 100 });
+        const out = await listActivity({ serverIds, limit: 100 });
         if (alive) { setEvents(out.events); setErr(null); }
       } catch (e: any) {
         if (alive) setErr(e?.message || 'Failed to load');
@@ -35,7 +31,7 @@ export function BMActivityFeed({ serverIds, chatOnly, pollMs = 30_000 }: Props) 
     });
 
     return () => { alive = false; clearInterval(t); unsub(); };
-  }, [JSON.stringify(serverIds || []), chatOnly, pollMs]);
+  }, [JSON.stringify(serverIds || []), pollMs]);
 
   return (
     <div className="bmActivity">

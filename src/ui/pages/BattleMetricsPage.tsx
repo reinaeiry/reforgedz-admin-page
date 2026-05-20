@@ -12,7 +12,7 @@ import { BMBanForm } from '../components/BMBanForm';
 import { useToast } from '../components/Toast';
 import { bmEvents } from '../../util/sseClient';
 
-type TabKey = 'overview' | 'players' | 'bans' | 'servers' | 'activity' | 'chat';
+type TabKey = 'overview' | 'players' | 'bans' | 'servers' | 'activity';
 
 const TABS: { key: TabKey; label: string; perm: () => boolean }[] = [
   { key: 'overview', label: 'Overview', perm: () => hasBmPerm('viewServers') || hasBmPerm('viewActivity') },
@@ -20,7 +20,6 @@ const TABS: { key: TabKey; label: string; perm: () => boolean }[] = [
   { key: 'bans', label: 'Bans', perm: () => hasBmPerm('viewBans') },
   { key: 'servers', label: 'Servers', perm: () => hasBmPerm('viewServers') },
   { key: 'activity', label: 'Activity', perm: () => hasBmPerm('viewActivity') },
-  { key: 'chat', label: 'Chat', perm: () => hasBmPerm('viewChat') },
 ];
 
 const STORAGE_TAB_KEY = 'rz.bm.lastTab.v1';
@@ -144,11 +143,6 @@ export function BattleMetricsPage() {
         </section>
       ) : null}
 
-      {activeTab?.key === 'chat' ? (
-        <section className="bmTabPanel">
-          <BMActivityFeed serverIds={filter.length ? filter : undefined} chatOnly />
-        </section>
-      ) : null}
     </div>
   );
 }

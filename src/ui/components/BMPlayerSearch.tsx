@@ -41,7 +41,9 @@ export function BMPlayerSearch({ serverIds, onPick, navigateOnPick = true }: Pro
 
   function pick(p: BmSearchResult) {
     if (onPick) onPick(p);
-    if (navigateOnPick && p.guid) nav(`/player/${p.guid}`);
+    if (!navigateOnPick) return;
+    if (p.guid) nav(`/player/${p.guid}`);
+    else if (p.bmPlayerId) nav(`/player/by-bm/${p.bmPlayerId}`);
   }
 
   return (

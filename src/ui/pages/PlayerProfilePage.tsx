@@ -212,20 +212,34 @@ export function PlayerProfilePage() {
 function pickPlayer(json: any, hintGuid: string | null): ResolvedPlayer | null {
   const data = json?.data;
   if (!data) return null;
-  const idsById: Record<string, any> = {};
+  // Group included identifiers by player id (BM back-references from the
+  // identifier side, not the other way around).
+  const ids: Array<{ type: string; identifier: string; lastSeen?: string }> = [];
   for (const inc of json?.included || []) {
-    if (inc.type === 'identifier') idsById[inc.id] = inc;
+    if (inc.type !== 'identifier') continue;
+    const pid = inc.relationships?.player?.data?.id;
+    if (pid !== data.id) continue;
+    const t = inc.attributes?.type;
+    const v = inc.attributes?.identifier;
+    if (!t || !v) continue;
+    ids.push({ type: t, identifier: v, lastSeen: inc.attributes?.lastSeen });
   }
-  const ids = (data.relationships?.identifier?.data || [])
-    .map((r: any) => idsById[r.id])
-    .filter(Boolean)
-    .map((i: any) => ({ type: i.attributes?.type, identifier: i.attributes?.identifier }));
-  const guidFromIds = ids.find((i: any) => i.type === 'reforgerUUID')?.identifier || null;
+  // De-dupe identifiers by (type, identifier).
+  const seen = new Set<string>();
+  const dedup = ids.filter((i) => {
+    const k = `${i.type}::${i.identifier}`;
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
+  // Pick the most-recently-seen reforgerUUID as the player's current GUID.
+  const guidIds = dedup.filter((i) => i.type === 'reforgerUUID');
+  guidIds.sort((a, b) => (b.lastSeen || '').localeCompare(a.lastSeen || ''));
   return {
     bmPlayerId: data.id,
     name: data.attributes?.name || '',
-    guid: guidFromIds || hintGuid || null,
+    guid: guidIds[0]?.identifier || hintGuid || null,
     attributes: data.attributes,
-    identifiers: ids,
+    identifiers: dedup,
   };
 }
