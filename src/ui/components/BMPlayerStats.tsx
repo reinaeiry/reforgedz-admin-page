@@ -10,7 +10,7 @@ function fmtDuration(sec: number | null): string {
   return `${h}h ${m % 60}m`;
 }
 
-export function BMPlayerStats({ guid }: { guid: string }) {
+export function BMPlayerStats({ guid, names }: { guid: string; names?: string[] }) {
   const [stats, setStats] = useState<PlayerStats | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
@@ -18,13 +18,13 @@ export function BMPlayerStats({ guid }: { guid: string }) {
     let alive = true;
     setErr(null);
     setStats(null);
-    getPlayerStats(guid).then((s) => {
+    getPlayerStats(guid, names).then((s) => {
       if (alive) setStats(s);
     }).catch((e) => {
       if (alive) setErr(e?.message || 'Failed to load stats');
     });
     return () => { alive = false; };
-  }, [guid]);
+  }, [guid, JSON.stringify(names || [])]);
 
   if (err) return <div className="bmError">{err}</div>;
   if (!stats) return <div className="muted">Loading stats…</div>;

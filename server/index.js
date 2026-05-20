@@ -3507,22 +3507,55 @@ async function loadIngameServers() {
   return all.filter((s) => !INGAME_RESERVED_TAGS.has(String(s.tag || '').toLowerCase()));
 }
 
-async function readIngameJson(server, kind) {
+// SSH round-trips per server are slow (~1-2s each) — cache parsed JSON
+// per (server, kind) for 60s. Invalidated on every successful write so the
+// list reflects new bans/mutes immediately after add/edit/remove.
+const INGAME_CACHE_TTL_MS = 60_000;
+const ingameJsonCache = new Map();
+function ingameCacheKey(pteroId, kind) { return `${pteroId}:${kind}`; }
+
+async function readIngameJson(server, kind, { skipCache = false } = {}) {
   const meta = ingameKindMeta(kind);
+  const cacheKey = ingameCacheKey(server.pteroId, kind);
+  if (!skipCache) {
+    const hit = ingameJsonCache.get(cacheKey);
+    if (hit && hit.expiresAt > Date.now()) return hit.value;
+  }
   const remote = ingameVolumePath(server.volumeUuid, meta.suffix);
   const json = await sshReadFile(server.region, remote).catch((e) => {
     if (String(e?.message || '').includes('parse_failed')) return { [meta.listKey]: [] };
     throw e;
   });
-  if (!json) return { [meta.listKey]: [] };
-  if (!Array.isArray(json[meta.listKey])) json[meta.listKey] = [];
-  return json;
+  const result = json || { [meta.listKey]: [] };
+  if (!Array.isArray(result[meta.listKey])) result[meta.listKey] = [];
+  ingameJsonCache.set(cacheKey, { value: result, expiresAt: Date.now() + INGAME_CACHE_TTL_MS });
+  return result;
 }
 
 async function writeIngameJson(server, kind, body) {
   const meta = ingameKindMeta(kind);
   const remote = ingameVolumePath(server.volumeUuid, meta.suffix);
   await sshWriteFile(server.region, remote, body);
+  // Replace the cached copy with what we just wrote so the next read is
+  // hot AND consistent (no race between SSH replication and a fresh read).
+  ingameJsonCache.set(
+    ingameCacheKey(server.pteroId, kind),
+    { value: body, expiresAt: Date.now() + INGAME_CACHE_TTL_MS }
+  );
+}
+
+// Run the per-server reads in parallel — the SSH connections are
+// independent so this turns a 4× sequential cost into a single round-trip
+// at the slowest server.
+async function readIngameForAll(servers, kind) {
+  return Promise.all(servers.map(async (server) => {
+    try {
+      const body = await readIngameJson(server, kind);
+      return { server, body, error: null };
+    } catch (err) {
+      return { server, body: null, error: String(err?.message || err) };
+    }
+  }));
 }
 
 function ingameRequireView(kind) {
@@ -3546,19 +3579,21 @@ function mountIngameBansMutes(app, { requireAuth, requireBmPerm: _bm, asyncRoute
       const targets = filter === 'all' ? servers : servers.filter((s) => String(s.tag || '').toLowerCase() === filter);
       if (!targets.length && filter !== 'all') return res.json({ records: [], servers: [] });
 
+      const reads = await readIngameForAll(targets, kind);
       const out = [];
       const errors = [];
-      for (const server of targets) {
-        try {
-          const body = await readIngameJson(server, kind);
-          for (const rec of body[meta.listKey] || []) {
-            out.push({ server: server.tag || server.pteroId, region: server.region, ...ingameToApi(rec, meta) });
-          }
-        } catch (err) {
-          errors.push({ server: server.tag, error: String(err?.message || err) });
+      for (const { server, body, error } of reads) {
+        if (error) { errors.push({ server: server.tag, error }); continue; }
+        for (const rec of body[meta.listKey] || []) {
+          out.push({ server: server.tag || server.pteroId, region: server.region, ...ingameToApi(rec, meta) });
         }
       }
       out.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+      // Skip the browser HTTP cache — server-side TTL is enough and we
+      // can't reliably bust the browser cache after a mutation in the
+      // same tab. The 60s in-process cache already makes back-to-back
+      // requests cheap.
+      res.set('Cache-Control', 'no-store');
       res.json({
         records: out,
         servers: servers.map((s) => ({ tag: s.tag, region: s.region })),

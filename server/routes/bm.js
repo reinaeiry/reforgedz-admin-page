@@ -424,7 +424,10 @@ export function buildBmRouter({ requirePerm, getPteroServers, asyncRoute }) {
   }));
 
   router.get('/logs/stats/:guid', requirePerm('viewActivity'), asyncRoute(async (req, res) => {
-    const out = await gameLogs.playerStats(String(req.params.guid).toLowerCase());
+    const namesList = typeof req.query.names === 'string' && req.query.names
+      ? req.query.names.split(',').map((s) => s.trim()).filter(Boolean)
+      : null;
+    const out = await gameLogs.playerStats(String(req.params.guid).toLowerCase(), namesList);
     res.set('Cache-Control', 'private, max-age=15');
     res.json(out || { kills: 0, deaths: 0, kdr: 0, avgAliveSec: null });
   }));

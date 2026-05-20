@@ -325,7 +325,7 @@ export function PlayerProfilePage() {
       {canViewLogs && player.guid ? (
         <section className="bmProfile-section">
           <h2>Stats</h2>
-          <BMPlayerStats guid={player.guid} />
+          <BMPlayerStats guid={player.guid} names={collectPlayerNames(player)} />
         </section>
       ) : null}
 

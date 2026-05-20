@@ -311,8 +311,11 @@ export type PlayerStats = {
   lastSeenMs: number | null;
 };
 
-export async function getPlayerStats(guid: string): Promise<PlayerStats> {
-  const res = await fetch(`${base()}/api/bm/logs/stats/${encodeURIComponent(guid)}`, { credentials: 'include' });
+export async function getPlayerStats(guid: string, names?: string[]): Promise<PlayerStats> {
+  const params = new URLSearchParams();
+  if (names && names.length) params.set('names', names.join(','));
+  const qs = params.toString();
+  const res = await fetch(`${base()}/api/bm/logs/stats/${encodeURIComponent(guid)}${qs ? `?${qs}` : ''}`, { credentials: 'include' });
   return jsonOk(res, 'Failed to load stats');
 }
 

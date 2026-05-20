@@ -98,12 +98,15 @@ export async function listLogs(opts = {}) {
   return rows;
 }
 
-export async function playerStats(guid) {
+export async function playerStats(guid, names) {
   if (!guid) return null;
-  const key = `stats:${guid}`;
+  const params = new URLSearchParams();
+  if (names && names.length) params.set('names', names.join(','));
+  const qs = params.toString();
+  const key = `stats:${guid}:${qs}`;
   const hit = cacheGet(key);
   if (hit) return hit;
-  const out = await botGet(`/api/internal/logs/stats/${encodeURIComponent(guid)}`);
+  const out = await botGet(`/api/internal/logs/stats/${encodeURIComponent(guid)}${qs ? `?${qs}` : ''}`);
   if (out) cacheSet(key, out);
   return out;
 }
