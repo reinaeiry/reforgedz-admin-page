@@ -18,6 +18,7 @@ import { renderBanReason } from '../../util/banFormat';
 import { DiscordAvatar } from '../components/DiscordAvatar';
 import { BMNotesPanel } from '../components/BMNotesPanel';
 import { BMBanForm } from '../components/BMBanForm';
+import { BMLogs } from '../components/BMLogs';
 
 type ResolvedPlayer = {
   bmPlayerId: string;
@@ -47,6 +48,7 @@ export function PlayerProfilePage() {
   const canBans = hasBmPerm('viewBans');
   const canWriteNotes = hasBmPerm('writeNotes');
   const canBan = hasBmPerm('ban');
+  const canViewLogs = hasBmPerm('viewActivity');
 
   useEffect(() => {
     let alive = true;
@@ -286,6 +288,13 @@ export function PlayerProfilePage() {
               )}
             </>
           )}
+        </section>
+      ) : null}
+
+      {canViewLogs && player.guid ? (
+        <section className="bmProfile-section">
+          <h2>In-game logs</h2>
+          <BMLogs guid={player.guid} pageSize={50} />
         </section>
       ) : null}
 

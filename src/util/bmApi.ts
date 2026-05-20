@@ -263,6 +263,52 @@ export async function removeIpBan(ip: string): Promise<{ ok: true }> {
   return jsonOk(res, 'Failed to remove IP ban');
 }
 
+// ─── Game logs ─────────────────────────────────────────────────────────────
+
+export type GameLogRow = {
+  id: number;
+  channel_id: string;
+  message_id: string;
+  ts_ms: number;
+  log_type: 'anticheat' | 'shop' | 'kill' | 'death' | 'chat' | 'base';
+  server: string | null;
+  severity: string | null;
+  category: string | null;
+  player_name: string | null;
+  player_guid: string | null;
+  target_name: string | null;
+  target_guid: string | null;
+  details: Record<string, any> | null;
+  raw: string;
+};
+
+export type ListLogsOpts = {
+  guid?: string;
+  name?: string;
+  types?: string[];
+  servers?: string[];
+  q?: string;
+  sinceMs?: number;
+  untilMs?: number;
+  limit?: number;
+  offset?: number;
+};
+
+export async function listGameLogs(opts: ListLogsOpts = {}): Promise<{ logs: GameLogRow[] }> {
+  const params = new URLSearchParams();
+  if (opts.guid) params.set('guid', opts.guid);
+  if (opts.name) params.set('name', opts.name);
+  if (opts.types && opts.types.length) params.set('types', opts.types.join(','));
+  if (opts.servers && opts.servers.length) params.set('servers', opts.servers.join(','));
+  if (opts.q) params.set('q', opts.q);
+  if (opts.sinceMs) params.set('sinceMs', String(opts.sinceMs));
+  if (opts.untilMs) params.set('untilMs', String(opts.untilMs));
+  if (opts.limit) params.set('limit', String(opts.limit));
+  if (opts.offset) params.set('offset', String(opts.offset));
+  const res = await fetch(`${base()}/api/bm/logs?${params}`, { credentials: 'include' });
+  return jsonOk(res, 'Failed to load logs');
+}
+
 // ─── SSE URL helper ────────────────────────────────────────────────────────
 
 export function eventStreamUrl(): string {

@@ -10,6 +10,7 @@ import * as bm from '../lib/battlemetrics.js';
 import * as bmServers from '../lib/bmServers.js';
 import * as linkages from '../lib/linkages.js';
 import * as ipBans from '../lib/ipBans.js';
+import * as gameLogs from '../lib/gameLogs.js';
 import { postAuditEvent, ctxFromReq } from '../lib/bmAudit.js';
 import { publish } from '../lib/eventBus.js';
 
@@ -331,6 +332,32 @@ export function buildBmRouter({ requirePerm, getPteroServers, asyncRoute }) {
     });
     publish({ type: 'ipban.remove', payload: { by: req.rzUser.username, ip: req.params.ip } });
     res.json(out || { ok: true });
+  }));
+
+  // ─── Game logs ────────────────────────────────────────────────────────────
+  // Discord-scraped ingame logs (anticheat / shops / kill / chat / base).
+  // viewActivity gates everything; chat lines additionally require viewChat
+  // if you wanted to split them later — for v1 we collapse under viewActivity.
+
+  router.get('/logs', requirePerm('viewActivity'), asyncRoute(async (req, res) => {
+    const types = typeof req.query.types === 'string' && req.query.types
+      ? req.query.types.split(',').map((s) => s.trim()).filter(Boolean)
+      : null;
+    const servers = typeof req.query.servers === 'string' && req.query.servers
+      ? req.query.servers.split(',').map((s) => s.trim()).filter(Boolean)
+      : null;
+    const logs = await gameLogs.listLogs({
+      guid: req.query.guid || null,
+      name: req.query.name || null,
+      types,
+      servers,
+      q: req.query.q || null,
+      sinceMs: req.query.sinceMs ? +req.query.sinceMs : null,
+      untilMs: req.query.untilMs ? +req.query.untilMs : null,
+      limit: req.query.limit ? +req.query.limit : 100,
+      offset: req.query.offset ? +req.query.offset : 0
+    });
+    res.json({ logs });
   }));
 
   router.get('/linkages/by-guid/:guid', requirePerm('viewPlayers'), asyncRoute(async (req, res) => {

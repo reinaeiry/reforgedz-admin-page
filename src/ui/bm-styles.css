@@ -159,6 +159,50 @@
 .bmBadge { background: var(--surface-3); border: 1px solid var(--border); padding: 1px 6px; border-radius: 3px; font-size: .65rem; color: var(--text-dim); text-transform: uppercase; letter-spacing: 1px; }
 .bmBadge-warn { border-color: rgba(239,68,68,.5); color: #fca5a5; background: rgba(239,68,68,.08); }
 
+/* ─── Game logs ────────────────────────────────────────────────────── */
+.bmLogs { display: flex; flex-direction: column; gap: 10px; }
+.bmLogs-controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.bmLogs-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.bmChip {
+  background: var(--bg-raised); border: 1px solid var(--border); color: var(--text-dim);
+  padding: 4px 10px; border-radius: 999px; font-size: .72rem; cursor: pointer;
+  transition: all .12s ease;
+}
+.bmChip:hover { color: var(--text); }
+.bmChip-on { background: var(--cyan); border-color: var(--cyan); color: var(--bg); font-weight: 600; }
+.bmLogs-search {
+  flex: 1; min-width: 180px; max-width: 320px;
+  background: var(--bg-raised); border: 1px solid var(--border); color: var(--text);
+  padding: 5px 10px; border-radius: 4px; font: inherit; font-size: .85rem;
+}
+.bmLogs-search:focus { outline: none; border-color: var(--cyan); }
+.bmLogList { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.bmLogRow {
+  display: grid;
+  grid-template-columns: 130px 60px 90px 1fr;
+  gap: 10px;
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--border);
+  font-size: .82rem;
+  align-items: baseline;
+}
+.bmLogRow:hover { background: var(--bg-raised); }
+.bmLogTime { color: var(--text-dim); font-variant-numeric: tabular-nums; font-size: .72rem; white-space: nowrap; }
+.bmLogServer { color: var(--text-dim); font-size: .72rem; font-family: 'JetBrains Mono', ui-monospace, monospace; }
+.bmLogType { font-size: .68rem; font-weight: 700; letter-spacing: 1px; color: var(--text-dim); text-transform: uppercase; }
+.bmLogSev-crit { color: #fca5a5; }
+.bmLogSev-warn { color: #fbbf24; }
+.bmLogSev-info { color: #93c5fd; }
+.bmLogBody { color: var(--text); word-break: break-word; }
+.bmLogPlayer { color: var(--cyan); text-decoration: none; font-weight: 500; }
+.bmLogPlayer:hover { text-decoration: underline; }
+.bmLogTag {
+  display: inline-block; background: var(--bg-raised); border: 1px solid var(--border);
+  padding: 1px 6px; border-radius: 3px; font-size: .68rem; color: var(--text-dim); margin-right: 2px;
+}
+.bmLogPos { color: var(--text-ghost); font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: .7rem; margin-left: 6px; }
+.bmLogs-pager { display: flex; gap: 12px; align-items: center; padding-top: 8px; }
+
 /* ─── Notes ───────────────────────────────────────────────────────── */
 .bmNotes-add { display: flex; gap: 8px; margin-bottom: 12px; }
 .bmNotes-add textarea { flex: 1; padding: 8px; background: var(--bg-raised); border: 1px solid var(--border); color: var(--text); border-radius: 4px; font: inherit; resize: vertical; }

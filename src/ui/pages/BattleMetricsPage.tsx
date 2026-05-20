@@ -7,14 +7,14 @@ import { ConfirmModal } from '../components/ConfirmModal';
 import { load as loadFilter, save as saveFilter } from '../../util/serverFilter';
 import { BMServerStatusStrip } from '../components/BMServerStatusStrip';
 import { BMPlayerSearch } from '../components/BMPlayerSearch';
-import { BMActivityFeed } from '../components/BMActivityFeed';
+import { BMLogs } from '../components/BMLogs';
 import { BMOnlinePlayerList } from '../components/BMOnlinePlayerList';
 import { ServerFilterChips } from '../components/ServerFilterChips';
 import { BMBanForm } from '../components/BMBanForm';
 import { useToast } from '../components/Toast';
 import { bmEvents } from '../../util/sseClient';
 
-type TabKey = 'overview' | 'players' | 'bans' | 'ipbans' | 'servers' | 'activity';
+type TabKey = 'overview' | 'players' | 'bans' | 'ipbans' | 'servers' | 'logs';
 
 const TABS: { key: TabKey; label: string; perm: () => boolean }[] = [
   { key: 'overview', label: 'Overview', perm: () => hasBmPerm('viewServers') || hasBmPerm('viewActivity') },
@@ -22,7 +22,7 @@ const TABS: { key: TabKey; label: string; perm: () => boolean }[] = [
   { key: 'bans', label: 'Bans', perm: () => hasBmPerm('viewBans') },
   { key: 'ipbans', label: 'IP Bans', perm: () => hasBmPerm('viewIps') },
   { key: 'servers', label: 'Servers', perm: () => hasBmPerm('viewServers') },
-  { key: 'activity', label: 'Activity', perm: () => hasBmPerm('viewActivity') },
+  { key: 'logs', label: 'Logs', perm: () => hasBmPerm('viewActivity') },
 ];
 
 const STORAGE_TAB_KEY = 'rz.bm.lastTab.v1';
@@ -106,9 +106,9 @@ export function BattleMetricsPage() {
               <BMPlayerSearch serverIds={filter.length ? filter : undefined} />
             </div>
             <div>
-              <h2>Recent activity</h2>
+              <h2>Recent logs</h2>
               {hasBmPerm('viewActivity')
-                ? <BMActivityFeed serverIds={filter.length ? filter : undefined} />
+                ? <BMLogs pageSize={20} />
                 : <div className="muted">You don't have View Activity permission.</div>}
             </div>
           </div>
@@ -144,9 +144,10 @@ export function BattleMetricsPage() {
         </section>
       ) : null}
 
-      {activeTab?.key === 'activity' ? (
+      {activeTab?.key === 'logs' ? (
         <section className="bmTabPanel">
-          <BMActivityFeed serverIds={filter.length ? filter : undefined} />
+          <h2>Game logs</h2>
+          <BMLogs showPlayerSearch />
         </section>
       ) : null}
 
