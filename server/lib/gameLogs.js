@@ -79,6 +79,10 @@ export async function listLogs(opts = {}) {
   if (opts.scopePairs && opts.scopePairs.length) {
     params.set('scopePairs', opts.scopePairs.map((p) => `${p.scope}:${p.type}`).join(','));
   }
+  // Extra names (e.g. all of a BM player's historical name identifiers).
+  // Bot ORs them with the GUID-resolved name set so chat rows without UIDs
+  // still match.
+  if (opts.names && opts.names.length) params.set('names', opts.names.join(','));
   if (opts.q) params.set('q', opts.q);
   if (opts.sinceMs) params.set('sinceMs', String(opts.sinceMs));
   if (opts.untilMs) params.set('untilMs', String(opts.untilMs));

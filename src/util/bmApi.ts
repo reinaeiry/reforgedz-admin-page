@@ -291,6 +291,7 @@ export type GameLogRow = {
 export type ListLogsOpts = {
   guid?: string;
   name?: string;
+  names?: string[];
   types?: string[];
   servers?: string[];
   q?: string;
@@ -319,6 +320,7 @@ export async function listGameLogs(opts: ListLogsOpts = {}): Promise<{ logs: Gam
   const params = new URLSearchParams();
   if (opts.guid) params.set('guid', opts.guid);
   if (opts.name) params.set('name', opts.name);
+  if (opts.names && opts.names.length) params.set('names', opts.names.join(','));
   if (opts.types && opts.types.length) params.set('types', opts.types.join(','));
   if (opts.servers && opts.servers.length) params.set('servers', opts.servers.join(','));
   if (opts.q) params.set('q', opts.q);

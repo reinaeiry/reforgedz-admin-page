@@ -23,6 +23,10 @@ const SEV_CLASS: Record<string, string> = {
 
 type Props = {
   guid?: string;
+  // Extra names to OR onto the player filter (current BM name +
+  // historical name identifiers). Catches chat / kill rows where the
+  // player's UID was never recorded.
+  extraNames?: string[];
   showPlayerSearch?: boolean;
   pageSize?: number;
   // Sticky server filter from the dashboard chips. Per-server scopes
@@ -31,7 +35,7 @@ type Props = {
   scopes?: string[];
 };
 
-export function BMLogs({ guid, showPlayerSearch, pageSize = 100, scopes }: Props) {
+export function BMLogs({ guid, extraNames, showPlayerSearch, pageSize = 100, scopes }: Props) {
   // Only show chips the user is actually allowed to read.
   const allowed = useMemo(() => new Set<LogLevel>(allowedLogLevels()), []);
   const visibleOptions = useMemo(() => TYPE_OPTIONS.filter((t) => allowed.has(t.key)), [allowed]);
@@ -54,12 +58,13 @@ export function BMLogs({ guid, showPlayerSearch, pageSize = 100, scopes }: Props
   const filters = useMemo(() => ({
     guid: guid || undefined,
     name: !guid && playerName.trim() ? playerName.trim() : undefined,
+    names: guid && extraNames && extraNames.length ? extraNames : undefined,
     types: effectiveTypes,
     servers: scopes && scopes.length ? scopes : undefined,
     q: q.trim() || undefined,
     limit: pageSize,
     offset
-  }), [guid, playerName, effectiveTypes, scopes, q, pageSize, offset]);
+  }), [guid, extraNames, playerName, effectiveTypes, scopes, q, pageSize, offset]);
 
   // Polling: refetch every 15s while the tab is visible. Lines up with the
   // server-side Cache-Control max-age=15, so most polls are a cheap 304 from

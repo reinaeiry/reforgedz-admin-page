@@ -404,9 +404,13 @@ export function buildBmRouter({ requirePerm, getPteroServers, asyncRoute }) {
     const servers = typeof req.query.servers === 'string' && req.query.servers
       ? req.query.servers.split(',').map((s) => s.trim()).filter(Boolean)
       : null;
+    const namesList = typeof req.query.names === 'string' && req.query.names
+      ? req.query.names.split(',').map((s) => s.trim()).filter(Boolean)
+      : null;
     const logs = await gameLogs.listLogs({
       guid: req.query.guid || null,
       name: req.query.name || null,
+      names: namesList,
       scopePairs: finalPairs,
       servers,
       q: req.query.q || null,

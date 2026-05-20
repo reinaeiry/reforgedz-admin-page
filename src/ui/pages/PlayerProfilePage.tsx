@@ -304,7 +304,11 @@ export function PlayerProfilePage() {
       {canViewLogs && player.guid ? (
         <section className="bmProfile-section">
           <h2>In-game logs</h2>
-          <BMLogs guid={player.guid} pageSize={50} />
+          <BMLogs
+            guid={player.guid}
+            extraNames={collectPlayerNames(player)}
+            pageSize={50}
+          />
         </section>
       ) : null}
 
@@ -325,6 +329,19 @@ export function PlayerProfilePage() {
       ) : null}
     </div>
   );
+}
+
+// All known names for this BM player — current display name plus every
+// historical `name` identifier from their BM profile. The log query ORs
+// these onto the GUID match so chat / kill / etc rows whose names were
+// never linked to a UID still surface on the profile.
+function collectPlayerNames(player: ResolvedPlayer): string[] {
+  const out = new Set<string>();
+  if (player.name) out.add(player.name);
+  for (const id of player.identifiers || []) {
+    if (id.type === 'name' && id.identifier) out.add(id.identifier);
+  }
+  return Array.from(out);
 }
 
 function pickPlayer(json: any, hintGuid: string | null): ResolvedPlayer | null {
