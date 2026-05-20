@@ -203,6 +203,43 @@ export async function linkageByDiscordId(id: string): Promise<{ linkage: Linkage
   return jsonOk(res, 'Failed to load linkage');
 }
 
+// ─── IpBan controller (in-game log IPs + alt accounts) ────────────────────
+
+export type IpBanRecord = {
+  id: number;
+  username: string;
+  be_guid: string;
+  ip: string;
+  server_name: string;
+  listener_id: string;
+  first_seen: number;
+  last_seen: number;
+};
+
+export type IpBanInfo = {
+  ip: string;
+  username: string;
+  be_guid: string;
+  banned_by: string;
+  reason: string;
+  created_at?: number;
+};
+
+export type IpAltsResponse = {
+  records: IpBanRecord[];
+  ips: string[];
+  alts: IpBanRecord[];
+  ip_bans: IpBanInfo[];
+  error?: string;
+};
+
+export async function getIpAlts(guid: string): Promise<IpAltsResponse> {
+  const res = await fetch(`${base()}/api/bm/players/by-guid/${encodeURIComponent(guid)}/ip-alts`, { credentials: 'include' });
+  if (res.status === 403) return { records: [], ips: [], alts: [], ip_bans: [], error: 'forbidden' };
+  if (res.status === 503) return { records: [], ips: [], alts: [], ip_bans: [], error: 'ipban_controller_not_configured' };
+  return jsonOk(res, 'Failed to load IP alts');
+}
+
 // ─── SSE URL helper ────────────────────────────────────────────────────────
 
 export function eventStreamUrl(): string {

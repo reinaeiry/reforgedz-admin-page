@@ -1,16 +1,18 @@
 import React, { useEffect, useState } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useNavigate, useParams } from 'react-router-dom';
 import {
+  getIpAlts,
   getPlayer,
   getPlayerBans,
   getPlayerByGuid,
   linkageByGuid,
   listBmServers,
   type BmDashServer,
+  type IpAltsResponse,
   type Linkage,
   type TranscriptRef,
 } from '../../util/bmApi';
-import { hasBmPerm } from '../../util/session';
+import { hasBmPerm, hasToolAccess } from '../../util/session';
 import { renderBanReason } from '../../util/banFormat';
 import { DiscordAvatar } from '../components/DiscordAvatar';
 import { BMNotesPanel } from '../components/BMNotesPanel';
@@ -33,11 +35,14 @@ export function PlayerProfilePage() {
   const [servers, setServers] = useState<BmDashServer[]>([]);
   const [err, setErr] = useState<string | null>(null);
   const [banFormOpen, setBanFormOpen] = useState(false);
+  const [ipAlts, setIpAlts] = useState<IpAltsResponse | null>(null);
+  const nav = useNavigate();
 
   const canSessions = hasBmPerm('viewSessions');
   const canBans = hasBmPerm('viewBans');
   const canWriteNotes = hasBmPerm('writeNotes');
   const canBan = hasBmPerm('ban');
+  const canViewIngameIps = hasToolAccess('viewIngameIps');
 
   useEffect(() => {
     let alive = true;
@@ -83,6 +88,11 @@ export function PlayerProfilePage() {
         promises.push(listBmServers().then((s) => {
           if (alive) setServers(s.servers);
         }).catch(() => {}));
+        if (guid && canViewIngameIps) {
+          promises.push(getIpAlts(guid).then((a) => {
+            if (alive) setIpAlts(a);
+          }).catch(() => {}));
+        }
         await Promise.all(promises);
       } catch (e: any) {
         if (alive) setErr(e?.message || 'Failed to load player');
@@ -104,8 +114,17 @@ export function PlayerProfilePage() {
     ? player.identifiers
     : player.identifiers.filter((i) => !['ip', 'steamID', 'mobileDeviceID', 'hwid'].includes(i.type));
 
+  function goBack() {
+    // Prefer browser back if there's history; fall back to /battlemetrics?tab=players.
+    if (window.history.length > 1) nav(-1);
+    else nav('/battlemetrics?tab=players');
+  }
+
   return (
     <div className="bmProfile">
+      <div className="bmProfile-backRow">
+        <button className="btn" onClick={goBack}>← Back</button>
+      </div>
       <header className="bmProfile-header">
         <DiscordAvatar name={player.name} guid={player.guid} size={64} />
         <div className="bmProfile-headerText">
@@ -187,12 +206,54 @@ export function PlayerProfilePage() {
         )}
       </section>
 
-      {/* Slots for future ingame logs + stats merges. Always rendered as
-          placeholders so the page shape stays stable. */}
-      <section className="bmProfile-section bmProfile-slot">
-        <h2>Ingame logs <span className="bmBadge">future</span></h2>
-        <div className="muted">Will surface replay events for this player when the ingame-logs merge ships. Gated by <code>admin.viewIngameIps</code> for IPs.</div>
-      </section>
+      {canViewIngameIps && ipAlts ? (
+        <section className="bmProfile-section">
+          <h2>Ingame-log IPs &amp; Associated Accounts</h2>
+          {ipAlts.error === 'forbidden' ? (
+            <div className="muted">Forbidden.</div>
+          ) : ipAlts.error === 'ipban_controller_not_configured' ? (
+            <div className="muted">IpBan controller is not configured on this admin server.</div>
+          ) : ipAlts.records.length === 0 ? (
+            <div className="muted">No in-game log records for this player yet.</div>
+          ) : (
+            <>
+              <div className="bmIpList">
+                <strong>IPs:</strong>{' '}
+                {(ipAlts.ips || []).map((ip) => {
+                  const banned = (ipAlts.ip_bans || []).some((b) => b.ip === ip);
+                  return <code key={ip} className={`bmIpChip ${banned ? 'banned' : ''}`}>{ip}{banned ? ' (banned)' : ''}</code>;
+                })}
+              </div>
+              <p className="muted" style={{ marginTop: 4 }}>
+                Seen on {ipAlts.records.length} session{ipAlts.records.length === 1 ? '' : 's'} across {new Set((ipAlts.records || []).map((r) => r.server_name)).size} servers.
+              </p>
+              <h3 style={{ marginTop: 14, fontSize: '.85rem' }}>
+                Associated accounts ({ipAlts.alts.length})
+              </h3>
+              {ipAlts.alts.length === 0 ? (
+                <div className="muted">No other accounts seen on these IPs.</div>
+              ) : (
+                <table className="bmTable">
+                  <thead><tr><th>Name</th><th>GUID</th><th>IP</th><th>Server</th><th>Last seen</th></tr></thead>
+                  <tbody>
+                    {ipAlts.alts.map((a) => (
+                      <tr key={`${a.be_guid}-${a.ip}`}>
+                        <td><Link to={`/player/${a.be_guid}`}>{a.username}</Link></td>
+                        <td><code>{a.be_guid.slice(0, 8)}…</code></td>
+                        <td><code>{a.ip}</code></td>
+                        <td>{a.server_name}</td>
+                        <td>{a.last_seen ? new Date(a.last_seen * 1000).toLocaleString() : ''}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </>
+          )}
+        </section>
+      ) : null}
+
+      {/* Slot for future stats merge. */}
       <section className="bmProfile-section bmProfile-slot">
         <h2>Stats <span className="bmBadge">future</span></h2>
         <div className="muted">Will surface kills / playtime / shop activity once the stats module lands.</div>

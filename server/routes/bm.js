@@ -9,6 +9,7 @@ import express from 'express';
 import * as bm from '../lib/battlemetrics.js';
 import * as bmServers from '../lib/bmServers.js';
 import * as linkages from '../lib/linkages.js';
+import * as ipBans from '../lib/ipBans.js';
 import { postAuditEvent, ctxFromReq } from '../lib/bmAudit.js';
 import { publish } from '../lib/eventBus.js';
 
@@ -280,6 +281,24 @@ export function buildBmRouter({ requirePerm, getPteroServers, asyncRoute }) {
   }));
 
   // ─── Linkages (Discord + transcripts) ────────────────────────────────────
+
+  // ─── IpBan controller (in-game log IPs + alt accounts) ──────────────────
+  // Gated by admin.viewIngameIps (NOT a battlemetrics.* perm) because the
+  // data here is parsed from our game-server logs, not BM. The perm is
+  // declared on auth.reforgedz.net but checked manually here since
+  // requireBmPerm only knows about battlemetrics.*.
+  router.get('/players/by-guid/:guid/ip-alts', asyncRoute(async (req, res) => {
+    if (!req.rzUser) return res.status(401).json({ error: 'unauthorized' });
+    if (!req.rzUser.perms?.admin?.viewIngameIps) {
+      return res.status(403).json({ error: 'forbidden', required: 'admin.viewIngameIps' });
+    }
+    if (!ipBans.isEnabled()) {
+      return res.status(503).json({ error: 'ipban_controller_not_configured' });
+    }
+    const out = await ipBans.getPlayerByGuid(req.params.guid);
+    if (!out) return res.json({ records: [], ips: [], alts: [], ip_bans: [] });
+    res.json(out);
+  }));
 
   router.get('/linkages/by-guid/:guid', requirePerm('viewPlayers'), asyncRoute(async (req, res) => {
     const link = await linkages.getLinkageByGuid(req.params.guid);
