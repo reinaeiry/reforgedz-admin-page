@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { listGameLogs, type GameLogRow } from '../../util/bmApi';
 import { allowedLogLevels, type LogLevel } from '../../util/session';
+import { fmtLogTime } from '../../util/datetime';
 
 type LogType = LogLevel;
 
@@ -172,8 +173,7 @@ export function BMLogs({ guid, extraNames, showPlayerSearch, pageSize = 100, sco
 }
 
 function LogRow({ row }: { row: GameLogRow }) {
-  const date = new Date(row.ts_ms);
-  const time = date.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  const time = fmtLogTime(row.ts_ms);
 
   return (
     <li className={`bmLogRow bmLogType-${row.log_type}`}>

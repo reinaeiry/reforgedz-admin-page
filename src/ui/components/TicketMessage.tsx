@@ -1,5 +1,6 @@
 import React from 'react';
 import type { TicketAttachment, TicketMessage as TicketMessageT } from '../../util/ticketsApi';
+import { fmtMessageTime } from '../../util/datetime';
 
 const URL_RE = /\bhttps?:\/\/[^\s<>"]+/g;
 const IMAGE_EXT_RE = /\.(png|jpe?g|gif|webp|bmp|avif)(?:\?|#|$)/i;
@@ -133,14 +134,7 @@ function fmtSize(n: number): string {
   return `${(n / 1024 / 1024).toFixed(1)} MB`;
 }
 
-function fmtTime(ts: number): string {
-  const d = new Date(ts);
-  const today = new Date();
-  const sameDay = d.toDateString() === today.toDateString();
-  return sameDay
-    ? d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
-    : d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
-}
+function fmtTime(ts: number): string { return fmtMessageTime(ts); }
 
 export function TicketMessage({ msg }: { msg: TicketMessageT }) {
   const isRelay = msg.author.isAdminRelay;
