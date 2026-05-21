@@ -179,15 +179,19 @@
 .bmLogList { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
 .bmLogRow {
   display: grid;
-  grid-template-columns: 130px 60px 90px 1fr;
-  gap: 10px;
-  padding: 5px 8px;
+  grid-template-columns: 200px 56px 80px 1fr;
+  gap: 12px;
+  padding: 6px 8px;
   border-bottom: 1px solid var(--border);
   font-size: .82rem;
   align-items: baseline;
 }
+@media (max-width: 900px) {
+  .bmLogRow { grid-template-columns: 1fr; gap: 2px; }
+  .bmLogTime, .bmLogServer, .bmLogType { font-size: .7rem; }
+}
 .bmLogRow:hover { background: var(--bg-raised); }
-.bmLogTime { color: var(--text-dim); font-variant-numeric: tabular-nums; font-size: .72rem; white-space: nowrap; }
+.bmLogTime { color: var(--text-dim); font-variant-numeric: tabular-nums; font-size: .72rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .bmLogServer { color: var(--text-dim); font-size: .72rem; font-family: 'JetBrains Mono', ui-monospace, monospace; }
 .bmLogType { font-size: .68rem; font-weight: 700; letter-spacing: 1px; color: var(--text-dim); text-transform: uppercase; }
 .bmLogSev-crit { color: #fca5a5; }
