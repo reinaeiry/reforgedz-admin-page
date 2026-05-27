@@ -11,7 +11,7 @@ import * as bmServers from '../lib/bmServers.js';
 import * as linkages from '../lib/linkages.js';
 import * as ipBans from '../lib/ipBans.js';
 import * as gameLogs from '../lib/gameLogs.js';
-import { postAuditEvent, ctxFromReq } from '../lib/bmAudit.js';
+import { postAuditEvent, ctxFromReq, auditView } from '../lib/bmAudit.js';
 import { publish } from '../lib/eventBus.js';
 
 export function buildBmRouter({ requirePerm, getPteroServers, asyncRoute }) {
@@ -119,6 +119,7 @@ export function buildBmRouter({ requirePerm, getPteroServers, asyncRoute }) {
   router.get('/players/by-guid/:guid', requirePerm('viewPlayers'), asyncRoute(async (req, res) => {
     const player = await bm.matchPlayerByGuid(req.params.guid);
     if (!player) return res.status(404).json({ error: 'not_found' });
+    auditView(req, 'view.player', `guid:${String(req.params.guid).toLowerCase()}`);
     res.json({ player });
   }));
 
@@ -129,6 +130,7 @@ export function buildBmRouter({ requirePerm, getPteroServers, asyncRoute }) {
     const include = 'identifier,server,playerCounter,playerFlag';
     try {
       const data = await bm.getPlayer(req.params.id, { include });
+      auditView(req, 'view.player', `bm:${req.params.id}`, { targetName: data?.data?.attributes?.name || null });
       res.json(data);
     } catch (err) {
       // BM 404 ("Unknown player") => surface as 404 to the SPA, not 500.
@@ -190,6 +192,7 @@ export function buildBmRouter({ requirePerm, getPteroServers, asyncRoute }) {
     const serverIds = getRequestedServerIds(req);
     const includeExpired = req.query.includeExpired === '1';
     const bans = await bm.listBans({ serverIds, includeExpired });
+    auditView(req, 'view.bans', 'list');
     res.json({ bans });
   }));
 
@@ -343,13 +346,15 @@ export function buildBmRouter({ requirePerm, getPteroServers, asyncRoute }) {
       return res.status(503).json({ error: 'ipban_controller_not_configured' });
     }
     const out = await ipBans.getPlayerByGuid(req.params.guid);
+    auditView(req, 'view.ipAlts', `guid:${String(req.params.guid).toLowerCase()}`);
     if (!out) return res.json({ records: [], ips: [], alts: [], ip_bans: [] });
     res.json(out);
   }));
 
-  router.get('/ipbans', requirePerm('viewIps'), asyncRoute(async (_req, res) => {
+  router.get('/ipbans', requirePerm('viewIps'), asyncRoute(async (req, res) => {
     if (!ipBans.isEnabled()) return res.status(503).json({ error: 'ipban_controller_not_configured' });
     const out = await ipBans.listBans();
+    auditView(req, 'view.ipBans', 'list');
     res.json({ bans: (out && out.bans) || [] });
   }));
 
@@ -458,6 +463,12 @@ export function buildBmRouter({ requirePerm, getPteroServers, asyncRoute }) {
       limit: req.query.limit ? +req.query.limit : 100,
       offset: req.query.offset ? +req.query.offset : 0
     });
+    // Audit the view, but only for the global Logs tab (no guid) so we don't
+    // double-log player views (the profile already records view.player). Coarse
+    // target keeps polling + filter-toggling collapsed into one entry per window.
+    if (!req.query.guid && !req.query.name) {
+      auditView(req, 'view.logs', 'global', { q: req.query.q || undefined, servers: req.query.servers || undefined });
+    }
     res.set('Cache-Control', 'private, max-age=15');
     res.json({ logs });
   }));

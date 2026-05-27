@@ -2,10 +2,13 @@
 // BM mutations show up alongside login/perm-change events in the central
 // audit log. Best-effort: never blocks the caller, logs failures.
 
-const AUTH_BASE = (process.env.AUTH_BASE || 'https://auth.reforgedz.net').replace(/\/+$/, '');
-const AUDIT_KEY = process.env.INTERNAL_AUDIT_KEY || '';
+// Lazy env reads — module-level reads ran before dotenv.config(), which is
+// why audit posting silently no-op'd ("INTERNAL_AUDIT_KEY not set").
+function authBase() { return (process.env.AUTH_BASE || 'https://auth.reforgedz.net').replace(/\/+$/, ''); }
+function auditKey() { return process.env.INTERNAL_AUDIT_KEY || ''; }
 
 export async function postAuditEvent({ actorUsername, action, targetUserId, targetUsername, detail, ctx }) {
+  const AUDIT_KEY = auditKey();
   if (!AUDIT_KEY) {
     console.warn('[bmAudit] INTERNAL_AUDIT_KEY not set; skipping');
     return;
@@ -28,7 +31,7 @@ export async function postAuditEvent({ actorUsername, action, targetUserId, targ
     geoLabel: ctx?.geoLabel || null
   };
   try {
-    const res = await fetch(`${AUTH_BASE}/api/internal/audit`, {
+    const res = await fetch(`${authBase()}/api/internal/audit`, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${AUDIT_KEY}`,
@@ -43,6 +46,42 @@ export async function postAuditEvent({ actorUsername, action, targetUserId, targ
   } catch (err) {
     console.warn('[bmAudit] post failed:', err.message);
   }
+}
+
+// ─── View auditing ──────────────────────────────────────────────────────
+// Records "admin X viewed Y" events. Deduped per (actor, action, target)
+// within a TTL window so polling (the logs/tickets tabs refresh every 15s)
+// and the multiple GETs a single profile page fires collapse into one
+// audit entry instead of flooding the log.
+const VIEW_DEDUPE_MS = 5 * 60 * 1000;
+const recentViews = new Map();
+
+function viewSeenRecently(key) {
+  const now = Date.now();
+  const hit = recentViews.get(key);
+  if (hit && hit > now) return true;
+  recentViews.set(key, now + VIEW_DEDUPE_MS);
+  // Opportunistic cleanup so the map doesn't grow unbounded.
+  if (recentViews.size > 5000) {
+    for (const [k, exp] of recentViews) if (exp < now) recentViews.delete(k);
+  }
+  return false;
+}
+
+// auditView(req, action, target, detail?) — fire-and-forget view event.
+// `target` is a stable string (guid, channelId, ticket id, "logs:<filters>")
+// used for dedupe; pass '' for actions with no specific target.
+export function auditView(req, action, target = '', detail = null) {
+  const actor = req.rzUser?.username || 'unknown';
+  const key = `${actor}|${action}|${target}`;
+  if (viewSeenRecently(key)) return;
+  postAuditEvent({
+    actorUsername: actor,
+    action,
+    targetUsername: detail?.targetName || null,
+    detail: { target: target || undefined, ...(detail || {}) },
+    ctx: ctxFromReq(req)
+  });
 }
 
 // Builds the rich ctx object expected by the auth side (mirrors reqctx in

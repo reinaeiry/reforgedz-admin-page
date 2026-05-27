@@ -4,7 +4,7 @@
 
 import express from 'express';
 import * as tickets from '../lib/tickets.js';
-import { postAuditEvent, ctxFromReq } from '../lib/bmAudit.js';
+import { postAuditEvent, ctxFromReq, auditView } from '../lib/bmAudit.js';
 
 export function buildTicketsRouter({ requireAuth, asyncRoute }) {
   const router = express.Router();
@@ -76,6 +76,7 @@ export function buildTicketsRouter({ requireAuth, asyncRoute }) {
     if (!canSeeCategory(req, t.permKey)) {
       return res.status(403).json({ error: 'forbidden', required: `tickets.${t.permKey}` });
     }
+    auditView(req, 'view.ticket', `ticket:${t.id}`, { targetName: t.creator?.discordName || null, category: t.categoryLabel });
     res.set('Cache-Control', 'private, max-age=5');
     res.json({ ticket: t });
   }));
