@@ -2610,9 +2610,26 @@ async function buildAdminsSnapshot() {
     servers.map(async (s) => ({ server: s, ...(await readServerAdmins(s, state.configOverrides)) }))
   );
 
+  // Priority-queue buyers are auto-injected into game.admins to get queue-skip,
+  // but they aren't real GMs — they're surfaced separately on the Priority Queue
+  // tab, so hide them here to keep this view to actual admins/GMs only.
+  const pqGuids = new Set();
+  try {
+    const pq = await shopFetchProxy('/api/shop/admin/priority-queue');
+    if (pq.status >= 200 && pq.status < 300 && pq.body && Array.isArray(pq.body.entries)) {
+      for (const e of pq.body.entries) {
+        const g = typeof e?.guid === 'string' ? e.guid.toLowerCase() : '';
+        if (g) pqGuids.add(g);
+      }
+    }
+  } catch (e) {
+    console.warn('[adminmgr] priority-queue fetch failed (showing unfiltered list):', e.message);
+  }
+
   const guidMap = new Map();
   for (const r of reads) {
     for (const guid of r.admins) {
+      if (pqGuids.has(String(guid).toLowerCase())) continue;
       let entry = guidMap.get(guid);
       if (!entry) {
         const cached = state.admins[guid] || {};
@@ -2628,6 +2645,7 @@ async function buildAdminsSnapshot() {
     }
   }
   for (const [guid, c] of Object.entries(state.admins || {})) {
+    if (pqGuids.has(String(guid).toLowerCase())) continue;
     if (!guidMap.has(guid)) {
       guidMap.set(guid, {
         guid,
