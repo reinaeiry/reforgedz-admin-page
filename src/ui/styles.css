@@ -498,6 +498,26 @@ select.input option { background: var(--surface); color: var(--text); }
 .gm-page-head h1 { margin: 0; flex: 1 1 auto; min-width: 200px; }
 .gm-page-head .spacer { flex: 1; }
 
+/* Priority-queue per-server count chips (sit in the page-head row). */
+.pq-stats { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.pq-stat {
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 11px;
+  letter-spacing: 0.3px;
+  color: var(--text-dim);
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 3px 8px;
+  white-space: nowrap;
+}
+.pq-stat b { font-weight: 700; color: var(--text-bright); margin-left: 2px; }
+.pq-stat.eu { border-color: var(--purple-dim); }
+.pq-stat.eu b { color: var(--purple); }
+.pq-stat.na { border-color: var(--orange-dim); }
+.pq-stat.na b { color: var(--orange); }
+.pq-stat.total b { color: var(--green); }
+
 .gm-dryrun {
   font-size: 10px;
   font-weight: 700;

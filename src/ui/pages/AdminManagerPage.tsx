@@ -524,6 +524,16 @@ function PriorityQueueTab() {
     );
   }, [snapshot, search]);
 
+  // Per-server holder counts (all holders — ignores the search box).
+  const serverCounts = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const s of servers) counts[s.id] = 0;
+    for (const e of snapshot?.entries || []) {
+      for (const s of servers) if (e.presence[s.id]) counts[s.id] += 1;
+    }
+    return counts;
+  }, [snapshot, servers]);
+
   const newGuidValid = GUID_RE.test(newGuid.trim());
   const totalPresence = (e: PriorityQueueEntry) => Object.values(e.presence).filter(Boolean).length;
 
@@ -649,6 +659,20 @@ function PriorityQueueTab() {
   return (
     <>
       <div className="gm-page-head" style={{ marginTop: -10 }}>
+        <div className="pq-stats">
+          {servers.map((s) => (
+            <span
+              key={s.id}
+              className={`pq-stat ${pqRegion(s.id).toLowerCase()}`}
+              title={`${s.label}: ${serverCounts[s.id] ?? 0} on priority queue`}
+            >
+              {s.label.split(' (')[0]} <b>{serverCounts[s.id] ?? 0}</b>
+            </span>
+          ))}
+          <span className="pq-stat total" title="Total people on priority queue">
+            Total <b>{snapshot?.entries.length ?? 0}</b>
+          </span>
+        </div>
         <span className="spacer" />
         <button className="button" onClick={() => setShowAdd((v) => !v)}>
           {showAdd ? 'Cancel' : '+ Grant priority queue'}
