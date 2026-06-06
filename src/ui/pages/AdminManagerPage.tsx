@@ -705,7 +705,7 @@ function PriorityQueueTab() {
       </div>
 
       <div className="gm-table-wrap scroll">
-        <table className="gm-table">
+        <table className="gm-table gm-table--pq">
           <thead>
             <tr className="gm-server-row">
               <th className="gm-sticky">Name</th>
@@ -714,7 +714,7 @@ function PriorityQueueTab() {
                 const region = pqRegion(s.id);
                 return (
                   <th key={s.id} className={`gm-col-server ${region.toLowerCase()}`}>
-                    <span className="gm-tag">{s.label}</span>
+                    <span className="gm-tag" title={s.label}>{s.label.split(' (')[0]}</span>
                   </th>
                 );
               })}
