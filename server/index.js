@@ -3055,6 +3055,14 @@ app.delete('/api/priority-queue/:guid', requireAuth, requireTool('gmManagement')
   res.status(status).json(body);
 }));
 
+app.post('/api/priority-queue/extend', requireAuth, requireTool('gmManagement'), asyncRoute(async (req, res) => {
+  const { status, body } = await shopFetchProxy('/api/shop/admin/priority-queue/extend', {
+    method: 'POST',
+    body: JSON.stringify(req.body || {})
+  });
+  res.status(status).json(body);
+}));
+
 
 app.post('/api/replay/ingest', async (req, res) => {
   try {

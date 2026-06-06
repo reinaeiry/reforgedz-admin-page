@@ -11,6 +11,7 @@ import {
   addManualPriorityQueue,
   deleteAdmin,
   deletePriorityQueue,
+  extendPriorityQueue,
   getAdminManagerSnapshot,
   getPriorityQueue,
   renameAdmin,
@@ -23,6 +24,17 @@ const SESSION_KEY = 'gm.snapshot.v1';
 const REVALIDATE_INTERVAL_MS = 30 * 1000;
 const PQ_SESSION_KEY = 'pq.snapshot.v1';
 const PQ_REVALIDATE_INTERVAL_MS = 30 * 1000;
+
+// Format a priority-queue expiry (unix seconds). null = permanent, undefined = unknown.
+function fmtPqExpiry(ts: number | null | undefined): { text: string; soon: boolean } {
+  if (ts === undefined) return { text: '—', soon: false };
+  if (ts === null) return { text: 'Permanent', soon: false };
+  const days = Math.ceil((ts * 1000 - Date.now()) / 86400000);
+  return {
+    text: new Date(ts * 1000).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' }),
+    soon: days <= 7,
+  };
+}
 
 type AdminTab = 'gms' | 'priorityQueue';
 
@@ -617,6 +629,26 @@ function PriorityQueueTab() {
     })();
   }
 
+  function onExtend(entry: PriorityQueueEntry): void {
+    setError(null);
+    setInfo(`Extending ${entry.displayName || entry.guid} by 1 week…`);
+    void (async () => {
+      try {
+        const r = await extendPriorityQueue(entry.guid, 7);
+        await revalidate();
+        const changed = (r.purchaseChanges || 0) + (r.manualChanges || 0);
+        setInfo(
+          changed > 0
+            ? `Extended ${entry.displayName || entry.guid} by 1 week.`
+            : 'Nothing to extend — this grant is permanent.',
+        );
+      } catch (e) {
+        setError(e instanceof Error ? e.message : 'Failed to extend');
+        await revalidate();
+      }
+    })();
+  }
+
   return (
     <>
       <div className="gm-page-head" style={{ marginTop: -10 }}>
@@ -689,13 +721,14 @@ function PriorityQueueTab() {
                   </th>
                 );
               })}
+              <th>Expires</th>
               <th />
             </tr>
           </thead>
           <tbody>
             {filtered.length === 0 ? (
               <tr>
-                <td colSpan={3 + servers.length} className="gm-empty">
+                <td colSpan={4 + servers.length} className="gm-empty">
                   {snapshot ? 'Nobody has priority queue yet.' : 'Loading...'}
                 </td>
               </tr>
@@ -734,7 +767,29 @@ function PriorityQueueTab() {
                     );
                   })}
                   <td>
+                    {(() => {
+                      const x = fmtPqExpiry(e.expiresAt);
+                      return (
+                        <span
+                          className="gm-name"
+                          style={{ color: x.soon ? 'var(--danger, #e66)' : 'var(--text-dim)', whiteSpace: 'nowrap' }}
+                          title={x.soon ? 'Expiring within a week' : undefined}
+                        >
+                          {x.text}
+                        </span>
+                      );
+                    })()}
+                  </td>
+                  <td>
                     <div className="gm-actions">
+                      <button
+                        className="gm-icon-btn"
+                        onClick={() => onExtend(e)}
+                        disabled={e.expiresAt == null}
+                        title={e.expiresAt == null ? 'Permanent grant — nothing to extend' : 'Extend expiry by 1 week'}
+                      >
+                        +1wk
+                      </button>
                       <button
                         className="gm-icon-btn danger"
                         onClick={() => onDelete(e)}

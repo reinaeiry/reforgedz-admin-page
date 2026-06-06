@@ -295,6 +295,11 @@ export type PriorityQueueEntry = {
   displayName: string;
   presence: Record<string, boolean>;
   sources: Record<string, PriorityQueueSource>;
+  // Per-server expiry (unix seconds; null = permanent / not present). Optional so
+  // older cached snapshots still parse.
+  expiry?: Record<string, number | null>;
+  // Soonest dated expiry across servers held (null = all permanent / lifetime).
+  expiresAt?: number | null;
 };
 
 export type PriorityQueueSnapshot = {
@@ -336,6 +341,22 @@ export async function togglePriorityQueueServer(
     body: JSON.stringify({ guid, serverId, present, displayName }),
   });
   return jsonOk<{ ok: true; entry: PriorityQueueEntry }>(res, 'Failed to toggle priority queue');
+}
+
+export async function extendPriorityQueue(
+  guid: string,
+  days: number,
+): Promise<{ ok: true; days: number; purchaseChanges: number; manualChanges: number; entry: PriorityQueueEntry | null }> {
+  const res = await fetch(`${requireApiBaseUrl()}/api/priority-queue/extend`, {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ guid, days }),
+  });
+  return jsonOk<{ ok: true; days: number; purchaseChanges: number; manualChanges: number; entry: PriorityQueueEntry | null }>(
+    res,
+    'Failed to extend priority queue',
+  );
 }
 
 export async function deletePriorityQueue(guid: string): Promise<{ ok: true; removed: number }> {
