@@ -11,10 +11,10 @@ import {
   addManualPriorityQueue,
   deleteAdmin,
   deletePriorityQueue,
-  extendPriorityQueue,
   getAdminManagerSnapshot,
   getPriorityQueue,
   renameAdmin,
+  setPriorityQueueExpiry,
   toggleAdminOnServer,
   togglePriorityQueueServer,
 } from '../../util/api';
@@ -40,6 +40,14 @@ function fmtPqExpiry(ts: number | null | undefined): { text: string; soon: boole
 // (so "EU1 (CHERNARUS)" and "09 — [DEV] Official Chernarus" become "EU1" / "09").
 function shortServer(label: string): string {
   return (label || '').split(/\s+[—–-]\s+|\s*\(/)[0].trim() || label;
+}
+
+// Unix seconds -> "YYYY-MM-DD" (local) for <input type="date">.
+function toYMD(tsSeconds: number): string {
+  const d = new Date(tsSeconds * 1000);
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  return `${d.getFullYear()}-${mm}-${dd}`;
 }
 
 type AdminTab = 'gms' | 'priorityQueue';
@@ -664,21 +672,23 @@ function PriorityQueueTab() {
     })();
   }
 
-  function onExtend(entry: PriorityQueueEntry): void {
+  const expiryRefs = useRef<Record<string, HTMLInputElement | null>>({});
+
+  function onSetExpiry(entry: PriorityQueueEntry, ymd: string): void {
+    if (!ymd) return;
+    const until = Math.floor(new Date(`${ymd}T23:59:59`).getTime() / 1000);
+    if (!Number.isFinite(until)) return;
+    const label = entry.displayName || entry.guid;
+    const nice = new Date(until * 1000).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' });
     setError(null);
-    setInfo(`Extending ${entry.displayName || entry.guid} by 1 week…`);
+    setInfo(`Setting ${label} to expire ${nice}…`);
     void (async () => {
       try {
-        const r = await extendPriorityQueue(entry.guid, 7);
+        await setPriorityQueueExpiry(entry.guid, until);
         await revalidate();
-        const changed = (r.purchaseChanges || 0) + (r.manualChanges || 0);
-        setInfo(
-          changed > 0
-            ? `Extended ${entry.displayName || entry.guid} by 1 week.`
-            : 'Nothing to extend — this grant is permanent.',
-        );
+        setInfo(`${label} now expires ${nice}.`);
       } catch (e) {
-        setError(e instanceof Error ? e.message : 'Failed to extend');
+        setError(e instanceof Error ? e.message : 'Failed to set expiry');
         await revalidate();
       }
     })();
@@ -815,26 +825,34 @@ function PriorityQueueTab() {
                     {(() => {
                       const x = fmtPqExpiry(e.expiresAt);
                       return (
-                        <span
-                          className="gm-name"
-                          style={{ color: x.soon ? 'var(--danger, #e66)' : 'var(--text-dim)', whiteSpace: 'nowrap' }}
-                          title={x.soon ? 'Expiring within a week' : undefined}
-                        >
-                          {x.text}
+                        <span className="pq-expiry">
+                          <button
+                            type="button"
+                            className="pq-date-btn"
+                            style={{ color: x.soon ? 'var(--danger, #e66)' : 'var(--text-dim)' }}
+                            onClick={() => {
+                              const el = expiryRefs.current[e.guid];
+                              if (el?.showPicker) el.showPicker();
+                              else el?.focus();
+                            }}
+                            title="Click to pick an expiry date"
+                          >
+                            {x.text}<span className="pq-cal" aria-hidden="true">📅</span>
+                          </button>
+                          <input
+                            ref={(el) => { expiryRefs.current[e.guid] = el; }}
+                            type="date"
+                            className="pq-date-input"
+                            min={toYMD(Date.now() / 1000)}
+                            defaultValue={e.expiresAt != null ? toYMD(e.expiresAt) : ''}
+                            onChange={(ev) => onSetExpiry(e, ev.target.value)}
+                          />
                         </span>
                       );
                     })()}
                   </td>
                   <td>
                     <div className="gm-actions">
-                      <button
-                        className="gm-icon-btn"
-                        onClick={() => onExtend(e)}
-                        disabled={e.expiresAt == null}
-                        title={e.expiresAt == null ? 'Permanent grant — nothing to extend' : 'Extend expiry by 1 week'}
-                      >
-                        +1wk
-                      </button>
                       <button
                         className="gm-icon-btn danger"
                         onClick={() => onDelete(e)}

@@ -359,6 +359,23 @@ export async function extendPriorityQueue(
   );
 }
 
+// Set a holder's priority-queue expiry to an absolute date (unix seconds) — from the calendar picker.
+export async function setPriorityQueueExpiry(
+  guid: string,
+  until: number,
+): Promise<{ ok: true; until: number; purchaseChanges: number; manualChanges: number; entry: PriorityQueueEntry | null }> {
+  const res = await fetch(`${requireApiBaseUrl()}/api/priority-queue/extend`, {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ guid, until }),
+  });
+  return jsonOk<{ ok: true; until: number; purchaseChanges: number; manualChanges: number; entry: PriorityQueueEntry | null }>(
+    res,
+    'Failed to set priority queue expiry',
+  );
+}
+
 export async function deletePriorityQueue(guid: string): Promise<{ ok: true; removed: number }> {
   const res = await fetch(`${requireApiBaseUrl()}/api/priority-queue/${encodeURIComponent(guid)}`, {
     method: 'DELETE',

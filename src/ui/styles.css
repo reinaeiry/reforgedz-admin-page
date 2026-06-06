@@ -518,6 +518,36 @@ select.input option { background: var(--surface); color: var(--text); }
 .pq-stat.na b { color: var(--orange); }
 .pq-stat.total b { color: var(--green); }
 
+/* Expiry date picker — click the date to open the native calendar */
+.pq-expiry { position: relative; display: inline-flex; align-items: center; }
+.pq-date-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12.5px;
+  white-space: nowrap;
+  padding: 3px 6px;
+  border-radius: 4px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.pq-date-btn:hover { background: var(--bg-raised); }
+.pq-cal { font-size: 11px; opacity: 0.55; }
+/* The native date input drives the calendar popup but stays visually hidden. */
+.pq-date-input {
+  position: absolute;
+  left: 8px;
+  bottom: -4px;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  border: 0;
+  padding: 0;
+  pointer-events: none;
+}
+
 .gm-dryrun {
   font-size: 10px;
   font-weight: 700;
