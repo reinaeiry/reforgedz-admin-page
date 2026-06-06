@@ -502,16 +502,16 @@ select.input option { background: var(--surface); color: var(--text); }
 .pq-stats { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .pq-stat {
   font-family: ui-monospace, SFMono-Regular, monospace;
-  font-size: 11px;
+  font-size: 13px;
   letter-spacing: 0.3px;
   color: var(--text-dim);
   background: var(--bg-raised);
   border: 1px solid var(--border);
-  border-radius: 5px;
-  padding: 3px 8px;
+  border-radius: 6px;
+  padding: 7px 13px;
   white-space: nowrap;
 }
-.pq-stat b { font-weight: 700; color: var(--text-bright); margin-left: 2px; }
+.pq-stat b { font-weight: 700; color: var(--text-bright); margin-left: 3px; font-size: 15px; }
 .pq-stat.eu { border-color: var(--purple-dim); }
 .pq-stat.eu b { color: var(--purple); }
 .pq-stat.na { border-color: var(--orange-dim); }

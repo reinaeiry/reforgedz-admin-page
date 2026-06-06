@@ -36,6 +36,12 @@ function fmtPqExpiry(ts: number | null | undefined): { text: string; soon: boole
   };
 }
 
+// Short server tag for column headers / count chips: drop anything after a "(" or a dash
+// (so "EU1 (CHERNARUS)" and "09 — [DEV] Official Chernarus" become "EU1" / "09").
+function shortServer(label: string): string {
+  return (label || '').split(/\s+[—–-]\s+|\s*\(/)[0].trim() || label;
+}
+
 type AdminTab = 'gms' | 'priorityQueue';
 
 function loadCachedSnapshot(): AdminManagerSnapshot | null {
@@ -311,9 +317,31 @@ function GmsTab() {
     return m;
   }, [orderedServers]);
 
+  // Per-server GM counts (all admins).
+  const gmServerCounts = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const s of orderedServers) counts[s.pteroId] = 0;
+    for (const a of snapshot?.admins || []) {
+      for (const s of orderedServers) if (a.presence[s.pteroId]) counts[s.pteroId] += 1;
+    }
+    return counts;
+  }, [snapshot, orderedServers]);
+
   return (
     <>
       <div className="gm-page-head" style={{ marginTop: -10 }}>
+        <div className="pq-stats">
+          {orderedServers.map((s) => (
+            <span
+              key={s.pteroId}
+              className={`pq-stat ${s.region.toLowerCase()}`}
+              title={`${s.tag}: ${gmServerCounts[s.pteroId] ?? 0} GMs`}
+            >
+              {s.tag} <b>{gmServerCounts[s.pteroId] ?? 0}</b>
+            </span>
+          ))}
+          <span className="pq-stat total" title="Total GMs">Total <b>{snapshot?.admins.length ?? 0}</b></span>
+        </div>
         {snapshot?.dryRun ? <span className="gm-dryrun">Dry run</span> : null}
         <span className="spacer" />
         <button className="button" onClick={() => setShowAdd((v) => !v)}>
@@ -666,7 +694,7 @@ function PriorityQueueTab() {
               className={`pq-stat ${pqRegion(s.id).toLowerCase()}`}
               title={`${s.label}: ${serverCounts[s.id] ?? 0} on priority queue`}
             >
-              {s.label.split(' (')[0]} <b>{serverCounts[s.id] ?? 0}</b>
+              {shortServer(s.label)} <b>{serverCounts[s.id] ?? 0}</b>
             </span>
           ))}
           <span className="pq-stat total" title="Total people on priority queue">
@@ -738,7 +766,7 @@ function PriorityQueueTab() {
                 const region = pqRegion(s.id);
                 return (
                   <th key={s.id} className={`gm-col-server ${region.toLowerCase()}`}>
-                    <span className="gm-tag" title={s.label}>{s.label.split(' (')[0]}</span>
+                    <span className="gm-tag" title={s.label}>{shortServer(s.label)}</span>
                   </th>
                 );
               })}
