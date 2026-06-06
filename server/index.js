@@ -2490,14 +2490,7 @@ async function sshReadFile(server, remotePath) {
   if (!conn?.host) throw new Error('ssh_host_not_configured');
   const inner = `if [ -f ${adminMgrShellEscape(remotePath)} ]; then base64 ${adminMgrShellEscape(remotePath)}; fi`;
   const cmd = wrap(inner);
-  let stdout;
-  try {
-    stdout = await sshExecCapture(conn.host, conn.port, conn.user, cmd);
-  } catch (e) {
-    console.error(`[adminmgr-read] ${server?.tag || server?.pteroId} node=${server?.node || '-'} host=${conn.host} nested=${cmd !== inner} -> EXEC FAIL: ${e.message}`);
-    throw e;
-  }
-  console.log(`[adminmgr-read] ${server?.tag || server?.pteroId} node=${server?.node || '-'} host=${conn.host} nested=${cmd !== inner} len=${stdout ? stdout.length : 0}`);
+  const stdout = await sshExecCapture(conn.host, conn.port, conn.user, cmd);
   if (!stdout || !stdout.trim()) return null;
   let text;
   try {
@@ -2849,16 +2842,25 @@ async function readServerAdmins(server, overrides) {
   const conn = adminMgrSshHostForRegion(server.region);
   if (!conn?.host) return { ok: false, error: 'ssh_host_not_configured', admins: [] };
   const remotePath = configPathFor(server, overrides);
-  try {
-    const cfg = await sshReadFile(server, remotePath);
-    if (!cfg) return { ok: false, error: 'config_not_found', admins: [] };
-    const list = adminMgrGetAtPath(cfg, ADMIN_MGR_CONFIG_FIELD);
-    const admins = Array.isArray(list) ? list.filter((g) => typeof g === 'string' && g) : [];
-    return { ok: true, admins };
-  } catch (e) {
-    console.error(`[adminmgr] read failed for ${server.tag || server.pteroId} (${remotePath}): ${e.message}`);
-    return { ok: false, error: e.message || 'read_failed', admins: [] };
+  // Reads can hop through a second box (NA, EU3) — retry once so a transient SSH
+  // hiccup doesn't surface as a scary config_not_found and poison the cached snapshot.
+  let lastErr = 'read_failed';
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const cfg = await sshReadFile(server, remotePath);
+      if (cfg) {
+        const list = adminMgrGetAtPath(cfg, ADMIN_MGR_CONFIG_FIELD);
+        const admins = Array.isArray(list) ? list.filter((g) => typeof g === 'string' && g) : [];
+        return { ok: true, admins };
+      }
+      lastErr = 'config_not_found';
+    } catch (e) {
+      lastErr = e.message || 'read_failed';
+    }
+    if (attempt === 0) await new Promise((r) => setTimeout(r, 600));
   }
+  console.error(`[adminmgr] read failed for ${server.tag || server.pteroId} (${remotePath}): ${lastErr}`);
+  return { ok: false, error: lastErr, admins: [] };
 }
 
 app.get('/api/adminmgr/servers', requireAuth, requireTool('gmManagement'), asyncRoute(async (req, res) => {
