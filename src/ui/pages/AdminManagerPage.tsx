@@ -576,11 +576,8 @@ function PriorityQueueTab() {
   function onToggle(entry: PriorityQueueEntry, serverId: string): void {
     const source = entry.sources[serverId];
     const present = !!entry.presence[serverId];
-    // Purchase-driven presence isn't togglable from this tab — revoke through /admin/orders.
-    if (present && source === 'purchase') {
-      setError("Can't remove a purchase-granted slot from here. Revoke the order in the shop's admin panel.");
-      return;
-    }
+    // Any server is togglable for anyone — toggling a purchase-driven server off records a
+    // "deny" on the backend (hides queue access there) without touching their order.
     setError(null);
     const nextPresent = !present;
     // Optimistic update
@@ -660,8 +657,8 @@ function PriorityQueueTab() {
 
       <div className="gm-banner">
         Buying the Priority Queue product in the shop automatically grants this. Use this tab to grant manually
-        without a purchase. Removing a manual grant frees the slot on next sync; purchase-driven slots are locked
-        (revoke them via the shop's admin panel). Restart the affected server for game.admins changes to apply in-game.
+        without a purchase, or to toggle which servers anyone has it on — including purchases (that only changes
+        queue access here, it never touches their order). Restart the affected server for game.admins changes to apply in-game.
       </div>
 
       {error ? <div className="error">{error}</div> : null}
@@ -746,19 +743,15 @@ function PriorityQueueTab() {
                   {servers.map((s) => {
                     const on = !!e.presence[s.id];
                     const source: PriorityQueueSource = e.sources[s.id];
-                    const locked = on && source === 'purchase';
                     const region = pqRegion(s.id);
                     const title = on
-                      ? (locked
-                          ? `${e.displayName || e.guid} has this from a purchase. Revoke via /admin/orders.`
-                          : `Click to remove from ${s.label}`)
+                      ? `Click to remove from ${s.label}${source === 'purchase' ? ' (hides it without changing their order)' : ''}`
                       : `Click to grant on ${s.label}`;
                     return (
                       <td key={s.id} className={`gm-col-server ${region.toLowerCase()}`}>
                         <button
                           type="button"
                           className={`gm-dot ${on ? 'on' : ''}`}
-                          disabled={locked}
                           onClick={() => onToggle(e, s.id)}
                           aria-label={title}
                           title={title}
