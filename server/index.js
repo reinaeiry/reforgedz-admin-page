@@ -2281,6 +2281,37 @@ function adminMgrWrapForRegion(region, command) {
   return command;
 }
 
+// Resolve the SSH connect target + command wrapper for a server. EU servers don't all
+// live on the same box: the EU2 box is a separate Pterodactyl node (GAME_SERVER_EU2_NODE,
+// e.g. "GER2-Official"). We reach it via a nested SSH hop from the main EU box, which
+// already holds a key to it — exactly like NA-via-EU. Returns { conn, wrap }.
+function adminMgrConnAndWrap(server) {
+  const region = server?.region;
+  const node = server?.node || '';
+  const eu2Host = process.env.GAME_SERVER_EU2_HOST || '';
+  const eu2Node = process.env.GAME_SERVER_EU2_NODE || '';
+  if (region === 'EU' && eu2Host && eu2Node && node === eu2Node) {
+    const conn = {
+      host: process.env.GAME_SERVER_EU_HOST || '',
+      port: parseInt(process.env.GAME_SERVER_EU_PORT || '22', 10),
+      user: process.env.GAME_SERVER_EU_USER || 'root',
+    };
+    const eu2Port = parseInt(process.env.GAME_SERVER_EU2_PORT || '22', 10);
+    const eu2User = process.env.GAME_SERVER_EU2_USER || 'root';
+    return {
+      conn,
+      wrap: (inner) => {
+        const innerEscaped = String(inner).replace(/'/g, `'\\''`);
+        return `ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 -p ${eu2Port} ${eu2User}@${eu2Host} '${innerEscaped}'`;
+      },
+    };
+  }
+  return {
+    conn: adminMgrSshHostForRegion(region),
+    wrap: (inner) => adminMgrWrapForRegion(region, inner),
+  };
+}
+
 async function pteroFetch(endpoint) {
   if (!ADMIN_MGR_PTERO_URL || !ADMIN_MGR_PTERO_KEY) {
     throw new Error('pterodactyl_not_configured');
@@ -2454,11 +2485,11 @@ function sshExecCapture(host, port, user, command) {
   });
 }
 
-async function sshReadFile(region, remotePath) {
-  const conn = adminMgrSshHostForRegion(region);
+async function sshReadFile(server, remotePath) {
+  const { conn, wrap } = adminMgrConnAndWrap(server);
   if (!conn?.host) throw new Error('ssh_host_not_configured');
   const inner = `if [ -f ${adminMgrShellEscape(remotePath)} ]; then base64 ${adminMgrShellEscape(remotePath)}; fi`;
-  const cmd = adminMgrWrapForRegion(region, inner);
+  const cmd = wrap(inner);
   const stdout = await sshExecCapture(conn.host, conn.port, conn.user, cmd);
   if (!stdout || !stdout.trim()) return null;
   let text;
@@ -2474,13 +2505,13 @@ async function sshReadFile(region, remotePath) {
   }
 }
 
-async function sshWriteFile(region, remotePath, jsonObj) {
-  const conn = adminMgrSshHostForRegion(region);
+async function sshWriteFile(server, remotePath, jsonObj) {
+  const { conn, wrap } = adminMgrConnAndWrap(server);
   if (!conn?.host) throw new Error('ssh_host_not_configured');
   const jsonText = JSON.stringify(jsonObj, null, 2);
   const b64 = Buffer.from(jsonText, 'utf8').toString('base64');
   if (adminMgrIsDryRun()) {
-    console.log(`[adminmgr DRY RUN] ${region}: would write ${remotePath} (${jsonText.length} bytes)`);
+    console.log(`[adminmgr DRY RUN] ${server?.tag || server?.region}: would write ${remotePath} (${jsonText.length} bytes)`);
     return;
   }
   const dir = remotePath.replace(/\/[^/]+$/, '');
@@ -2490,7 +2521,7 @@ async function sshWriteFile(region, remotePath, jsonObj) {
     `printf %s ${adminMgrShellEscape(b64)} | base64 -d > ${adminMgrShellEscape(tmp)}`,
     `mv ${adminMgrShellEscape(tmp)} ${adminMgrShellEscape(remotePath)}`,
   ].join(' && ');
-  const cmd = adminMgrWrapForRegion(region, inner);
+  const cmd = wrap(inner);
   await sshExecCapture(conn.host, conn.port, conn.user, cmd);
 }
 
@@ -2812,7 +2843,7 @@ async function readServerAdmins(server, overrides) {
   if (!conn?.host) return { ok: false, error: 'ssh_host_not_configured', admins: [] };
   const remotePath = configPathFor(server, overrides);
   try {
-    const cfg = await sshReadFile(server.region, remotePath);
+    const cfg = await sshReadFile(server, remotePath);
     if (!cfg) return { ok: false, error: 'config_not_found', admins: [] };
     const list = adminMgrGetAtPath(cfg, ADMIN_MGR_CONFIG_FIELD);
     const admins = Array.isArray(list) ? list.filter((g) => typeof g === 'string' && g) : [];
@@ -2882,7 +2913,7 @@ app.post('/api/adminmgr/toggle', requireAuth, requireTool('gmManagement'), async
   let result = { changed: false, present, count: 0 };
   try {
     await withIngestLock(`adminmgr:${pteroId}`, async () => {
-      const cfg = await sshReadFile(server.region, remotePath);
+      const cfg = await sshReadFile(server, remotePath);
       if (!cfg) throw new Error('config_not_found');
       const current = adminMgrGetAtPath(cfg, ADMIN_MGR_CONFIG_FIELD);
       const list = Array.isArray(current) ? current.filter((g) => typeof g === 'string') : [];
@@ -2895,7 +2926,7 @@ app.post('/api/adminmgr/toggle', requireAuth, requireTool('gmManagement'), async
 
       if (changed) {
         adminMgrSetAtPath(cfg, ADMIN_MGR_CONFIG_FIELD, nextList);
-        await sshWriteFile(server.region, remotePath, cfg);
+        await sshWriteFile(server, remotePath, cfg);
         console.log(`[adminmgr] ${present ? 'added' : 'removed'} ${guid} on ${server.tag || server.pteroId}`);
       }
       result = { changed, present, count: nextList.length };
@@ -2970,13 +3001,13 @@ app.delete('/api/adminmgr/admin/:guid', requireAuth, requireTool('gmManagement')
     try {
       let removed = false;
       await withIngestLock(`adminmgr:${server.pteroId}`, async () => {
-        const cfg = await sshReadFile(server.region, remotePath);
+        const cfg = await sshReadFile(server, remotePath);
         if (!cfg) return;
         const list = adminMgrGetAtPath(cfg, ADMIN_MGR_CONFIG_FIELD);
         if (!Array.isArray(list) || !list.includes(guid)) return;
         const next = list.filter((g) => g !== guid);
         adminMgrSetAtPath(cfg, ADMIN_MGR_CONFIG_FIELD, next);
-        await sshWriteFile(server.region, remotePath, cfg);
+        await sshWriteFile(server, remotePath, cfg);
         removed = true;
       });
       return { server, removed };
@@ -3548,7 +3579,7 @@ async function readIngameJson(server, kind, { skipCache = false } = {}) {
     if (hit && hit.expiresAt > Date.now()) return hit.value;
   }
   const remote = ingameVolumePath(server.volumeUuid, meta.suffix);
-  const json = await sshReadFile(server.region, remote).catch((e) => {
+  const json = await sshReadFile(server, remote).catch((e) => {
     if (String(e?.message || '').includes('parse_failed')) return { [meta.listKey]: [] };
     throw e;
   });
@@ -3561,7 +3592,7 @@ async function readIngameJson(server, kind, { skipCache = false } = {}) {
 async function writeIngameJson(server, kind, body) {
   const meta = ingameKindMeta(kind);
   const remote = ingameVolumePath(server.volumeUuid, meta.suffix);
-  await sshWriteFile(server.region, remote, body);
+  await sshWriteFile(server, remote, body);
   // Replace the cached copy with what we just wrote so the next read is
   // hot AND consistent (no race between SSH replication and a fresh read).
   ingameJsonCache.set(
