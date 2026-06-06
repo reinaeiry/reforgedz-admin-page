@@ -2490,7 +2490,14 @@ async function sshReadFile(server, remotePath) {
   if (!conn?.host) throw new Error('ssh_host_not_configured');
   const inner = `if [ -f ${adminMgrShellEscape(remotePath)} ]; then base64 ${adminMgrShellEscape(remotePath)}; fi`;
   const cmd = wrap(inner);
-  const stdout = await sshExecCapture(conn.host, conn.port, conn.user, cmd);
+  let stdout;
+  try {
+    stdout = await sshExecCapture(conn.host, conn.port, conn.user, cmd);
+  } catch (e) {
+    console.error(`[adminmgr-read] ${server?.tag || server?.pteroId} node=${server?.node || '-'} host=${conn.host} nested=${cmd !== inner} -> EXEC FAIL: ${e.message}`);
+    throw e;
+  }
+  console.log(`[adminmgr-read] ${server?.tag || server?.pteroId} node=${server?.node || '-'} host=${conn.host} nested=${cmd !== inner} len=${stdout ? stdout.length : 0}`);
   if (!stdout || !stdout.trim()) return null;
   let text;
   try {
