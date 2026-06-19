@@ -48,6 +48,9 @@ export function PlayerProfilePage() {
   // viewIps is the single PII gate now — covers BM IPs + in-game-log IPs +
   // IP-ban CRUD. Steam/hardware IDs come under viewPlayers (basic profile).
   const canViewIps = hasBmPerm('viewIps');
+  // showAlts reveals the associated-accounts section without any IP addresses.
+  const canShowAlts = hasBmPerm('showAlts');
+  const canViewAlts = canViewIps || canShowAlts;
   const canBans = hasBmPerm('viewBans');
   const canWriteNotes = hasBmPerm('writeNotes');
   const canBan = hasBmPerm('ban');
@@ -124,7 +127,7 @@ export function PlayerProfilePage() {
         promises.push(listBmServers().then((s) => {
           if (alive) setServers(s.servers);
         }).catch(() => {}));
-        if (guid && canViewIps) {
+        if (guid && canViewAlts) {
           promises.push(getIpAlts(guid).then((a) => {
             if (alive) setIpAlts(a);
           }).catch(() => {}));
@@ -136,7 +139,7 @@ export function PlayerProfilePage() {
     }
     load();
     return () => { alive = false; };
-  }, [guidParam, bmId, canBans, canViewIps]);
+  }, [guidParam, bmId, canBans, canViewAlts]);
 
   if (err) {
     return <div className="page" style={{ padding: 24 }}><div className="bmError">{err}</div></div>;
@@ -264,9 +267,9 @@ export function PlayerProfilePage() {
         )}
       </section>
 
-      {canViewIps && ipAlts ? (
+      {canViewAlts && ipAlts ? (
         <section className="bmProfile-section">
-          <h2>Ingame-log IPs &amp; Associated Accounts</h2>
+          <h2>{canViewIps ? 'Ingame-log IPs & Associated Accounts' : 'Associated Accounts'}</h2>
           {ipAlts.error === 'forbidden' ? (
             <div className="muted">Forbidden.</div>
           ) : ipAlts.error === 'ipban_controller_not_configured' ? (
@@ -275,13 +278,15 @@ export function PlayerProfilePage() {
             <div className="muted">No in-game log records for this player yet.</div>
           ) : (
             <>
-              <div className="bmIpList">
-                <strong>IPs:</strong>{' '}
-                {(ipAlts.ips || []).map((ip) => {
-                  const banned = (ipAlts.ip_bans || []).some((b) => b.ip === ip);
-                  return <code key={ip} className={`bmIpChip ${banned ? 'banned' : ''}`}>{ip}{banned ? ' (banned)' : ''}</code>;
-                })}
-              </div>
+              {canViewIps ? (
+                <div className="bmIpList">
+                  <strong>IPs:</strong>{' '}
+                  {(ipAlts.ips || []).map((ip) => {
+                    const banned = (ipAlts.ip_bans || []).some((b) => b.ip === ip);
+                    return <code key={ip} className={`bmIpChip ${banned ? 'banned' : ''}`}>{ip}{banned ? ' (banned)' : ''}</code>;
+                  })}
+                </div>
+              ) : null}
               <p className="muted" style={{ marginTop: 4 }}>
                 Seen on {ipAlts.records.length} session{ipAlts.records.length === 1 ? '' : 's'} across {new Set((ipAlts.records || []).map((r) => r.server_name)).size} servers.
               </p>
@@ -289,16 +294,16 @@ export function PlayerProfilePage() {
                 Associated accounts ({ipAlts.alts.length})
               </h3>
               {ipAlts.alts.length === 0 ? (
-                <div className="muted">No other accounts seen on these IPs.</div>
+                <div className="muted">{canViewIps ? 'No other accounts seen on these IPs.' : 'No associated accounts found.'}</div>
               ) : (
                 <table className="bmTable">
-                  <thead><tr><th>Name</th><th>GUID</th><th>IP</th><th>Server</th><th>Last seen</th></tr></thead>
+                  <thead><tr><th>Name</th><th>GUID</th>{canViewIps ? <th>IP</th> : null}<th>Server</th><th>Last seen</th></tr></thead>
                   <tbody>
-                    {ipAlts.alts.map((a) => (
-                      <tr key={`${a.be_guid}-${a.ip}`}>
+                    {ipAlts.alts.map((a, i) => (
+                      <tr key={canViewIps ? `${a.be_guid}-${a.ip}` : `${a.be_guid}-${i}`}>
                         <td><Link to={`/player/${a.be_guid}`}>{a.username}</Link></td>
                         <td><Link to={`/player/${a.be_guid}`} className="bmGuid">{a.be_guid}</Link></td>
-                        <td><code>{a.ip}</code></td>
+                        {canViewIps ? <td><code>{a.ip}</code></td> : null}
                         <td>{a.server_name}</td>
                         <td>{a.last_seen ? new Date(a.last_seen * 1000).toLocaleString() : ''}</td>
                       </tr>

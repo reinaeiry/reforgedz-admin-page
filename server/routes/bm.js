@@ -340,14 +340,37 @@ export function buildBmRouter({ requirePerm, getPteroServers, asyncRoute }) {
   // ─── Linkages (Discord + transcripts) ────────────────────────────────────
 
   // ─── IpBan controller (in-game log IPs + alt accounts + IP-ban CRUD) ────
-  // All gated by battlemetrics.viewIps (the unified IP-PII gate).
-  router.get('/players/by-guid/:guid/ip-alts', requirePerm('viewIps'), asyncRoute(async (req, res) => {
+  // `viewIps` is the full PII gate (IPs + alts + IP-ban CRUD). `showAlts`
+  // is a redacted view: the associated-accounts list with every IP address
+  // stripped out server-side, so a showAlts-only viewer never receives IPs.
+  router.get('/players/by-guid/:guid/ip-alts', requirePerm(['viewIps', 'showAlts']), asyncRoute(async (req, res) => {
     if (!ipBans.isEnabled()) {
       return res.status(503).json({ error: 'ipban_controller_not_configured' });
     }
+    const mod = (req.rzUser.perms && (req.rzUser.perms.moderation || req.rzUser.perms.battlemetrics)) || {};
+    const canViewIps = mod.viewIps === true;
     const out = await ipBans.getPlayerByGuid(req.params.guid);
     auditView(req, 'view.ipAlts', `guid:${String(req.params.guid).toLowerCase()}`);
     if (!out) return res.json({ records: [], ips: [], alts: [], ip_bans: [] });
+    if (!canViewIps) {
+      // Redact all IP addresses for showAlts-only viewers. Keep the distinct
+      // associated accounts (collapsed by GUID since the IP that linked them
+      // is no longer surfaced).
+      const altsByGuid = new Map();
+      for (const a of out.alts || []) {
+        const key = String(a.be_guid || '').toLowerCase();
+        const prev = altsByGuid.get(key);
+        if (!prev || (a.last_seen || 0) > (prev.last_seen || 0)) {
+          altsByGuid.set(key, { ...a, ip: undefined });
+        }
+      }
+      return res.json({
+        records: (out.records || []).map((r) => ({ ...r, ip: undefined })),
+        ips: [],
+        alts: Array.from(altsByGuid.values()),
+        ip_bans: []
+      });
+    }
     res.json(out);
   }));
 

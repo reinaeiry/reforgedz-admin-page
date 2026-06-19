@@ -37,6 +37,8 @@ export type ModerationPerms = {
   viewServers: boolean;
   viewPlayers: boolean;
   viewIps: boolean;
+  // Reveals the Associated Accounts (alts) section without exposing IPs.
+  showAlts: boolean;
   viewActivity: boolean;
   viewBans: boolean;
   writeNotes: boolean;
@@ -161,6 +163,7 @@ async function fetchMe(): Promise<Session | null> {
           viewServers: !!mod.viewServers,
           viewPlayers: !!mod.viewPlayers,
           viewIps: !!mod.viewIps,
+          showAlts: !!mod.showAlts,
           viewActivity: !!mod.viewActivity,
           viewBans: !!mod.viewBans,
           writeNotes: !!mod.writeNotes,

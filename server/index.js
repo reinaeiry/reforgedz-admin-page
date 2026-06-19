@@ -1093,11 +1093,13 @@ function requireTool(tool) {
 // Reads from perms.moderation, falling back to perms.battlemetrics for any
 // JWTs still on the legacy shape.
 function requireBmPerm(flag) {
+  // Accept a single flag or an array of flags (any-of grants access).
+  const flags = Array.isArray(flag) ? flag : [flag];
   return (req, res, next) => {
     if (!req.rzUser) return res.status(401).json({ error: 'unauthorized' });
     const mod = (req.rzUser.perms && (req.rzUser.perms.moderation || req.rzUser.perms.battlemetrics)) || {};
-    if (mod[flag] === true) return next();
-    return res.status(403).json({ error: 'forbidden', required: `moderation.${flag}` });
+    if (flags.some((f) => mod[f] === true)) return next();
+    return res.status(403).json({ error: 'forbidden', required: `moderation.${flags.join('|')}` });
   };
 }
 
