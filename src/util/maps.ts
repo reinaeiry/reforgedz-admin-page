@@ -13,7 +13,7 @@ export type MapDef = {
 
 // Bump when the map images change so browsers/CDN (Cloudflare) fetch the new
 // file instead of serving a stale cached copy.
-const MAP_IMAGE_VERSION = '3';
+const MAP_IMAGE_VERSION = '4';
 
 export const MAP_DEFS: Record<string, MapDef> = {
   everon: {
