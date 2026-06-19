@@ -22,7 +22,9 @@ import {
   type VehicleIndexEntry,
   type VehicleDetail,
 } from '../../util/api';
-import { ReplayMap3D, type NameTagOptions, type PlayerMarker, type TerrainGrid, type TownLabel, type Trail, type VehicleMarker } from '../components/ReplayMap3D';
+import { type NameTagOptions, type PlayerMarker, type TerrainGrid, type TownLabel, type Trail, type VehicleMarker } from '../components/ReplayMap3D';
+import { ReplayMap2D, type WorldBounds } from '../components/ReplayMap2D';
+import { resolveMapId, getMapDef } from '../../util/maps';
 
 function coerceVec3(v: any): { x: number; y: number; z: number } | null {
   if (!v) return null;
@@ -1864,6 +1866,40 @@ export function ReplayToolPage() {
     return out;
   }, [currentTsMs, findBestPlayerPosAt, showDeathMarkers, sortedKillDeathEvents]);
 
+  // Detect which real-world map this server is running, from the world file the
+  // replay data reports (falling back to the captured terrain size), and resolve
+  // the matching 2D background image + world bounds.
+  const mapView = useMemo((): { imageUrl: string | null; world: WorldBounds | null } => {
+    let worldFile = '';
+    for (const rec of events) {
+      const p: any = rec.payload;
+      if (p && p.type === 'map' && p.event && typeof p.event.worldFile === 'string') {
+        worldFile = p.event.worldFile;
+        break;
+      }
+    }
+
+    const worldSize = terrain ? (terrain.bbMax.x - terrain.bbMin.x) : null;
+    const mapId = resolveMapId(worldFile, worldSize);
+    const def = getMapDef(mapId);
+
+    // Prefer the captured terrain bounds for georeferencing; fall back to the
+    // known world size for the detected map (origin at 0,0).
+    let world: WorldBounds | null = null;
+    if (terrain) {
+      const sizeX = terrain.bbMax.x - terrain.bbMin.x;
+      const sizeZ = terrain.bbMax.z - terrain.bbMin.z;
+      if (Number.isFinite(sizeX) && Number.isFinite(sizeZ) && sizeX > 0 && sizeZ > 0) {
+        world = { originX: terrain.bbMin.x, originZ: terrain.bbMin.z, size: Math.max(sizeX, sizeZ) };
+      }
+    }
+    if (!world && def) {
+      world = { originX: 0, originZ: 0, size: def.worldSize };
+    }
+
+    return { imageUrl: def ? def.image : null, world };
+  }, [events, terrain]);
+
   const scrubber = useMemo(() => {
     const absMin = range.minTsMs;
     const absMax = range.maxTsMs;
@@ -2580,7 +2616,7 @@ export function ReplayToolPage() {
         >
           <div className="card" style={{ width: '100%', height: '100%', padding: 0, overflow: 'hidden' }}>
             <div style={{ width: '100%', height: '100%', position: 'relative', overflow: 'hidden' }}>
-              <ReplayMap3D
+              <ReplayMap2D
                 players={playerMarkers}
                 focusTarget={focusTarget}
                 focusNonce={focusNonce}
@@ -2593,6 +2629,8 @@ export function ReplayToolPage() {
                 onVehicleClick={handleVehicleClick}
                 terrain={terrain}
                 towns={towns || undefined}
+                mapImageUrl={mapView.imageUrl}
+                world={mapView.world}
               />
 
               {attachedPlayerId !== null && attachedPlayerName ? (

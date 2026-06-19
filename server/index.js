@@ -19,7 +19,7 @@ import * as ticketEventRelay from './lib/ticketEventRelay.js';
 import { buildBmSseRouter } from './routes/bm-sse.js';
 import { postAuditEvent, ctxFromReq } from './lib/bmAudit.js';
 
-import { createCanvas } from '@napi-rs/canvas';
+import { createCanvas, loadImage } from '@napi-rs/canvas';
 import gifenc from 'gifenc';
 
 const { GIFEncoder, quantize, applyPalette } = gifenc;
@@ -202,42 +202,16 @@ function coerceVec3(v) {
   return null;
 }
 
-function vAdd(a, b) {
-  return { x: a.x + b.x, y: a.y + b.y, z: a.z + b.z };
-}
-
 function vSub(a, b) {
   return { x: a.x - b.x, y: a.y - b.y, z: a.z - b.z };
-}
-
-function vMul(a, s) {
-  return { x: a.x * s, y: a.y * s, z: a.z * s };
 }
 
 function vDot(a, b) {
   return a.x * b.x + a.y * b.y + a.z * b.z;
 }
 
-function vCross(a, b) {
-  return {
-    x: a.y * b.z - a.z * b.y,
-    y: a.z * b.x - a.x * b.z,
-    z: a.x * b.y - a.y * b.x,
-  };
-}
-
 function vLen(a) {
   return Math.sqrt(a.x * a.x + a.y * a.y + a.z * a.z);
-}
-
-function vNorm(a) {
-  const l = vLen(a);
-  if (!Number.isFinite(l) || l <= 1e-9) return { x: 0, y: 0, z: 0 };
-  return { x: a.x / l, y: a.y / l, z: a.z / l };
-}
-
-function vDist(a, b) {
-  return vLen(vSub(a, b));
 }
 
 function vAvg(points) {
@@ -255,17 +229,6 @@ function vAvg(points) {
   }
   if (n === 0) return null;
   return { x: sx / n, y: sy / n, z: sz / n };
-}
-
-function projectPointPerspective(p, cam, basis, f, cx, cy) {
-  const v = vSub(p, cam);
-  const camX = vDot(v, basis.right);
-  const camY = vDot(v, basis.up);
-  const camZ = vDot(v, basis.forward);
-  if (!Number.isFinite(camZ) || camZ <= 0.01) return null;
-  const x = cx + (camX / camZ) * f;
-  const y = cy - (camY / camZ) * f;
-  return { x, y, z: camZ };
 }
 
 function formatReplayClock(ms) {
@@ -430,109 +393,100 @@ function sampleTerrainY(t, x, z) {
   return y0 * (1 - tz) + y1 * tz;
 }
 
-function drawReplay3DFrame(ctx, opts) {
+// ─── 2D map backgrounds (tacops imagery) ────────────────────────────────────
+// Mirrors src/util/maps.ts: pick the map a server runs from its world file (or
+// the captured terrain size) and georeference the stitched background image.
+const TOPDOWN_MAP_DEFS = {
+  everon: { id: 'everon', image: 'everon.jpg', worldSize: 12802 },
+  chernarus: { id: 'chernarus', image: 'chernarus.jpg', worldSize: 15362 },
+};
+
+function resolveTopDownMapId(worldFile, worldSize) {
+  const s = (worldFile || '').toLowerCase();
+  if (s.includes('chern')) return 'chernarus';
+  if (s.includes('everon') || s.includes('eden')) return 'everon';
+  if (typeof worldSize === 'number' && Number.isFinite(worldSize) && worldSize > 0) {
+    let best = null;
+    let bestDelta = Infinity;
+    for (const def of Object.values(TOPDOWN_MAP_DEFS)) {
+      const d = Math.abs(def.worldSize - worldSize);
+      if (d < bestDelta) { bestDelta = d; best = def.id; }
+    }
+    if (bestDelta <= 500) return best;
+  }
+  return null;
+}
+
+const mapImageCache = new Map(); // id -> { img } | { img: null }
+
+async function loadTopDownMapImage(id) {
+  if (!id) return null;
+  if (mapImageCache.has(id)) return mapImageCache.get(id).img;
+  const def = TOPDOWN_MAP_DEFS[id];
+  if (!def) { mapImageCache.set(id, { img: null }); return null; }
+  // Prefer the built asset (dist/maps), fall back to the source (public/maps).
+  const candidates = [path.resolve('dist', 'maps', def.image), path.resolve('public', 'maps', def.image)];
+  for (const file of candidates) {
+    try {
+      const img = await loadImage(file);
+      mapImageCache.set(id, { img });
+      return img;
+    } catch {
+      // try next
+    }
+  }
+  mapImageCache.set(id, { img: null });
+  return null;
+}
+
+function drawReplayTopDownFrame(ctx, opts) {
   const {
-    w,
-    h,
-    title,
-    serverId,
-    relMs,
-    absTsMs,
-    wallClockAbsMs,
-    requester,
-    gridCenter,
-    terrain,
-    camera,
-    basis,
-    f,
-    deathXs,
-    trails,
-    playerNow,
-    focusId,
+    w, h, title, serverId, relMs, absTsMs, wallClockAbsMs, requester,
+    view, mapImage, world, deathXs, trails, playerNow, focusId,
   } = opts;
 
+  // World -> screen (north up: +Z maps to -screenY).
+  const sx = (x) => w / 2 + (x - view.cx) * view.ppm;
+  const sy = (z) => h / 2 - (z - view.cz) * view.ppm;
+
   ctx.clearRect(0, 0, w, h);
-  // Match ReplayMap3D viewport background.
   ctx.fillStyle = '#0b0f19';
   ctx.fillRect(0, 0, w, h);
 
-  const cx = w / 2;
-  const cy = h / 2 + 8;
-
-  function terrainYAt(x, z) {
-    const y = sampleTerrainY(terrain, x, z);
-    return (typeof y === 'number' && Number.isFinite(y)) ? y : 0;
-  }
-
-  function strokeWorldPolyline(points) {
-    ctx.beginPath();
-    let moved = false;
-    for (let i = 0; i < points.length; i++) {
-      const pp = projectPointPerspective(points[i], camera, basis, f, cx, cy);
-      if (!pp) continue;
-      if (!moved) {
-        ctx.moveTo(pp.x, pp.y);
-        moved = true;
-      } else {
-        ctx.lineTo(pp.x, pp.y);
-      }
+  // Background map image, georeferenced to its world bounds (north at top).
+  if (mapImage && world) {
+    const x0 = sx(world.originX);
+    const yTop = sy(world.originZ + world.size);
+    const wp = world.size * view.ppm;
+    try {
+      ctx.drawImage(mapImage, x0, yTop, wp, wp);
+    } catch {
+      // ignore
     }
-    if (moved) ctx.stroke();
   }
 
-  // Distance grid following terrain surface (fallback: y=0), centered around the current action.
-  const gx = gridCenter && typeof gridCenter.x === 'number' ? gridCenter.x : 0;
-  const gz = gridCenter && typeof gridCenter.z === 'number' ? gridCenter.z : 0;
-  const gridHalf = 350;
-  const gridStep = 25;
-  const majorEvery = 100;
-  const gridMajor = 'rgba(50,64,94,0.9)';
-  const gridMinor = 'rgba(29,38,56,0.9)';
+  // Faint world-aligned grid for scale (every 250 m).
+  const gridStep = 250;
+  ctx.strokeStyle = 'rgba(255,255,255,0.06)';
   ctx.lineWidth = 1;
-
-  function mod(a, b) {
-    const r = a % b;
-    return r < 0 ? r + b : r;
+  const leftX = view.cx - (w / 2) / view.ppm;
+  const rightX = view.cx + (w / 2) / view.ppm;
+  const botZ = view.cz - (h / 2) / view.ppm;
+  const topZ = view.cz + (h / 2) / view.ppm;
+  for (let x = Math.ceil(leftX / gridStep) * gridStep; x <= rightX; x += gridStep) {
+    ctx.beginPath();
+    ctx.moveTo(sx(x), 0);
+    ctx.lineTo(sx(x), h);
+    ctx.stroke();
+  }
+  for (let z = Math.ceil(botZ / gridStep) * gridStep; z <= topZ; z += gridStep) {
+    ctx.beginPath();
+    ctx.moveTo(0, sy(z));
+    ctx.lineTo(w, sy(z));
+    ctx.stroke();
   }
 
-  function isMajorLineWorld(v) {
-    // Major lines are aligned to world coordinates (multiples of majorEvery).
-    // Using a tolerant check avoids float drift.
-    const m = mod(v, majorEvery);
-    return m < 1e-6 || Math.abs(m - majorEvery) < 1e-6;
-  }
-
-  // Render a world-aligned grid "window" around (gx,gz).
-  // This keeps the grid visible while the camera follows a player, and because the grid lines
-  // are anchored in world space, it visually moves under the player instead of sticking to them.
-  const xStart = Math.floor((gx - gridHalf) / gridStep) * gridStep;
-  const xEnd = Math.floor((gx + gridHalf) / gridStep) * gridStep;
-  const zStart = Math.floor((gz - gridHalf) / gridStep) * gridStep;
-  const zEnd = Math.floor((gz + gridHalf) / gridStep) * gridStep;
-
-  for (let x = xStart; x <= xEnd + 1e-6; x += gridStep) {
-    const isMajor = isMajorLineWorld(x);
-    ctx.strokeStyle = isMajor ? gridMajor : gridMinor;
-    const pts = [];
-    for (let z = zStart; z <= zEnd + 1e-6; z += gridStep) {
-      const y = terrainYAt(x, z) + 0.06;
-      pts.push({ x, y, z });
-    }
-    strokeWorldPolyline(pts);
-  }
-
-  for (let z = zStart; z <= zEnd + 1e-6; z += gridStep) {
-    const isMajor = isMajorLineWorld(z);
-    ctx.strokeStyle = isMajor ? gridMajor : gridMinor;
-    const pts = [];
-    for (let x = xStart; x <= xEnd + 1e-6; x += gridStep) {
-      const y = terrainYAt(x, z) + 0.06;
-      pts.push({ x, y, z });
-    }
-    strokeWorldPolyline(pts);
-  }
-
-  // Trails
+  // Trails.
   for (const t of trails) {
     const { id, points, color, alpha } = t;
     if (!points || points.length < 2) continue;
@@ -540,104 +494,64 @@ function drawReplay3DFrame(ctx, opts) {
     ctx.globalAlpha = alpha;
     ctx.lineWidth = (id === focusId) ? 2.5 : 2;
     ctx.beginPath();
-    let moved = false;
-    for (let i = 0; i < points.length; i++) {
-      const p = projectPointPerspective(points[i], camera, basis, f, cx, cy);
-      if (!p) continue;
-      if (!moved) {
-        ctx.moveTo(p.x, p.y);
-        moved = true;
-      } else {
-        ctx.lineTo(p.x, p.y);
-      }
-    }
-    if (moved) ctx.stroke();
+    ctx.moveTo(sx(points[0].x), sy(points[0].z));
+    for (let i = 1; i < points.length; i++) ctx.lineTo(sx(points[i].x), sy(points[i].z));
+    ctx.stroke();
   }
   ctx.globalAlpha = 1;
 
-  // Players (draw sorted by depth)
-  const sprites = [];
-  for (const p of playerNow) {
-    const pp = projectPointPerspective(p.pos, camera, basis, f, cx, cy);
-    if (!pp) continue;
-    sprites.push({ ...pp, id: p.id, name: typeof p.name === 'string' ? p.name : '' });
+  // Death markers (red X).
+  if (Array.isArray(deathXs) && deathXs.length > 0) {
+    ctx.strokeStyle = 'rgba(255,74,74,0.9)';
+    ctx.lineWidth = 2;
+    const s = 6;
+    for (const d of deathXs) {
+      if (!d || !d.pos) continue;
+      const x = sx(d.pos.x);
+      const y = sy(d.pos.z);
+      ctx.beginPath();
+      ctx.moveTo(x - s, y - s); ctx.lineTo(x + s, y + s);
+      ctx.moveTo(x - s, y + s); ctx.lineTo(x + s, y - s);
+      ctx.stroke();
+    }
   }
-  sprites.sort((a, b) => b.z - a.z);
-  for (const s of sprites) {
-    const isFocus = s.id === focusId;
-    const worldR = isFocus ? 0.55 : 0.45;
-    const pxRRaw = (Number.isFinite(s.z) && s.z > 0.01) ? (worldR * (f / s.z)) : (isFocus ? 5 : 4);
-    const pxR = Math.max(2.5, Math.min(10, pxRRaw));
-    s._pxR = pxR;
-    s._isFocus = isFocus;
+
+  // Players.
+  for (const p of playerNow) {
+    if (!p || !p.pos) continue;
+    const isFocus = p.id === focusId;
+    const x = sx(p.pos.x);
+    const y = sy(p.pos.z);
+    const r = isFocus ? 5 : 4;
     ctx.fillStyle = isFocus ? '#f9bc59' : 'rgba(255,255,255,0.85)';
     ctx.beginPath();
-    ctx.arc(s.x, s.y, pxR, 0, Math.PI * 2);
+    ctx.arc(x, y, r, 0, Math.PI * 2);
     ctx.fill();
-    ctx.strokeStyle = 'rgba(0,0,0,0.35)';
+    ctx.strokeStyle = 'rgba(0,0,0,0.45)';
     ctx.lineWidth = 2;
     ctx.stroke();
   }
 
-  // Name labels
+  // Name labels.
   ctx.textAlign = 'left';
   ctx.textBaseline = 'middle';
-  for (const s of sprites) {
-    const name = typeof s.name === 'string' ? s.name.trim() : '';
+  for (const p of playerNow) {
+    if (!p || !p.pos) continue;
+    const name = typeof p.name === 'string' ? p.name.trim() : '';
     if (!name) continue;
     const label = name.length > 18 ? `${name.slice(0, 17)}…` : name;
-    const pxR = typeof s._pxR === 'number' ? s._pxR : 4;
-    const isFocus = !!s._isFocus;
-    const tx = s.x + pxR + 6;
-    const ty = s.y;
+    const isFocus = p.id === focusId;
+    const x = sx(p.pos.x) + (isFocus ? 5 : 4) + 6;
+    const y = sy(p.pos.z);
     ctx.font = isFocus ? 'bold 12px sans-serif' : '11px sans-serif';
     ctx.lineWidth = 3;
     ctx.strokeStyle = 'rgba(0,0,0,0.82)';
-    ctx.strokeText(label, tx, ty);
+    ctx.strokeText(label, x, y);
     ctx.fillStyle = 'rgba(255,255,255,0.92)';
-    ctx.fillText(label, tx, ty);
+    ctx.fillText(label, x, y);
   }
 
-  // Death markers: match ReplayMap3D "X" line segments (size 1.8, y+0.15).
-  if (Array.isArray(deathXs) && deathXs.length > 0) {
-    const size = 1.8;
-    ctx.strokeStyle = 'rgba(255,74,74,0.9)';
-    ctx.lineWidth = 2;
-    for (const d of deathXs) {
-      if (!d || !d.pos) continue;
-      const x = d.pos.x;
-      const y = d.pos.y + 0.15;
-      const z = d.pos.z;
-
-      const a1 = { x: x - size, y, z: z - size };
-      const b1 = { x: x + size, y, z: z + size };
-      const a2 = { x: x - size, y, z: z + size };
-      const b2 = { x: x + size, y, z: z - size };
-
-      const pA1 = projectPointPerspective(a1, camera, basis, f, cx, cy);
-      const pB1 = projectPointPerspective(b1, camera, basis, f, cx, cy);
-      const pA2 = projectPointPerspective(a2, camera, basis, f, cx, cy);
-      const pB2 = projectPointPerspective(b2, camera, basis, f, cx, cy);
-
-      if (pA1 && pB1) {
-        ctx.beginPath();
-        ctx.moveTo(pA1.x, pA1.y);
-        ctx.lineTo(pB1.x, pB1.y);
-        ctx.stroke();
-      }
-      if (pA2 && pB2) {
-        ctx.beginPath();
-        ctx.moveTo(pA2.x, pA2.y);
-        ctx.lineTo(pB2.x, pB2.y);
-        ctx.stroke();
-      }
-    }
-  }
-
-  ctx.globalAlpha = 1;
-  ctx.lineWidth = 1;
-
-  // Overlays
+  // Overlays (header/footer match the previous renderer).
   const relS = (relMs / 1000).toFixed(1);
   const absText = (typeof wallClockAbsMs === 'number' && Number.isFinite(wallClockAbsMs) && wallClockAbsMs > 0)
     ? new Date(wallClockAbsMs).toISOString().replace('T', ' ').replace('Z', 'Z')
@@ -666,131 +580,45 @@ function drawReplay3DFrame(ctx, opts) {
   ctx.fillText(`requested by: ${who}`, 10, h - 14);
 }
 
-function drawReplayMapFrame(ctx, opts) {
-  const {
-    w,
-    h,
-    bounds,
-    pathPoints,
-    currentPoint,
-    eventPoint,
-    title,
-    serverId,
-    relMs,
-    absTsMs,
-    fromTsMs,
-    toTsMs,
-  } = opts;
-
-  ctx.clearRect(0, 0, w, h);
-  ctx.fillStyle = '#181b21';
-  ctx.fillRect(0, 0, w, h);
-
-  const margin = 22;
-  const minX = bounds.minX;
-  const maxX = bounds.maxX;
-  const minZ = bounds.minZ;
-  const maxZ = bounds.maxZ;
-
-  function toPx(p) {
-    const nx = (p.x - minX) / Math.max(1e-6, (maxX - minX));
-    const nz = (p.z - minZ) / Math.max(1e-6, (maxZ - minZ));
-    const x = margin + nx * (w - margin * 2);
-    const y = margin + (1 - nz) * (h - margin * 2);
-    return { x, y };
-  }
-
-  // Grid
-  ctx.strokeStyle = 'rgba(255,255,255,0.08)';
-  ctx.lineWidth = 1;
-  for (let i = 0; i <= 4; i++) {
-    const x = margin + (i / 4) * (w - margin * 2);
-    ctx.beginPath();
-    ctx.moveTo(x, margin);
-    ctx.lineTo(x, h - margin);
-    ctx.stroke();
-  }
-  for (let j = 0; j <= 4; j++) {
-    const y = margin + (j / 4) * (h - margin * 2);
-    ctx.beginPath();
-    ctx.moveTo(margin, y);
-    ctx.lineTo(w - margin, y);
-    ctx.stroke();
-  }
-
-  // Path
-  if (pathPoints && pathPoints.length > 1) {
-    ctx.strokeStyle = '#f9bc59';
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    const p0 = toPx(pathPoints[0]);
-    ctx.moveTo(p0.x, p0.y);
-    for (let i = 1; i < pathPoints.length; i++) {
-      const pp = toPx(pathPoints[i]);
-      ctx.lineTo(pp.x, pp.y);
-    }
-    ctx.stroke();
-  }
-
-  // Event marker
-  if (eventPoint) {
-    const e = toPx(eventPoint);
-    ctx.strokeStyle = 'rgba(255,255,255,0.9)';
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.moveTo(e.x - 6, e.y - 6);
-    ctx.lineTo(e.x + 6, e.y + 6);
-    ctx.moveTo(e.x + 6, e.y - 6);
-    ctx.lineTo(e.x - 6, e.y + 6);
-    ctx.stroke();
-  }
-
-  // Current point
-  if (currentPoint) {
-    const c = toPx(currentPoint);
-    ctx.fillStyle = '#f9bc59';
-    ctx.beginPath();
-    ctx.arc(c.x, c.y, 4, 0, Math.PI * 2);
-    ctx.fill();
-  }
-
-  // Overlays
-  const relS = (relMs / 1000).toFixed(1);
-  const absIso = new Date(absTsMs).toISOString().replace('T', ' ').replace('Z', 'Z');
-  const fromIso = new Date(fromTsMs).toISOString().replace('T', ' ').replace('Z', 'Z');
-  const toIso = new Date(toTsMs).toISOString().replace('T', ' ').replace('Z', 'Z');
-
-  ctx.fillStyle = 'rgba(0,0,0,0.45)';
-  ctx.fillRect(0, 0, w, 54);
-  ctx.fillRect(0, h - 34, w, 34);
-
-  ctx.fillStyle = 'rgba(255,255,255,0.92)';
-  ctx.font = 'bold 14px sans-serif';
-  ctx.fillText(serverId, 10, 18);
-  ctx.font = '12px sans-serif';
-  ctx.fillText(title, 10, 36);
-
-  ctx.textAlign = 'right';
-  ctx.font = 'bold 14px sans-serif';
-  ctx.fillText(`t${relMs >= 0 ? '+' : ''}${relS}s`, w - 10, 18);
-  ctx.font = '12px sans-serif';
-  ctx.fillText(absIso, w - 10, 36);
-  ctx.textAlign = 'left';
-  ctx.font = '11px sans-serif';
-  ctx.fillText(`window: ${fromIso} → ${toIso}`, 10, h - 14);
-}
-
 async function buildReplayEventGif({ safeId, serverId, tsMs, title, pos, focusPlayerId, playerIds, wallClockAtMs, requester }) {
   const fromTsMs = tsMs - 5_000;
   const toTsMs = tsMs + 5_000;
 
   // Best-effort terrain grid for the server's current map.
   let terrain = null;
+  let worldFile = '';
   try {
-    const { mapId } = await getOrInferServerMapId(safeId);
+    const { mapId, idx } = await getOrInferServerMapId(safeId);
+    if (idx && typeof idx.mapWorldFile === 'string') worldFile = idx.mapWorldFile;
     if (mapId) {
       const terrainPath = path.join(MAPS_DIR, `${mapId}.terrain.json`);
       terrain = coerceTerrainGrid(await readJsonOrNull(terrainPath));
+    }
+  } catch {
+    // ignore
+  }
+
+  // Resolve the tacops background map (image + world bounds it covers).
+  let mapImage = null;
+  let mapWorld = null;
+  try {
+    let worldSize = null;
+    let originX = 0;
+    let originZ = 0;
+    if (terrain && terrain.bbMin && terrain.bbMax) {
+      const sizeX = terrain.bbMax.x - terrain.bbMin.x;
+      const sizeZ = terrain.bbMax.z - terrain.bbMin.z;
+      if (Number.isFinite(sizeX) && Number.isFinite(sizeZ) && sizeX > 0 && sizeZ > 0) {
+        worldSize = Math.max(sizeX, sizeZ);
+        originX = terrain.bbMin.x;
+        originZ = terrain.bbMin.z;
+      }
+    }
+    const topDownMapId = resolveTopDownMapId(worldFile, worldSize);
+    const def = topDownMapId ? TOPDOWN_MAP_DEFS[topDownMapId] : null;
+    if (def) {
+      mapImage = await loadTopDownMapImage(topDownMapId);
+      mapWorld = { originX, originZ, size: worldSize || def.worldSize };
     }
   } catch {
     // ignore
@@ -945,12 +773,6 @@ async function buildReplayEventGif({ safeId, serverId, tsMs, title, pos, focusPl
       if (fp && fp.pos) target = fp.pos;
     }
 
-    // Viewport camera: PerspectiveCamera(70) with followOffset (0,25,60).
-    // Apply "scroll up" 3 times while following: factor 0.90 each tick.
-    const fovDeg = 70;
-    const fov = (fovDeg * Math.PI) / 180;
-    const f = (0.5 * h) / Math.tan(fov / 2);
-
     // Death X markers visible at this frame (for 3s after death).
     const deathXs = [];
     for (const d of deathEvents) {
@@ -959,53 +781,27 @@ async function buildReplayEventGif({ safeId, serverId, tsMs, title, pos, focusPl
       deathXs.push(d);
     }
 
-    const baseFollowOffset = { x: 0, y: 25, z: 60 };
-    // Baseline zoom: 200% closer than the prior view, but will still zoom OUT to fit both players.
-    const zoomIn = Math.pow(0.90, 3) * 0.5;
-
-    // Ensure both tracked players fit; only zooms OUT from the baseline.
-    const safePad = 18;
-    const safeTop = 54 + safePad;
-    const safeBottom = h - 34 - safePad;
-    const safeLeft = safePad;
-    const safeRight = w - safePad;
-
+    // Top-down view: centre on the focus/target and zoom to fit tracked players,
+    // with a baseline zoom so a lone player isn't over-magnified, and a floor so
+    // far-apart players still fit.
     const fitPoints = pointsNow.length > 0 ? pointsNow : (eventPoint ? [eventPoint] : []);
-    const lookAt = { x: target.x, y: target.y + 1.5, z: target.z };
-    const upWorld = { x: 0, y: 1, z: 0 };
-
-    let offsetScale = zoomIn;
-    let camera = vAdd(target, vMul(baseFollowOffset, offsetScale));
-    let forward = vNorm(vSub(lookAt, camera));
-    let right = vNorm(vCross(forward, upWorld));
-    let up = vCross(right, forward);
-    let basis = { forward, right, up };
-
-    function isFit(camPos, bas) {
-      for (const p of fitPoints) {
-        const pp = projectPointPerspective({ x: p.x, y: p.y + 1.0, z: p.z }, camPos, bas, f, w / 2, h / 2 + 8);
-        if (!pp) return false;
-        if (pp.x < safeLeft || pp.x > safeRight) return false;
-        if (pp.y < safeTop || pp.y > safeBottom) return false;
-      }
-      return true;
+    const safePad = 18;
+    const halfW = (w - safePad * 2) / 2;
+    const halfH = Math.min(h / 2 - (54 + safePad), (h - 34 - safePad) - h / 2);
+    const marginM = 14;
+    let maxDx = 0;
+    let maxDz = 0;
+    for (const p of fitPoints) {
+      maxDx = Math.max(maxDx, Math.abs(p.x - target.x));
+      maxDz = Math.max(maxDz, Math.abs(p.z - target.z));
     }
-
-    for (let iter = 0; iter < 50; iter++) {
-      const off = vMul(baseFollowOffset, offsetScale);
-      const offLen = vLen(off);
-      if (!Number.isFinite(offLen) || offLen < 1) offsetScale = zoomIn;
-      if (offLen > 500) break;
-
-      camera = vAdd(target, off);
-      forward = vNorm(vSub(lookAt, camera));
-      right = vNorm(vCross(forward, upWorld));
-      up = vCross(right, forward);
-      basis = { forward, right, up };
-
-      if (isFit(camera, basis)) break;
-      offsetScale *= 1.10;
-    }
+    const ppmBaseline = halfH / 90;  // ~180 m tall baseline window
+    const ppmFloor = halfH / 800;    // never wider than ~1600 m
+    let ppm = ppmBaseline;
+    if (maxDx > 0) ppm = Math.min(ppm, halfW / (maxDx + marginM));
+    if (maxDz > 0) ppm = Math.min(ppm, halfH / (maxDz + marginM));
+    ppm = Math.max(ppmFloor, ppm);
+    const view = { cx: target.x, cz: target.z, ppm };
 
     const trails = [];
     for (const id of trackedIds) {
@@ -1022,7 +818,7 @@ async function buildReplayEventGif({ safeId, serverId, tsMs, title, pos, focusPl
       ? (wallClockAtMs + relMs)
       : null;
 
-    drawReplay3DFrame(ctx, {
+    drawReplayTopDownFrame(ctx, {
       w,
       h,
       title,
@@ -1031,11 +827,9 @@ async function buildReplayEventGif({ safeId, serverId, tsMs, title, pos, focusPl
       absTsMs,
       wallClockAbsMs: absWallClockMs,
       requester,
-      gridCenter: { x: target.x, z: target.z },
-      terrain,
-      camera,
-      basis,
-      f,
+      view,
+      mapImage,
+      world: mapWorld,
       deathXs,
       trails,
       playerNow,

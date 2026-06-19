@@ -1,0 +1,605 @@
+import { useEffect, useRef } from 'react';
+import type {
+  NameTagOptions,
+  PlayerMarker,
+  TerrainGrid,
+  TownLabel,
+  Trail,
+  VehicleMarker,
+} from './ReplayMap3D';
+
+export type { NameTagOptions, PlayerMarker, TerrainGrid, TownLabel, Trail, VehicleMarker };
+
+// World bounds the background image is georeferenced to. The image covers
+// [originX .. originX + size] east and [originZ .. originZ + size] north, with
+// north at the top of the image.
+export type WorldBounds = {
+  originX: number;
+  originZ: number;
+  size: number;
+};
+
+export type ReplayMap2DProps = {
+  players: PlayerMarker[];
+  focusTarget: { x: number; y: number; z: number } | null;
+  focusNonce: number;
+  followPlayerId?: number | null;
+  nameTags?: NameTagOptions;
+  showAimLines?: boolean;
+  trail?: Trail | null;
+  deathMarkers?: Array<{ x: number; y: number; z: number }>;
+  pingMarkers?: Array<{ x: number; y: number; z: number }>;
+  vehicleMarkers?: VehicleMarker[];
+  onVehicleClick?: (entityId: string) => void;
+  terrain?: TerrainGrid | null;
+  towns?: TownLabel[];
+  // 2D-specific: background map image + the world bounds it covers.
+  mapImageUrl?: string | null;
+  world?: WorldBounds | null;
+};
+
+function clamp(v: number, min: number, max: number): number {
+  if (v < min) return min;
+  if (v > max) return max;
+  return v;
+}
+
+const COLORS = {
+  bg: '#0b0f19',
+  normal: '#f9bc59',
+  vehicleState: '#ffb24a',
+  dead: '#8a93a6',
+  killer: '#2aa7ff',
+  victim: '#b455ff',
+  trail: 'rgba(249,188,89,0.55)',
+  death: '#ff4a4a',
+  ping: '#f9bc59',
+  veh: '#4adeff',
+  vehDestroyed: 'rgba(74,222,255,0.35)',
+  town: 'rgba(230,237,243,0.92)',
+};
+
+function markerColor(p: PlayerMarker): string {
+  if (p.highlight === 'killer') return COLORS.killer;
+  if (p.highlight === 'victim') return COLORS.victim;
+  if (p.isDead) return COLORS.dead;
+  if (p.inVehicle) return COLORS.vehicleState;
+  return COLORS.normal;
+}
+
+// Build a shaded top-down raster from a terrain heightmap for servers that have
+// no dedicated map image. Returns a canvas covering the terrain bounds (north up).
+function buildTerrainRaster(t: TerrainGrid): { canvas: HTMLCanvasElement; bounds: WorldBounds } | null {
+  const w = Math.max(2, Math.floor(t.gridW));
+  const h = Math.max(2, Math.floor(t.gridH));
+  if (!Array.isArray(t.heights) || t.heights.length < w * h) return null;
+
+  const sizeX = t.bbMax.x - t.bbMin.x;
+  const sizeZ = t.bbMax.z - t.bbMin.z;
+  if (!Number.isFinite(sizeX) || !Number.isFinite(sizeZ) || sizeX <= 0 || sizeZ <= 0) return null;
+
+  let minH = Infinity;
+  let maxH = -Infinity;
+  for (let k = 0; k < w * h; k++) {
+    const hv = t.heights[k];
+    if (typeof hv !== 'number' || !Number.isFinite(hv)) continue;
+    if (hv < minH) minH = hv;
+    if (hv > maxH) maxH = hv;
+  }
+  if (!Number.isFinite(minH) || !Number.isFinite(maxH) || maxH - minH < 0.001) {
+    minH = 0;
+    maxH = 1;
+  }
+  const span = maxH - minH;
+
+  const canvas = document.createElement('canvas');
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return null;
+  const img = ctx.createImageData(w, h);
+
+  for (let j = 0; j < h; j++) {
+    // Terrain rows run south->north; image rows run top(north)->bottom, so flip.
+    const srcRow = j;
+    const dstRow = h - 1 - j;
+    for (let i = 0; i < w; i++) {
+      const hv = t.heights[i + w * srcRow];
+      let tt = (hv - minH) / span;
+      if (!Number.isFinite(tt)) tt = 0;
+      tt = Math.pow(clamp(tt, 0, 1), 0.65);
+
+      let r: number;
+      let g: number;
+      let b: number;
+      if (Number.isFinite(hv) && hv < 0) {
+        // Water tint below sea level.
+        r = 18; g = 58; b = 100;
+      } else {
+        r = Math.round(28 + tt * 90);
+        g = Math.round(36 + tt * 90);
+        b = Math.round(56 + tt * 80);
+      }
+      const o = (i + w * dstRow) * 4;
+      img.data[o] = r;
+      img.data[o + 1] = g;
+      img.data[o + 2] = b;
+      img.data[o + 3] = 255;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+
+  return {
+    canvas,
+    bounds: { originX: t.bbMin.x, originZ: t.bbMin.z, size: Math.max(sizeX, sizeZ) },
+  };
+}
+
+const isFallbackTypeLabel = (name: string) => /^type:\s*\d+\s*$/i.test(name.trim());
+const cleanPlaceName = (name: string) => {
+  let s = (name || '').trim();
+  s = s.replace(/^#AR-MapLocation_/i, '');
+  s = s.replace(/_/g, ' ').trim();
+  return s;
+};
+
+export function ReplayMap2D(props: ReplayMap2DProps) {
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+
+  const playersRef = useRef<PlayerMarker[]>([]);
+  const focusTargetRef = useRef<{ x: number; y: number; z: number } | null>(null);
+  const focusNonceRef = useRef<number>(0);
+  const followPlayerIdRef = useRef<number | null>(null);
+  const nameTagsRef = useRef<NameTagOptions>({ enabled: true, scale: 1, background: true });
+  const showAimLinesRef = useRef<boolean>(true);
+  const trailRef = useRef<Trail | null>(null);
+  const deathMarkersRef = useRef<Array<{ x: number; y: number; z: number }>>([]);
+  const pingMarkersRef = useRef<Array<{ x: number; y: number; z: number }>>([]);
+  const vehicleMarkersRef = useRef<VehicleMarker[]>([]);
+  const onVehicleClickRef = useRef<((entityId: string) => void) | null>(null);
+  const terrainRef = useRef<TerrainGrid | null>(null);
+  const townsRef = useRef<TownLabel[]>([]);
+  const worldRef = useRef<WorldBounds | null>(null);
+
+  // Background image (tacops map) handling.
+  const mapImageUrlRef = useRef<string | null>(null);
+  const mapImageRef = useRef<HTMLImageElement | null>(null);
+  const mapImageReadyRef = useRef<boolean>(false);
+
+  // Cached terrain fallback raster.
+  const terrainRasterRef = useRef<{ canvas: HTMLCanvasElement; bounds: WorldBounds } | null>(null);
+  const terrainRasterKeyRef = useRef<string>('');
+
+  useEffect(() => { playersRef.current = props.players; }, [props.players]);
+  useEffect(() => { focusTargetRef.current = props.focusTarget; }, [props.focusTarget]);
+  useEffect(() => { focusNonceRef.current = props.focusNonce; }, [props.focusNonce]);
+  useEffect(() => {
+    followPlayerIdRef.current = (typeof props.followPlayerId === 'number') ? props.followPlayerId : null;
+  }, [props.followPlayerId]);
+  useEffect(() => {
+    nameTagsRef.current = props.nameTags || { enabled: true, scale: 1, background: true };
+  }, [props.nameTags]);
+  useEffect(() => { showAimLinesRef.current = props.showAimLines !== false; }, [props.showAimLines]);
+  useEffect(() => { trailRef.current = props.trail || null; }, [props.trail]);
+  useEffect(() => {
+    deathMarkersRef.current = Array.isArray(props.deathMarkers) ? props.deathMarkers : [];
+  }, [props.deathMarkers]);
+  useEffect(() => {
+    pingMarkersRef.current = Array.isArray(props.pingMarkers) ? props.pingMarkers : [];
+  }, [props.pingMarkers]);
+  useEffect(() => {
+    vehicleMarkersRef.current = Array.isArray(props.vehicleMarkers) ? props.vehicleMarkers : [];
+  }, [props.vehicleMarkers]);
+  useEffect(() => { onVehicleClickRef.current = props.onVehicleClick || null; }, [props.onVehicleClick]);
+  useEffect(() => { terrainRef.current = props.terrain || null; }, [props.terrain]);
+  useEffect(() => {
+    townsRef.current = Array.isArray(props.towns) ? props.towns : [];
+  }, [props.towns]);
+  useEffect(() => { worldRef.current = props.world || null; }, [props.world]);
+
+  // Load / swap the background image when the URL changes.
+  useEffect(() => {
+    const url = props.mapImageUrl || null;
+    if (url === mapImageUrlRef.current) return;
+    mapImageUrlRef.current = url;
+    mapImageRef.current = null;
+    mapImageReadyRef.current = false;
+    if (!url) return;
+
+    const img = new Image();
+    img.onload = () => {
+      if (mapImageUrlRef.current === url) {
+        mapImageRef.current = img;
+        mapImageReadyRef.current = true;
+      }
+    };
+    img.onerror = () => {
+      if (mapImageUrlRef.current === url) {
+        mapImageRef.current = null;
+        mapImageReadyRef.current = false;
+      }
+    };
+    img.src = url;
+  }, [props.mapImageUrl]);
+
+  useEffect(() => {
+    const canvasElRaw = canvasRef.current;
+    if (!canvasElRaw) return;
+    const canvasEl: HTMLCanvasElement = canvasElRaw;
+    const ctxRaw = canvasEl.getContext('2d');
+    if (!ctxRaw) return;
+    const ctx: CanvasRenderingContext2D = ctxRaw;
+
+    // View state: world point at screen centre + zoom (screen px per world metre).
+    const view = { cx: 6400, cz: 6400, scale: 0.05, initialized: false };
+    let lastAppliedFocusNonce = 0;
+    let lastFollowId: number | null = null;
+
+    const drag = { active: false, lastX: 0, lastY: 0, moved: false };
+
+    let dpr = 1;
+    let cssW = 0;
+    let cssH = 0;
+
+    function resize() {
+      dpr = Math.min(window.devicePixelRatio || 1, 2);
+      cssW = canvasEl.clientWidth;
+      cssH = canvasEl.clientHeight;
+      canvasEl.width = Math.max(1, Math.round(cssW * dpr));
+      canvasEl.height = Math.max(1, Math.round(cssH * dpr));
+    }
+
+    const ro = new ResizeObserver(() => resize());
+    ro.observe(canvasEl);
+    resize();
+
+    // Resolve the active background (image preferred, else terrain raster).
+    function activeBackground(): { src: CanvasImageSource; bounds: WorldBounds } | null {
+      if (mapImageReadyRef.current && mapImageRef.current && worldRef.current) {
+        return { src: mapImageRef.current, bounds: worldRef.current };
+      }
+      const t = terrainRef.current;
+      if (t) {
+        const key = `${t.gridW}x${t.gridH}|${t.bbMin.x},${t.bbMin.z}|${t.bbMax.x},${t.bbMax.z}|${t.heights.length}`;
+        if (key !== terrainRasterKeyRef.current) {
+          terrainRasterKeyRef.current = key;
+          terrainRasterRef.current = buildTerrainRaster(t);
+        }
+        if (terrainRasterRef.current) {
+          return { src: terrainRasterRef.current.canvas, bounds: terrainRasterRef.current.bounds };
+        }
+      }
+      return null;
+    }
+
+    function effectiveBounds(): WorldBounds {
+      if (worldRef.current) return worldRef.current;
+      const t = terrainRef.current;
+      if (t) {
+        const sizeX = t.bbMax.x - t.bbMin.x;
+        const sizeZ = t.bbMax.z - t.bbMin.z;
+        return { originX: t.bbMin.x, originZ: t.bbMin.z, size: Math.max(sizeX, sizeZ) || 12800 };
+      }
+      return { originX: 0, originZ: 0, size: 12800 };
+    }
+
+    function fitView() {
+      const b = effectiveBounds();
+      view.cx = b.originX + b.size / 2;
+      view.cz = b.originZ + b.size / 2;
+      const minDim = Math.min(cssW, cssH) || 600;
+      view.scale = (minDim / b.size) * 0.96;
+      view.initialized = true;
+    }
+
+    // World -> screen (north is up, so +Z maps to -screenY).
+    function worldToScreenX(x: number): number {
+      return cssW / 2 + (x - view.cx) * view.scale;
+    }
+    function worldToScreenY(z: number): number {
+      return cssH / 2 - (z - view.cz) * view.scale;
+    }
+    function screenToWorldX(sx: number): number {
+      return view.cx + (sx - cssW / 2) / view.scale;
+    }
+    function screenToWorldZ(sy: number): number {
+      return view.cz - (sy - cssH / 2) / view.scale;
+    }
+
+    function onWheel(e: WheelEvent) {
+      e.preventDefault();
+      const rect = canvasEl.getBoundingClientRect();
+      const sx = e.clientX - rect.left;
+      const sy = e.clientY - rect.top;
+      const wx = screenToWorldX(sx);
+      const wz = screenToWorldZ(sy);
+      const factor = e.deltaY < 0 ? 1.12 : 1 / 1.12;
+      view.scale = clamp(view.scale * factor, 0.004, 4);
+      // Keep the cursor anchored to the same world point.
+      view.cx = wx - (sx - cssW / 2) / view.scale;
+      view.cz = wz + (sy - cssH / 2) / view.scale;
+    }
+
+    function onMouseDown(e: MouseEvent) {
+      if (e.button !== 0) return;
+      drag.active = true;
+      drag.moved = false;
+      drag.lastX = e.clientX;
+      drag.lastY = e.clientY;
+    }
+    function onMouseMove(e: MouseEvent) {
+      if (!drag.active) return;
+      const dx = e.clientX - drag.lastX;
+      const dy = e.clientY - drag.lastY;
+      drag.lastX = e.clientX;
+      drag.lastY = e.clientY;
+      if (Math.abs(dx) + Math.abs(dy) > 2) drag.moved = true;
+      // Dragging pans the view; follow mode is cancelled implicitly by panning.
+      view.cx -= dx / view.scale;
+      view.cz += dy / view.scale;
+    }
+    function onMouseUp() {
+      drag.active = false;
+    }
+
+    function onClick(e: MouseEvent) {
+      if (drag.moved) return;
+      const cb = onVehicleClickRef.current;
+      if (!cb) return;
+      const rect = canvasEl.getBoundingClientRect();
+      const sx = e.clientX - rect.left;
+      const sy = e.clientY - rect.top;
+      let bestKey: string | null = null;
+      let bestDist = 12; // px hit radius
+      for (const v of vehicleMarkersRef.current) {
+        const vx = worldToScreenX(v.pos.x);
+        const vy = worldToScreenY(v.pos.z);
+        const d = Math.hypot(vx - sx, vy - sy);
+        if (d < bestDist) { bestDist = d; bestKey = v.entityId; }
+      }
+      if (bestKey) cb(bestKey);
+    }
+
+    canvasEl.addEventListener('wheel', onWheel, { passive: false });
+    canvasEl.addEventListener('mousedown', onMouseDown);
+    window.addEventListener('mousemove', onMouseMove);
+    window.addEventListener('mouseup', onMouseUp);
+    canvasEl.addEventListener('click', onClick);
+
+    function drawMarkerLabel(text: string, sx: number, sy: number, opts: NameTagOptions) {
+      if (!opts.enabled || !text) return;
+      const fontPx = Math.round(11 * (opts.scale || 1));
+      ctx.font = `600 ${fontPx}px system-ui, -apple-system, Segoe UI, Roboto, Arial`;
+      ctx.textBaseline = 'middle';
+      const tw = ctx.measureText(text).width;
+      const padX = 5;
+      const padY = 3;
+      const bx = sx + 7;
+      const by = sy - fontPx / 2 - padY;
+      if (opts.background) {
+        ctx.fillStyle = 'rgba(0,0,0,0.55)';
+        ctx.beginPath();
+        const r = 4;
+        const w = tw + padX * 2;
+        const h = fontPx + padY * 2;
+        ctx.moveTo(bx + r, by);
+        ctx.arcTo(bx + w, by, bx + w, by + h, r);
+        ctx.arcTo(bx + w, by + h, bx, by + h, r);
+        ctx.arcTo(bx, by + h, bx, by, r);
+        ctx.arcTo(bx, by, bx + w, by, r);
+        ctx.fill();
+      }
+      ctx.fillStyle = 'rgba(255,255,255,0.95)';
+      ctx.fillText(text, bx + padX, sy);
+    }
+
+    function drawCross(sx: number, sy: number, size: number, color: string, lineWidth: number) {
+      ctx.strokeStyle = color;
+      ctx.lineWidth = lineWidth;
+      ctx.beginPath();
+      ctx.moveTo(sx - size, sy - size);
+      ctx.lineTo(sx + size, sy + size);
+      ctx.moveTo(sx - size, sy + size);
+      ctx.lineTo(sx + size, sy - size);
+      ctx.stroke();
+    }
+
+    function render() {
+      if (!view.initialized && (cssW > 0 && cssH > 0)) fitView();
+
+      // Follow selected player (keep view centred on them).
+      const followId = followPlayerIdRef.current;
+      if (typeof followId === 'number' && !drag.active) {
+        const p = playersRef.current.find((x) => x && x.playerId === followId);
+        if (p) {
+          if (followId !== lastFollowId) {
+            // Zoom in a bit when first attaching.
+            view.scale = clamp(Math.max(view.scale, (Math.min(cssW, cssH) || 600) / 900), 0.004, 4);
+            lastFollowId = followId;
+          }
+          view.cx = p.pos.x;
+          view.cz = p.pos.z;
+        }
+      } else if (typeof followId !== 'number') {
+        lastFollowId = null;
+      }
+
+      // One-shot focus.
+      const focusNonce = focusNonceRef.current;
+      if (typeof followId !== 'number' && focusNonce !== lastAppliedFocusNonce) {
+        lastAppliedFocusNonce = focusNonce;
+        const t = focusTargetRef.current;
+        if (t) {
+          view.cx = t.x;
+          view.cz = t.z;
+          view.scale = clamp(Math.max(view.scale, (Math.min(cssW, cssH) || 600) / 1100), 0.004, 4);
+        }
+      }
+
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.clearRect(0, 0, cssW, cssH);
+      ctx.fillStyle = COLORS.bg;
+      ctx.fillRect(0, 0, cssW, cssH);
+
+      // Background map.
+      const bg = activeBackground();
+      if (bg) {
+        const b = bg.bounds;
+        const x0 = worldToScreenX(b.originX);
+        const yTop = worldToScreenY(b.originZ + b.size); // north edge -> top
+        const wPx = b.size * view.scale;
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = 'high';
+        try {
+          ctx.drawImage(bg.src, x0, yTop, wPx, wPx);
+        } catch {
+          // ignore draw failures (e.g. image not decodable yet)
+        }
+      }
+
+      // Town labels.
+      const nameTags = nameTagsRef.current;
+      const towns = townsRef.current;
+      if (towns && towns.length) {
+        ctx.font = `600 ${Math.round(12)}px system-ui, -apple-system, Segoe UI, Roboto, Arial`;
+        ctx.textBaseline = 'middle';
+        ctx.textAlign = 'center';
+        for (const t of towns) {
+          if (!t || typeof t.name !== 'string') continue;
+          const label = cleanPlaceName(t.name);
+          if (!label || isFallbackTypeLabel(label)) continue;
+          const p = t.pos;
+          if (!p || !Number.isFinite(p.x) || !Number.isFinite(p.z)) continue;
+          const sx = worldToScreenX(p.x);
+          const sy = worldToScreenY(p.z);
+          if (sx < -50 || sx > cssW + 50 || sy < -20 || sy > cssH + 20) continue;
+          ctx.fillStyle = 'rgba(0,0,0,0.55)';
+          ctx.fillText(label, sx + 1, sy + 1);
+          ctx.fillStyle = COLORS.town;
+          ctx.fillText(label, sx, sy);
+        }
+        ctx.textAlign = 'left';
+      }
+
+      // Trail.
+      const trail = trailRef.current;
+      if (trail && Array.isArray(trail.points) && trail.points.length >= 2) {
+        ctx.strokeStyle = COLORS.trail;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        for (let i = 0; i < trail.points.length; i++) {
+          const pt = trail.points[i];
+          const sx = worldToScreenX(pt.x);
+          const sy = worldToScreenY(pt.z);
+          if (i === 0) ctx.moveTo(sx, sy);
+          else ctx.lineTo(sx, sy);
+        }
+        ctx.stroke();
+      }
+
+      // Vehicles (diamonds + labels).
+      const vehicles = vehicleMarkersRef.current;
+      for (const v of vehicles) {
+        const sx = worldToScreenX(v.pos.x);
+        const sy = worldToScreenY(v.pos.z);
+        if (sx < -30 || sx > cssW + 30 || sy < -30 || sy > cssH + 30) continue;
+        const s = 5;
+        ctx.strokeStyle = v.destroyed ? COLORS.vehDestroyed : COLORS.veh;
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.moveTo(sx, sy - s);
+        ctx.lineTo(sx + s, sy);
+        ctx.lineTo(sx, sy + s);
+        ctx.lineTo(sx - s, sy);
+        ctx.closePath();
+        ctx.stroke();
+        if (v.name) {
+          ctx.font = `600 9px system-ui, -apple-system, Segoe UI, Roboto, Arial`;
+          ctx.textBaseline = 'middle';
+          ctx.fillStyle = 'rgba(0,0,0,0.55)';
+          ctx.fillText(v.name, sx + 8 + 1, sy + 1);
+          ctx.fillStyle = 'rgba(180,240,255,0.9)';
+          ctx.fillText(v.name, sx + 8, sy);
+        }
+      }
+
+      // Death markers.
+      for (const d of deathMarkersRef.current) {
+        const sx = worldToScreenX(d.x);
+        const sy = worldToScreenY(d.z);
+        drawCross(sx, sy, 5, COLORS.death, 2);
+      }
+
+      // Ping markers.
+      for (const pmk of pingMarkersRef.current) {
+        const sx = worldToScreenX(pmk.x);
+        const sy = worldToScreenY(pmk.z);
+        drawCross(sx, sy, 8, COLORS.ping, 2);
+      }
+
+      // Players.
+      const showAimLines = showAimLinesRef.current;
+      for (const p of playersRef.current) {
+        const sx = worldToScreenX(p.pos.x);
+        const sy = worldToScreenY(p.pos.z);
+        if (sx < -40 || sx > cssW + 40 || sy < -40 || sy > cssH + 40) continue;
+        const color = markerColor(p);
+        const isHl = p.highlight === 'killer' || p.highlight === 'victim';
+        const radius = isHl ? 6 : 4;
+
+        // Aim line (projected onto the ground plane).
+        if (showAimLines && p.aimDir) {
+          const dx = p.aimDir.x;
+          const dz = p.aimDir.z;
+          const len = Math.hypot(dx, dz);
+          if (len > 0.0001) {
+            const lineLen = isHl ? 20 : 14;
+            const ex = sx + (dx / len) * lineLen;
+            const ey = sy - (dz / len) * lineLen;
+            ctx.strokeStyle = color;
+            ctx.lineWidth = 1.5;
+            ctx.beginPath();
+            ctx.moveTo(sx, sy);
+            ctx.lineTo(ex, ey);
+            ctx.stroke();
+          }
+        }
+
+        ctx.beginPath();
+        ctx.arc(sx, sy, radius, 0, Math.PI * 2);
+        ctx.fillStyle = color;
+        ctx.fill();
+        if (isHl) {
+          ctx.strokeStyle = 'rgba(255,255,255,0.9)';
+          ctx.lineWidth = 1.5;
+          ctx.stroke();
+        }
+
+        drawMarkerLabel(p.label || String(p.playerId), sx, sy, nameTags);
+      }
+
+      raf = window.requestAnimationFrame(render);
+    }
+
+    let raf = window.requestAnimationFrame(render);
+
+    return () => {
+      window.cancelAnimationFrame(raf);
+      ro.disconnect();
+      canvasEl.removeEventListener('wheel', onWheel);
+      canvasEl.removeEventListener('mousedown', onMouseDown);
+      window.removeEventListener('mousemove', onMouseMove);
+      window.removeEventListener('mouseup', onMouseUp);
+      canvasEl.removeEventListener('click', onClick);
+    };
+  }, []);
+
+  return (
+    <div style={{ width: '100%', height: '100%', minHeight: 400, position: 'relative' }}>
+      <canvas
+        ref={canvasRef}
+        style={{ width: '100%', height: '100%', display: 'block', borderRadius: 8, cursor: 'grab' }}
+      />
+    </div>
+  );
+}
