@@ -3086,12 +3086,15 @@ export function ReplayToolPage() {
 
               {/* Vehicle panel */}
               {showVehicleMarkers && vehiclePanelOpen ? (
-                <div style={{ position: 'absolute', bottom: 148, left: 12, width: 280, maxHeight: 320, display: 'flex', flexDirection: 'column' }}>
+                <div style={{ position: 'absolute', bottom: 148, left: 12, width: 280, maxHeight: 'calc(100% - 160px)', display: 'flex', flexDirection: 'column' }}>
                   <div className="card" style={{ padding: 10, background: 'rgba(0,0,0,0.55)', border: '1px solid rgba(255,255,255,0.14)', display: 'flex', flexDirection: 'column', overflow: 'hidden', maxHeight: '100%' }}>
-                    <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                    <div className="row" style={{ flexShrink: 0, justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
                       <div style={{ fontWeight: 800, fontSize: 12 }}>Vehicles ({vehicleIndex.length})</div>
                       <button className="button" style={{ padding: '2px 8px', fontSize: 10 }} onClick={() => setVehiclePanelOpen(false)}>Hide</button>
                     </div>
+
+                    {/* Single scrollable body so the give-item picker + button are always reachable. */}
+                    <div className="scroll" style={{ flex: 1, minHeight: 0, overflow: 'auto', display: 'flex', flexDirection: 'column' }}>
 
                     {selectedVehicleId && (vehicleDetailLoading || vehicleDetailData) ? (
                       <div style={{ borderBottom: '1px solid rgba(255,255,255,0.10)', paddingBottom: 8, marginBottom: 6 }}>
@@ -3125,7 +3128,7 @@ export function ReplayToolPage() {
                       </div>
                     ) : null}
 
-                    <div className="scroll" style={{ flex: 1, minHeight: 0, overflow: 'auto' }}>
+                    <div>
                       {vehicleIndex.length === 0 ? (
                         <div className="muted" style={{ fontSize: 11, padding: 8 }}>No vehicle data yet. Waiting for sync...</div>
                       ) : vehicleIndex.map((v) => (
@@ -3150,6 +3153,7 @@ export function ReplayToolPage() {
                           {v.destroyed ? <span className="muted" style={{ fontSize: 9, flexShrink: 0 }}>WRECK</span> : null}
                         </button>
                       ))}
+                    </div>
                     </div>
                   </div>
                 </div>
