@@ -3795,6 +3795,187 @@ function mountIngameBansMutes(app, { requireAuth, requireBmPerm: _bm, asyncRoute
 // Mount /api/ingame/* now that the helpers + consts above are initialised.
 mountIngameBansMutes(app, { requireAuth, requireBmPerm, asyncRoute });
 
+// ─── Developer settings (Discord webhook + server ingest keys) ───────────────
+// Gated behind the `dev` admin permission.
+app.get('/api/dev/servers', requireAuth, requireTool('dev'), asyncRoute(async (req, res) => {
+  await loadDynamicIngestKeys();
+
+  // Merge env-configured keys with dynamic ones.
+  const combined = new Map();
+  for (const [id, key] of ingestKeyMap.entries()) {
+    combined.set(id, { key, name: undefined });
+  }
+  for (const [id, v] of dynamicIngestKeys.entries()) {
+    combined.set(id, { key: v.key, name: v.name });
+  }
+
+  const out = [];
+  for (const [id, v] of combined.entries()) {
+    const keyHint = v && v.key ? `${v.key.slice(0, 2)}…${v.key.slice(-2)}` : '';
+
+    let name = v && typeof v.name === 'string' && v.name.trim().length > 0 ? v.name.trim() : '';
+    if (!name) {
+      const safeId = sanitizeServerId(id);
+      const idxPath = path.join(DATA_DIR, 'servers', safeId, 'index.json');
+      const idx = await readJsonOrNull(idxPath);
+      if (idx && typeof idx.name === 'string' && idx.name.trim().length > 0) name = idx.name.trim();
+    }
+
+    out.push({ id, name: name || id, keyHint });
+  }
+  out.sort((a, b) => a.id.localeCompare(b.id));
+  res.json(out);
+}));
+
+app.get('/api/dev/discordWebhook', requireAuth, requireTool('dev'), asyncRoute(async (req, res) => {
+  const url = await getDiscordWebhookUrl();
+  res.json({ isSet: Boolean(url), masked: url ? maskSecretUrl(url) : '' });
+}));
+
+app.post('/api/dev/discordWebhook', requireAuth, requireTool('dev'), asyncRoute(async (req, res) => {
+  const { webhookUrl } = req.body || {};
+  if (typeof webhookUrl !== 'string') {
+    res.status(400).send('Invalid webhookUrl');
+    return;
+  }
+
+  const trimmed = webhookUrl.trim();
+  if (trimmed.length === 0) {
+    const st = await readSettings();
+    const next = { ...st };
+    delete next.discordWebhookUrl;
+    await writeSettings(next);
+    res.json({ ok: true, isSet: false, masked: '' });
+    return;
+  }
+
+  // Basic sanity checks; real validation is Discord returning 2xx.
+  if (!/^https:\/\//i.test(trimmed) || trimmed.length < 20) {
+    res.status(400).send('Invalid webhookUrl');
+    return;
+  }
+
+  const st = await readSettings();
+  await writeSettings({ ...st, discordWebhookUrl: trimmed });
+  res.json({ ok: true, isSet: true, masked: maskSecretUrl(trimmed) });
+}));
+
+app.post('/api/dev/servers', requireAuth, requireTool('dev'), asyncRoute(async (req, res) => {
+  const { serverId, serverKey, name } = req.body || {};
+  if (typeof serverId !== 'string' || serverId.trim().length === 0) {
+    res.status(400).send('Invalid serverId');
+    return;
+  }
+  if (typeof serverKey !== 'string' || serverKey.trim().length < 6) {
+    res.status(400).send('Invalid serverKey');
+    return;
+  }
+
+  const id = serverId.trim();
+  const key = serverKey.trim();
+  const safeId = sanitizeServerId(id);
+
+  const existing = await readJsonOrNull(INGEST_KEYS_PATH);
+  const servers = existing && existing.servers && typeof existing.servers === 'object' && !Array.isArray(existing.servers) ? existing.servers : {};
+  const nextServers = { ...servers };
+  nextServers[id] = { key, name: (typeof name === 'string' && name.trim().length > 0) ? name.trim() : undefined };
+  await writeJsonAtomic(INGEST_KEYS_PATH, { servers: nextServers });
+
+  await loadDynamicIngestKeys();
+
+  // Create server dir and store name in index if provided.
+  const serverDir = path.join(DATA_DIR, 'servers', safeId);
+  await ensureDir(serverDir);
+  const idxPath = path.join(serverDir, 'index.json');
+  const idx = (await readJsonOrNull(idxPath)) || {};
+  const nextIdx = {
+    ...idx,
+    id: safeId,
+    name: (typeof name === 'string' && name.trim().length > 0) ? name.trim() : (typeof idx.name === 'string' ? idx.name : safeId),
+  };
+  await writeJsonAtomic(idxPath, nextIdx);
+
+  res.json({ ok: true });
+}));
+
+app.post('/api/dev/servers/clear', requireAuth, requireTool('dev'), asyncRoute(async (req, res) => {
+  const serverId = String(req.query.serverId || '');
+  if (!serverId) {
+    res.status(400).send('Missing serverId');
+    return;
+  }
+
+  const safeId = sanitizeServerId(serverId);
+  await withIngestLock(safeId, async () => {
+    const serverDir = path.join(DATA_DIR, 'servers', safeId);
+    const idxPath = path.join(serverDir, 'index.json');
+
+    await ensureDir(serverDir);
+
+    const idx = (await readJsonOrNull(idxPath)) || {};
+    const keepName = typeof idx.name === 'string' ? idx.name : safeId;
+    const keepMapId = typeof idx.mapId === 'string' ? idx.mapId : '';
+    const keepMapWorldFile = typeof idx.mapWorldFile === 'string' ? idx.mapWorldFile : '';
+
+    const isMapCacheFileName = (name) => {
+      return name.endsWith('.terrain.json') || name.endsWith('.towns.json') || name.endsWith('.descriptors.json');
+    };
+
+    try {
+      const entries = await fs.readdir(serverDir, { withFileTypes: true });
+      for (const ent of entries) {
+        if (!ent || !ent.isFile()) continue;
+        if (ent.name === 'index.json') continue;
+        if (isMapCacheFileName(ent.name)) continue;
+        try { await fs.unlink(path.join(serverDir, ent.name)); } catch { /* ignore */ }
+      }
+    } catch {
+      // ignore
+    }
+
+    const nextIdx = {
+      id: safeId,
+      name: keepName,
+      clearedAt: Date.now(),
+      ...(keepMapId ? { mapId: keepMapId } : {}),
+      ...(keepMapWorldFile ? { mapWorldFile: keepMapWorldFile } : {}),
+    };
+    await writeJsonAtomic(idxPath, nextIdx);
+  });
+
+  res.json({ ok: true });
+}));
+
+app.post('/api/dev/servers/regenerateTerrain', requireAuth, requireTool('dev'), asyncRoute(async (req, res) => {
+  const serverId = String(req.query.serverId || '');
+  if (!serverId) {
+    res.status(400).send('Missing serverId');
+    return;
+  }
+
+  const safeId = sanitizeServerId(serverId);
+  const serverDir = path.join(DATA_DIR, 'servers', safeId);
+  await ensureDir(serverDir);
+
+  const idxPath = path.join(serverDir, 'index.json');
+  const idx = (await readJsonOrNull(idxPath)) || {};
+  const prevPending = (idx.pendingCommands && typeof idx.pendingCommands === 'object' && !Array.isArray(idx.pendingCommands))
+    ? idx.pendingCommands
+    : {};
+
+  const nextIdx = {
+    ...idx,
+    id: safeId,
+    pendingCommands: {
+      ...prevPending,
+      regenTerrain: Date.now(),
+    },
+  };
+
+  await writeJsonAtomic(idxPath, nextIdx);
+  res.json({ ok: true });
+}));
+
 // Serve static frontend if built (dist/)
 const distDir = path.resolve('dist');
 app.use(express.static(distDir));

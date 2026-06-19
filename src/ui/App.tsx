@@ -6,6 +6,7 @@ import { BattleMetricsPage as ModerationPage } from './pages/BattleMetricsPage';
 import { PlayerProfilePage } from './pages/PlayerProfilePage';
 import { PlayerByNamePage } from './pages/PlayerByNamePage';
 import { TicketsPage } from './pages/TicketsPage';
+import { DevPage } from './pages/DevPage';
 import { AppShell } from './components/AppShell';
 import { ToastProvider } from './components/Toast';
 import { getSession, loadSession, loginUrl } from '../util/session';
@@ -51,6 +52,7 @@ export function App() {
           <Route path="/player/by-name/:name" element={<PlayerByNamePage />} />
           <Route path="/tickets" element={<TicketsPage />} />
           <Route path="/tickets/:channelId" element={<TicketsPage />} />
+          <Route path="/dev" element={<DevPage />} />
         </Route>
 
         <Route path="*" element={<Navigate to="/replay" replace />} />

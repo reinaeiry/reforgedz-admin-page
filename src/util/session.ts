@@ -11,6 +11,7 @@ export type AdminPerms = {
   gmManagement: boolean;
   moderation: boolean;
   tickets: boolean;
+  dev: boolean;
 };
 
 export type TranscriptPerms = { read: boolean; stats: boolean; restricted: boolean };
@@ -153,6 +154,7 @@ async function fetchMe(): Promise<Session | null> {
           gmManagement: !!u.perms?.admin?.gmManagement,
           moderation: adminMod,
           tickets: adminTickets,
+          dev: !!u.perms?.admin?.dev,
         },
         transcripts: {
           read: !!u.perms?.transcripts?.read,

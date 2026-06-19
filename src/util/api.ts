@@ -383,3 +383,55 @@ export async function deletePriorityQueue(guid: string): Promise<{ ok: true; rem
   });
   return jsonOk<{ ok: true; removed: number }>(res, 'Failed to delete priority queue entry');
 }
+
+// ─── Developer settings (Discord webhook + server ingest keys) ───────────────
+
+export type DevServerInfo = { id: string; name?: string; keyHint?: string };
+
+export async function listDevServers(): Promise<DevServerInfo[]> {
+  const res = await fetch(`${requireApiBaseUrl()}/api/dev/servers`, { credentials: 'include' });
+  return jsonOk<DevServerInfo[]>(res, 'Failed to list servers');
+}
+
+export async function addDevServer(payload: { serverId: string; serverKey: string; name?: string }): Promise<{ ok: true }> {
+  const res = await fetch(`${requireApiBaseUrl()}/api/dev/servers`, {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  return jsonOk<{ ok: true }>(res, 'Failed to add server');
+}
+
+export async function clearServerHistory(serverId: string): Promise<{ ok: true }> {
+  const res = await fetch(`${requireApiBaseUrl()}/api/dev/servers/clear?serverId=${encodeURIComponent(serverId)}`, {
+    method: 'POST',
+    credentials: 'include',
+  });
+  return jsonOk<{ ok: true }>(res, 'Failed to clear history');
+}
+
+export async function regenerateTerrainData(serverId: string): Promise<{ ok: true }> {
+  const res = await fetch(`${requireApiBaseUrl()}/api/dev/servers/regenerateTerrain?serverId=${encodeURIComponent(serverId)}`, {
+    method: 'POST',
+    credentials: 'include',
+  });
+  return jsonOk<{ ok: true }>(res, 'Failed to regenerate terrain');
+}
+
+export type DevDiscordWebhookStatus = { isSet: boolean; masked: string };
+
+export async function getDevDiscordWebhook(): Promise<DevDiscordWebhookStatus> {
+  const res = await fetch(`${requireApiBaseUrl()}/api/dev/discordWebhook`, { credentials: 'include' });
+  return jsonOk<DevDiscordWebhookStatus>(res, 'Failed to load webhook');
+}
+
+export async function setDevDiscordWebhook(webhookUrl: string): Promise<{ ok: true }> {
+  const res = await fetch(`${requireApiBaseUrl()}/api/dev/discordWebhook`, {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ webhookUrl }),
+  });
+  return jsonOk<{ ok: true }>(res, 'Failed to save webhook');
+}

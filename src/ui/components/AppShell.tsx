@@ -8,7 +8,8 @@ const NAV_ITEMS: NavItem[] = [
   { to: '/replay', label: 'Replay', visible: () => hasToolAccess('replay'), group: 'moderation' },
   { to: '/moderation', label: 'Moderation', visible: () => hasToolAccess('moderation'), group: 'moderation' },
   { to: '/tickets', label: 'Tickets', visible: () => hasToolAccess('tickets'), group: 'moderation' },
-  { to: '/admins', label: 'GM Management', visible: () => hasToolAccess('gmManagement'), group: 'management' }
+  { to: '/admins', label: 'GM Management', visible: () => hasToolAccess('gmManagement'), group: 'management' },
+  { to: '/dev', label: 'Developer', visible: () => hasToolAccess('dev'), group: 'management' }
 ];
 
 const GROUP_ORDER: NavItem['group'][] = ['moderation', 'management'];
