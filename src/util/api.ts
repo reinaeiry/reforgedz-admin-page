@@ -446,3 +446,29 @@ export async function deleteDevServer(serverId: string): Promise<{ ok: true; env
   });
   return jsonOk<{ ok: true; envKeyRemains?: boolean }>(res, 'Failed to delete server');
 }
+
+// ─── Item spawning (live replay only) ────────────────────────────────────────
+
+export type ItemCatalogEntry = { prefab: string; name: string };
+
+export async function getItemCatalog(): Promise<ItemCatalogEntry[]> {
+  const res = await fetch(`${requireApiBaseUrl()}/api/replay/itemCatalog`, { credentials: 'include' });
+  const data = await jsonOk<{ items: ItemCatalogEntry[] }>(res, 'Failed to load item catalog');
+  return Array.isArray(data.items) ? data.items : [];
+}
+
+export async function spawnReplayItem(params: {
+  serverId: string;
+  target: 'player' | 'vehicle';
+  key: string;
+  prefab: string;
+  count?: number;
+}): Promise<{ ok: true }> {
+  const res = await fetch(`${requireApiBaseUrl()}/api/replay/spawnItem`, {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(params),
+  });
+  return jsonOk<{ ok: true }>(res, 'Failed to spawn item');
+}

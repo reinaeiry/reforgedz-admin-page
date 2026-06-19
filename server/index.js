@@ -2027,6 +2027,41 @@ app.get('/api/replay/vehicleDetail', requireAuth, requireTool('replay'), asyncRo
   res.json(data);
 }));
 
+// Carryable-item catalog (sent by the exporter at startup) for the item-spawn picker.
+app.get('/api/replay/itemCatalog', requireAuth, requireTool('replay'), asyncRoute(async (req, res) => {
+  const data = await readJsonOrNull(path.join(DATA_DIR, 'itemCatalog.json'));
+  res.json({
+    items: (data && Array.isArray(data.items)) ? data.items : [],
+    updatedAt: (data && typeof data.updatedAt === 'number') ? data.updatedAt : null,
+  });
+}));
+
+// Queue a spawn-item command for the exporter to execute in-game (live).
+app.post('/api/replay/spawnItem', requireAuth, requireTool('replay'), asyncRoute(async (req, res) => {
+  const { serverId, target, key, prefab, count } = (req.body && typeof req.body === 'object') ? req.body : {};
+  if (typeof serverId !== 'string' || !serverId) { res.status(400).send('Missing serverId'); return; }
+  if (typeof key !== 'string' || !key) { res.status(400).send('Missing target key'); return; }
+  if (typeof prefab !== 'string' || !prefab) { res.status(400).send('Missing prefab'); return; }
+  const tgt = (target === 'vehicle') ? 'vehicle' : 'player';
+  const n = (typeof count === 'number' && Number.isFinite(count)) ? Math.max(1, Math.min(50, Math.floor(count))) : 1;
+
+  const safeId = sanitizeServerId(serverId);
+  await withIngestLock(safeId, async () => {
+    const serverDir = path.join(DATA_DIR, 'servers', safeId);
+    await ensureDir(serverDir);
+    const idxPath = path.join(serverDir, 'index.json');
+    const idx = (await readJsonOrNull(idxPath)) || {};
+    const prevPending = (idx.pendingCommands && typeof idx.pendingCommands === 'object' && !Array.isArray(idx.pendingCommands))
+      ? idx.pendingCommands : {};
+    const prev = Array.isArray(prevPending.spawnItem) ? prevPending.spawnItem : [];
+    const nextArr = prev.slice(-49);
+    nextArr.push({ target: tgt, key, prefab, count: n });
+    const nextIdx = { ...idx, id: safeId, pendingCommands: { ...prevPending, spawnItem: nextArr } };
+    await writeJsonAtomic(idxPath, nextIdx);
+  });
+  res.json({ ok: true });
+}));
+
 app.post('/api/replay/gmPing', requireAuth, requireTool('replay'), asyncRoute(async (req, res) => {
   const { serverId, tsMs, pos, title, reporterPlayerId } = (req.body && typeof req.body === 'object') ? req.body : {};
   if (typeof serverId !== 'string' || !serverId) {
@@ -3456,6 +3491,22 @@ app.post('/api/replay/ingest', async (req, res) => {
             requestId: reqId,
             inventory: Array.isArray(ev.inventory) ? ev.inventory : [],
             updatedAt: receivedAt,
+          });
+        }
+      }
+
+      if (normalizedPayload && normalizedPayload.type === 'itemCatalog') {
+        const ev = normalizedPayload.event && typeof normalizedPayload.event === 'object' ? normalizedPayload.event : {};
+        const items = Array.isArray(ev.items)
+          ? ev.items
+              .filter((x) => x && typeof x.prefab === 'string' && x.prefab)
+              .map((x) => ({ prefab: x.prefab, name: typeof x.name === 'string' ? x.name : '' }))
+          : [];
+        if (items.length > 0) {
+          await writeJsonAtomic(path.join(DATA_DIR, 'itemCatalog.json'), {
+            items,
+            updatedAt: receivedAt,
+            serverId: typeof normalizedPayload.serverId === 'string' ? normalizedPayload.serverId : '',
           });
         }
       }

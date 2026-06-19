@@ -13,6 +13,9 @@ import {
   getReplayVehicles,
   requestVehicleDetail,
   pollVehicleDetail,
+  getItemCatalog,
+  spawnReplayItem,
+  type ItemCatalogEntry,
   type IngestRecord,
   type MapDescriptors,
   type MapTerrain,
@@ -24,6 +27,7 @@ import {
 } from '../../util/api';
 import { type NameTagOptions, type PlayerMarker, type TerrainGrid, type TownLabel, type Trail, type VehicleMarker } from '../components/ReplayMap3D';
 import { ReplayMap2D, type WorldBounds } from '../components/ReplayMap2D';
+import { ItemSpawnControl } from '../components/ItemSpawnControl';
 import { resolveMapId, getMapDef } from '../../util/maps';
 
 function coerceVec3(v: any): { x: number; y: number; z: number } | null {
@@ -317,6 +321,9 @@ export function ReplayToolPage() {
   const [vehicleDetailLoading, setVehicleDetailLoading] = useState(false);
   // Right-click map context menu (screen px + world pos to ping).
   const [mapMenu, setMapMenu] = useState<{ sx: number; sy: number; x: number; z: number } | null>(null);
+  // Item catalog (for the give-item picker) + spawn busy flag.
+  const [itemCatalog, setItemCatalog] = useState<ItemCatalogEntry[]>([]);
+  const [spawnBusy, setSpawnBusy] = useState(false);
   const [scrubberZoom, setScrubberZoom] = useState(1); // 1 = full range, higher = zoomed in
   const [enableTrails, setEnableTrails] = useState(true);
   const [trailSeconds, setTrailSeconds] = useState(20);
@@ -1056,6 +1063,31 @@ export function ReplayToolPage() {
       if (p) { setFocusTarget(p); setFocusNonce((n) => n + 1); }
     }
   }, [vehicleIndex]);
+
+  // Load the carryable-item catalog once (used by the give-item picker).
+  useEffect(() => {
+    let cancelled = false;
+    getItemCatalog()
+      .then((items) => { if (!cancelled) setItemCatalog(items); })
+      .catch(() => { /* ignore */ });
+    return () => { cancelled = true; };
+  }, []);
+
+  const doSpawnItem = useCallback((target: 'player' | 'vehicle', key: string, prefab: string, count: number) => {
+    if (!serverId) return;
+    const serverIdValue = serverId;
+    setSpawnBusy(true);
+    (async () => {
+      try {
+        await spawnReplayItem({ serverId: serverIdValue, target, key, prefab, count });
+        pushToast({ kind: 'event', title: 'Item given', subtitle: `${prefab.split('/').pop() || prefab} ×${count}` });
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Failed to give item');
+      } finally {
+        setSpawnBusy(false);
+      }
+    })();
+  }, [serverId]);
 
   const snapshots = useMemo(() => {
     const out: Array<{ tsMs: number; players: any[] }> = [];
@@ -2878,6 +2910,14 @@ export function ReplayToolPage() {
                           ) : (
                             <div className="muted" style={{ fontSize: 11 }}>No snapshot data for this player.</div>
                           )}
+
+                          {live ? (
+                            <ItemSpawnControl
+                              items={itemCatalog}
+                              busy={spawnBusy}
+                              onSpawn={(prefab, count) => doSpawnItem('player', String(selectedPlayerId), prefab, count)}
+                            />
+                          ) : null}
                         </div>
                       ) : null}
                     </div>
@@ -3063,6 +3103,16 @@ export function ReplayToolPage() {
                             ))}
                           </div>
                         ) : null}
+                      </div>
+                    ) : null}
+
+                    {selectedVehicleId && live ? (
+                      <div style={{ borderBottom: '1px solid rgba(255,255,255,0.10)', paddingBottom: 8, marginBottom: 6 }}>
+                        <ItemSpawnControl
+                          items={itemCatalog}
+                          busy={spawnBusy}
+                          onSpawn={(prefab, count) => doSpawnItem('vehicle', selectedVehicleId, prefab, count)}
+                        />
                       </div>
                     ) : null}
 
