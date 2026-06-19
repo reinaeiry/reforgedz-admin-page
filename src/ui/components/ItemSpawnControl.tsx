@@ -20,12 +20,11 @@ export function ItemSpawnControl({ items, onSpawn, busy }: Props) {
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
-    if (!q) return items.slice(0, 60);
+    if (!q) return items;
     const out: ItemCatalogEntry[] = [];
     for (const it of items) {
       if ((it.name && it.name.toLowerCase().includes(q)) || it.prefab.toLowerCase().includes(q)) {
         out.push(it);
-        if (out.length >= 60) break;
       }
     }
     return out;
@@ -33,7 +32,12 @@ export function ItemSpawnControl({ items, onSpawn, busy }: Props) {
 
   return (
     <div className="stack" style={{ gap: 6, marginTop: 6, paddingTop: 6, borderTop: '1px solid rgba(255,255,255,0.10)' }}>
-      <div style={{ fontWeight: 700, fontSize: 11 }}>Give item</div>
+      <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
+        <div style={{ fontWeight: 700, fontSize: 11 }}>Give item</div>
+        {items.length > 0 && (
+          <div className="muted" style={{ fontSize: 10 }}>{filtered.length} / {items.length}</div>
+        )}
+      </div>
       {items.length === 0 ? (
         <div className="muted" style={{ fontSize: 10 }}>No item catalog yet (the server sends it on startup).</div>
       ) : (
@@ -45,19 +49,40 @@ export function ItemSpawnControl({ items, onSpawn, busy }: Props) {
             value={query}
             onChange={(e) => setQuery(e.target.value)}
           />
-          <div className="scroll" style={{ maxHeight: 140, overflow: 'auto', border: '1px solid rgba(255,255,255,0.10)', borderRadius: 6 }}>
+          {/* Drag the bottom-right corner to resize: wider = more items per row. */}
+          <div
+            className="scroll"
+            style={{
+              resize: 'both',
+              overflow: 'auto',
+              height: 220,
+              minHeight: 120,
+              maxHeight: 640,
+              minWidth: 200,
+              maxWidth: '100%',
+              border: '1px solid rgba(255,255,255,0.10)',
+              borderRadius: 6,
+              display: 'grid',
+              gridTemplateColumns: 'repeat(auto-fill, minmax(132px, 1fr))',
+              gridAutoRows: 'min-content',
+              alignContent: 'start',
+              gap: 4,
+              padding: 4,
+            }}
+          >
             {filtered.length === 0 ? (
-              <div className="muted" style={{ padding: 6, fontSize: 10 }}>No matches.</div>
+              <div className="muted" style={{ padding: 6, fontSize: 10, gridColumn: '1 / -1' }}>No matches.</div>
             ) : filtered.map((it) => (
               <button
                 key={it.prefab}
                 type="button"
                 className="button"
-                title={it.prefab}
+                title={`${it.name || prefabShort(it.prefab)}\n${it.prefab}`}
                 style={{
-                  display: 'block', width: '100%', textAlign: 'left', padding: '3px 8px', fontSize: 11,
-                  borderBottom: '1px solid rgba(255,255,255,0.06)',
-                  background: selected === it.prefab ? 'rgba(74,222,255,0.14)' : 'transparent',
+                  display: 'block', width: '100%', textAlign: 'left', padding: '4px 7px', fontSize: 11,
+                  borderRadius: 5,
+                  border: selected === it.prefab ? '1px solid rgba(74,222,255,0.6)' : '1px solid rgba(255,255,255,0.08)',
+                  background: selected === it.prefab ? 'rgba(74,222,255,0.16)' : 'rgba(255,255,255,0.03)',
                 }}
                 onClick={() => setSelected(it.prefab)}
               >
