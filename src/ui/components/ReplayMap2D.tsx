@@ -33,6 +33,8 @@ export type ReplayMap2DProps = {
   onVehicleClick?: (entityId: string) => void;
   // Right-click on the map: world position (x east, z north) + screen point for menu placement.
   onMapContextMenu?: (world: { x: number; z: number }, screen: { x: number; y: number }) => void;
+  // Drag a player marker to a new spot to teleport them (live only). When unset, markers don't drag.
+  onTeleportPlayer?: (playerId: number, world: { x: number; z: number }) => void;
   terrain?: TerrainGrid | null;
   towns?: TownLabel[];
   // 2D-specific: tacops map id (for streaming native tiles) + world bounds.
@@ -166,6 +168,7 @@ export function ReplayMap2D(props: ReplayMap2DProps) {
   const vehicleMarkersRef = useRef<VehicleMarker[]>([]);
   const onVehicleClickRef = useRef<((entityId: string) => void) | null>(null);
   const onMapContextMenuRef = useRef<((world: { x: number; z: number }, screen: { x: number; y: number }) => void) | null>(null);
+  const onTeleportPlayerRef = useRef<((playerId: number, world: { x: number; z: number }) => void) | null>(null);
   const terrainRef = useRef<TerrainGrid | null>(null);
   const townsRef = useRef<TownLabel[]>([]);
   const worldRef = useRef<WorldBounds | null>(null);
@@ -201,6 +204,7 @@ export function ReplayMap2D(props: ReplayMap2DProps) {
   }, [props.vehicleMarkers]);
   useEffect(() => { onVehicleClickRef.current = props.onVehicleClick || null; }, [props.onVehicleClick]);
   useEffect(() => { onMapContextMenuRef.current = props.onMapContextMenu || null; }, [props.onMapContextMenu]);
+  useEffect(() => { onTeleportPlayerRef.current = props.onTeleportPlayer || null; }, [props.onTeleportPlayer]);
   useEffect(() => { terrainRef.current = props.terrain || null; }, [props.terrain]);
   useEffect(() => {
     townsRef.current = Array.isArray(props.towns) ? props.towns : [];
@@ -229,6 +233,9 @@ export function ReplayMap2D(props: ReplayMap2DProps) {
     let lastFollowId: number | null = null;
 
     const drag = { active: false, lastX: 0, lastY: 0, moved: false };
+    // Player drag-to-teleport state (screen-space).
+    const playerDrag = { active: false, playerId: -1, ox: 0, oy: 0, sx: 0, sy: 0, moved: false };
+    let suppressClick = false;
 
     let dpr = 1;
     let cssW = 0;
@@ -365,14 +372,53 @@ export function ReplayMap2D(props: ReplayMap2DProps) {
       view.cz = wz + (sy - cssH / 2) / view.scale;
     }
 
+    function hitTestPlayer(sx: number, sy: number): PlayerMarker | null {
+      let best: PlayerMarker | null = null;
+      let bestDist = 11; // px hit radius
+      for (const p of playersRef.current) {
+        if (typeof p.playerId !== 'number') continue;
+        const px = worldToScreenX(p.pos.x);
+        const py = worldToScreenY(p.pos.z);
+        const d = Math.hypot(px - sx, py - sy);
+        if (d < bestDist) { bestDist = d; best = p; }
+      }
+      return best;
+    }
+
     function onMouseDown(e: MouseEvent) {
       if (e.button !== 0) return;
+      // If teleport is enabled and we grabbed a player marker, start a player drag
+      // instead of panning the view.
+      if (onTeleportPlayerRef.current) {
+        const rect = canvasEl.getBoundingClientRect();
+        const sx = e.clientX - rect.left;
+        const sy = e.clientY - rect.top;
+        const hit = hitTestPlayer(sx, sy);
+        if (hit && typeof hit.playerId === 'number') {
+          playerDrag.active = true;
+          playerDrag.playerId = hit.playerId;
+          playerDrag.ox = worldToScreenX(hit.pos.x);
+          playerDrag.oy = worldToScreenY(hit.pos.z);
+          playerDrag.sx = sx;
+          playerDrag.sy = sy;
+          playerDrag.moved = false;
+          canvasEl.style.cursor = 'grabbing';
+          return;
+        }
+      }
       drag.active = true;
       drag.moved = false;
       drag.lastX = e.clientX;
       drag.lastY = e.clientY;
     }
     function onMouseMove(e: MouseEvent) {
+      if (playerDrag.active) {
+        const rect = canvasEl.getBoundingClientRect();
+        playerDrag.sx = e.clientX - rect.left;
+        playerDrag.sy = e.clientY - rect.top;
+        if (Math.hypot(playerDrag.sx - playerDrag.ox, playerDrag.sy - playerDrag.oy) > 5) playerDrag.moved = true;
+        return;
+      }
       if (!drag.active) return;
       const dx = e.clientX - drag.lastX;
       const dy = e.clientY - drag.lastY;
@@ -383,11 +429,25 @@ export function ReplayMap2D(props: ReplayMap2DProps) {
       view.cx -= dx / view.scale;
       view.cz += dy / view.scale;
     }
-    function onMouseUp() {
+    function onMouseUp(e: MouseEvent) {
+      if (playerDrag.active) {
+        const cb = onTeleportPlayerRef.current;
+        const wasMoved = playerDrag.moved;
+        const pid = playerDrag.playerId;
+        const rect = canvasEl.getBoundingClientRect();
+        const wx = screenToWorldX(e.clientX - rect.left);
+        const wz = screenToWorldZ(e.clientY - rect.top);
+        playerDrag.active = false;
+        suppressClick = true;
+        canvasEl.style.cursor = 'grab';
+        if (cb && wasMoved && pid >= 0) cb(pid, { x: wx, z: wz });
+        return;
+      }
       drag.active = false;
     }
 
     function onClick(e: MouseEvent) {
+      if (suppressClick) { suppressClick = false; return; }
       if (drag.moved) return;
       const cb = onVehicleClickRef.current;
       if (!cb) return;
@@ -638,6 +698,25 @@ export function ReplayMap2D(props: ReplayMap2DProps) {
         }
 
         drawMarkerLabel(p.label || String(p.playerId), sx, sy, nameTags);
+      }
+
+      // Teleport drag indicator: dashed line from the player to the drop point.
+      if (playerDrag.active) {
+        ctx.strokeStyle = 'rgba(74,222,255,0.85)';
+        ctx.setLineDash([5, 4]);
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.moveTo(playerDrag.ox, playerDrag.oy);
+        ctx.lineTo(playerDrag.sx, playerDrag.sy);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.beginPath();
+        ctx.arc(playerDrag.sx, playerDrag.sy, 7, 0, Math.PI * 2);
+        ctx.strokeStyle = '#4adeff';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+        drawCross(playerDrag.sx, playerDrag.sy, 9, '#4adeff', 1.5);
+        if (playerDrag.moved) drawMarkerLabel('Teleport here', playerDrag.sx, playerDrag.sy - 14, { enabled: true, scale: 1, background: true });
       }
 
       raf = window.requestAnimationFrame(render);

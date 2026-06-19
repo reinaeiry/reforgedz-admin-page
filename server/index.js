@@ -2062,6 +2062,35 @@ app.post('/api/replay/spawnItem', requireAuth, requireTool('replay'), asyncRoute
   res.json({ ok: true });
 }));
 
+app.post('/api/replay/teleport', requireAuth, requireTool('replay'), asyncRoute(async (req, res) => {
+  const { serverId, playerId, pos } = (req.body && typeof req.body === 'object') ? req.body : {};
+  if (typeof serverId !== 'string' || !serverId) { res.status(400).send('Missing serverId'); return; }
+  const pid = (typeof playerId === 'number' && Number.isFinite(playerId)) ? Math.floor(playerId) : null;
+  if (pid === null || pid <= 0) { res.status(400).send('Invalid playerId'); return; }
+
+  const p = pos && typeof pos === 'object' ? pos : null;
+  const x = p && typeof p.x === 'number' && Number.isFinite(p.x) ? p.x : null;
+  const z = p && typeof p.z === 'number' && Number.isFinite(p.z) ? p.z : null;
+  const y = p && typeof p.y === 'number' && Number.isFinite(p.y) ? p.y : 0;
+  if (x === null || z === null) { res.status(400).send('Invalid pos'); return; }
+
+  const safeId = sanitizeServerId(serverId);
+  await withIngestLock(safeId, async () => {
+    const serverDir = path.join(DATA_DIR, 'servers', safeId);
+    await ensureDir(serverDir);
+    const idxPath = path.join(serverDir, 'index.json');
+    const idx = (await readJsonOrNull(idxPath)) || {};
+    const prevPending = (idx.pendingCommands && typeof idx.pendingCommands === 'object' && !Array.isArray(idx.pendingCommands))
+      ? idx.pendingCommands : {};
+    const prev = Array.isArray(prevPending.teleport) ? prevPending.teleport : [];
+    const nextArr = prev.slice(-19);
+    nextArr.push({ playerId: pid, pos: { x, y, z } });
+    const nextIdx = { ...idx, id: safeId, pendingCommands: { ...prevPending, teleport: nextArr } };
+    await writeJsonAtomic(idxPath, nextIdx);
+  });
+  res.json({ ok: true });
+}));
+
 app.post('/api/replay/gmPing', requireAuth, requireTool('replay'), asyncRoute(async (req, res) => {
   const { serverId, tsMs, pos, title, reporterPlayerId } = (req.body && typeof req.body === 'object') ? req.body : {};
   if (typeof serverId !== 'string' || !serverId) {

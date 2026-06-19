@@ -472,3 +472,17 @@ export async function spawnReplayItem(params: {
   });
   return jsonOk<{ ok: true }>(res, 'Failed to spawn item');
 }
+
+export async function teleportReplayPlayer(params: {
+  serverId: string;
+  playerId: number;
+  pos: { x: number; z: number; y?: number };
+}): Promise<{ ok: true }> {
+  const res = await fetch(`${requireApiBaseUrl()}/api/replay/teleport`, {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(params),
+  });
+  return jsonOk<{ ok: true }>(res, 'Failed to teleport player');
+}

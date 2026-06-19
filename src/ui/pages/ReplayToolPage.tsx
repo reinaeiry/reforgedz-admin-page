@@ -15,6 +15,7 @@ import {
   pollVehicleDetail,
   getItemCatalog,
   spawnReplayItem,
+  teleportReplayPlayer,
   type ItemCatalogEntry,
   type IngestRecord,
   type MapDescriptors,
@@ -1094,6 +1095,19 @@ export function ReplayToolPage() {
         setError(err instanceof Error ? err.message : 'Failed to give item');
       } finally {
         setSpawnBusy(false);
+      }
+    })();
+  }, [serverId]);
+
+  const doTeleportPlayer = useCallback((playerId: number, world: { x: number; z: number }) => {
+    if (!serverId) return;
+    const serverIdValue = serverId;
+    (async () => {
+      try {
+        await teleportReplayPlayer({ serverId: serverIdValue, playerId, pos: { x: world.x, z: world.z } });
+        pushToast({ kind: 'event', title: 'Teleporting', subtitle: `#${playerId}` });
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Failed to teleport player');
       }
     })();
   }, [serverId]);
@@ -2675,6 +2689,7 @@ export function ReplayToolPage() {
                 vehicleMarkers={vehicleMarkers3D}
                 onVehicleClick={handleVehicleClick}
                 onMapContextMenu={(world, screen) => setMapMenu({ sx: screen.x, sy: screen.y, x: world.x, z: world.z })}
+                onTeleportPlayer={live ? doTeleportPlayer : undefined}
                 terrain={terrain}
                 towns={towns || undefined}
                 mapId={mapView.mapId}
