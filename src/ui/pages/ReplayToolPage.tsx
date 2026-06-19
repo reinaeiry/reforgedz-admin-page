@@ -315,6 +315,8 @@ export function ReplayToolPage() {
   const [selectedVehicleId, setSelectedVehicleId] = useState<string | null>(null);
   const [vehicleDetailData, setVehicleDetailData] = useState<VehicleDetail | null>(null);
   const [vehicleDetailLoading, setVehicleDetailLoading] = useState(false);
+  // Right-click map context menu (screen px + world pos to ping).
+  const [mapMenu, setMapMenu] = useState<{ sx: number; sy: number; x: number; z: number } | null>(null);
   const [scrubberZoom, setScrubberZoom] = useState(1); // 1 = full range, higher = zoomed in
   const [enableTrails, setEnableTrails] = useState(true);
   const [trailSeconds, setTrailSeconds] = useState(20);
@@ -2631,11 +2633,57 @@ export function ReplayToolPage() {
                 deathMarkers={visibleDeathMarkers}
                 vehicleMarkers={vehicleMarkers3D}
                 onVehicleClick={handleVehicleClick}
+                onMapContextMenu={(world, screen) => setMapMenu({ sx: screen.x, sy: screen.y, x: world.x, z: world.z })}
                 terrain={terrain}
                 towns={towns || undefined}
                 mapId={mapView.mapId}
                 world={mapView.world}
               />
+
+              {mapMenu ? (
+                <>
+                  {/* click-away backdrop */}
+                  <div
+                    style={{ position: 'fixed', inset: 0, zIndex: 40 }}
+                    onClick={() => setMapMenu(null)}
+                    onContextMenu={(e) => { e.preventDefault(); setMapMenu(null); }}
+                  />
+                  <div
+                    className="card"
+                    style={{
+                      position: 'fixed', left: Math.min(mapMenu.sx, window.innerWidth - 160), top: Math.min(mapMenu.sy, window.innerHeight - 80),
+                      zIndex: 41, padding: 4, background: 'rgba(12,15,25,0.96)', border: '1px solid rgba(255,255,255,0.16)',
+                      minWidth: 150,
+                    }}
+                  >
+                    <button
+                      type="button"
+                      className="button"
+                      style={{ width: '100%', textAlign: 'left', padding: '6px 10px', fontSize: 12 }}
+                      onClick={() => {
+                        const menu = mapMenu;
+                        setMapMenu(null);
+                        if (!serverId || !menu) return;
+                        const ty = sampleTerrainY(terrain, menu.x, menu.z);
+                        const y = (typeof ty === 'number' && Number.isFinite(ty)) ? ty : 0;
+                        const tsMs = (typeof currentTsMs === 'number' && currentTsMs >= 0)
+                          ? currentTsMs
+                          : (typeof range.maxTsMs === 'number' ? range.maxTsMs : 0);
+                        void (async () => {
+                          try {
+                            await sendReplayGmPing({ serverId, tsMs, pos: { x: menu.x, y, z: menu.z }, title: 'GM Ping', reporterPlayerId: null });
+                            pushToast({ kind: 'event', title: 'GM ping sent', subtitle: `${Math.round(menu.x)}, ${Math.round(menu.z)}` });
+                          } catch (err) {
+                            setError(err instanceof Error ? err.message : 'Failed to send GM ping');
+                          }
+                        })();
+                      }}
+                    >
+                      📍 GM Ping here
+                    </button>
+                  </div>
+                </>
+              ) : null}
 
               {attachedPlayerId !== null && attachedPlayerName ? (
                 <div style={{ position: 'absolute', left: 12, right: 12, bottom: 132, display: 'flex', justifyContent: 'center', pointerEvents: 'none' }}>
@@ -3006,9 +3054,9 @@ export function ReplayToolPage() {
                           <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>Loading inventory...</div>
                         ) : vehicleDetailData ? (
                           <div className="scroll" style={{ marginTop: 4, maxHeight: 180, overflow: 'auto', border: '1px solid rgba(255,255,255,0.10)', borderRadius: 6 }}>
-                            {vehicleDetailData.inventory.length === 0 ? (
+                            {(vehicleDetailData.inventory || []).length === 0 ? (
                               <div className="muted" style={{ padding: 8, fontSize: 11 }}>Empty.</div>
-                            ) : vehicleDetailData.inventory.map((it, idx) => (
+                            ) : (vehicleDetailData.inventory || []).map((it, idx) => (
                               <div key={idx} style={{ padding: '3px 8px', borderBottom: '1px solid rgba(255,255,255,0.06)', fontSize: 11 }}>
                                 {it.name || it.prefab || 'Item'}
                               </div>

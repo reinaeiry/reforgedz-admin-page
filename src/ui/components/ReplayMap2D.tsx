@@ -31,6 +31,8 @@ export type ReplayMap2DProps = {
   pingMarkers?: Array<{ x: number; y: number; z: number }>;
   vehicleMarkers?: VehicleMarker[];
   onVehicleClick?: (entityId: string) => void;
+  // Right-click on the map: world position (x east, z north) + screen point for menu placement.
+  onMapContextMenu?: (world: { x: number; z: number }, screen: { x: number; y: number }) => void;
   terrain?: TerrainGrid | null;
   towns?: TownLabel[];
   // 2D-specific: tacops map id (for streaming native tiles) + world bounds.
@@ -163,6 +165,7 @@ export function ReplayMap2D(props: ReplayMap2DProps) {
   const pingMarkersRef = useRef<Array<{ x: number; y: number; z: number }>>([]);
   const vehicleMarkersRef = useRef<VehicleMarker[]>([]);
   const onVehicleClickRef = useRef<((entityId: string) => void) | null>(null);
+  const onMapContextMenuRef = useRef<((world: { x: number; z: number }, screen: { x: number; y: number }) => void) | null>(null);
   const terrainRef = useRef<TerrainGrid | null>(null);
   const townsRef = useRef<TownLabel[]>([]);
   const worldRef = useRef<WorldBounds | null>(null);
@@ -197,6 +200,7 @@ export function ReplayMap2D(props: ReplayMap2DProps) {
     vehicleMarkersRef.current = Array.isArray(props.vehicleMarkers) ? props.vehicleMarkers : [];
   }, [props.vehicleMarkers]);
   useEffect(() => { onVehicleClickRef.current = props.onVehicleClick || null; }, [props.onVehicleClick]);
+  useEffect(() => { onMapContextMenuRef.current = props.onMapContextMenu || null; }, [props.onMapContextMenu]);
   useEffect(() => { terrainRef.current = props.terrain || null; }, [props.terrain]);
   useEffect(() => {
     townsRef.current = Array.isArray(props.towns) ? props.towns : [];
@@ -401,6 +405,17 @@ export function ReplayMap2D(props: ReplayMap2DProps) {
       if (bestKey) cb(bestKey);
     }
 
+    function onContextMenu(e: MouseEvent) {
+      e.preventDefault();
+      const cb = onMapContextMenuRef.current;
+      if (!cb) return;
+      const rect = canvasEl.getBoundingClientRect();
+      const wx = screenToWorldX(e.clientX - rect.left);
+      const wz = screenToWorldZ(e.clientY - rect.top);
+      cb({ x: wx, z: wz }, { x: e.clientX, y: e.clientY });
+    }
+
+    canvasEl.addEventListener('contextmenu', onContextMenu);
     canvasEl.addEventListener('wheel', onWheel, { passive: false });
     canvasEl.addEventListener('mousedown', onMouseDown);
     window.addEventListener('mousemove', onMouseMove);
@@ -633,6 +648,7 @@ export function ReplayMap2D(props: ReplayMap2DProps) {
     return () => {
       window.cancelAnimationFrame(raf);
       ro.disconnect();
+      canvasEl.removeEventListener('contextmenu', onContextMenu);
       canvasEl.removeEventListener('wheel', onWheel);
       canvasEl.removeEventListener('mousedown', onMouseDown);
       window.removeEventListener('mousemove', onMouseMove);

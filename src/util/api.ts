@@ -129,7 +129,10 @@ export async function pollVehicleDetail(serverId: string, requestId: string): Pr
     credentials: 'include',
   });
   if (res.status === 404) return null;
-  return jsonOk<VehicleDetail>(res, 'Failed to poll vehicle detail');
+  const data = await jsonOk<VehicleDetail & { pending?: boolean }>(res, 'Failed to poll vehicle detail');
+  // Server returns { pending: true } (HTTP 200) until the game server responds.
+  if (!data || (data as { pending?: boolean }).pending || !Array.isArray(data.inventory)) return null;
+  return data;
 }
 
 export async function sendReplayGmPing(params: {
