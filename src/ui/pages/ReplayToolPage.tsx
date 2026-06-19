@@ -1064,13 +1064,22 @@ export function ReplayToolPage() {
     }
   }, [vehicleIndex]);
 
-  // Load the carryable-item catalog once (used by the give-item picker).
+  // Load the carryable-item catalog (used by the give-item picker). The server only
+  // has it after the game server posts it on startup, so keep retrying while empty.
   useEffect(() => {
     let cancelled = false;
-    getItemCatalog()
-      .then((items) => { if (!cancelled) setItemCatalog(items); })
-      .catch(() => { /* ignore */ });
-    return () => { cancelled = true; };
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const load = () => {
+      getItemCatalog()
+        .then((items) => {
+          if (cancelled) return;
+          setItemCatalog(items);
+          if (!items || items.length === 0) timer = setTimeout(load, 15000);
+        })
+        .catch(() => { if (!cancelled) timer = setTimeout(load, 15000); });
+    };
+    load();
+    return () => { cancelled = true; if (timer) clearTimeout(timer); };
   }, []);
 
   const doSpawnItem = useCallback((target: 'player' | 'vehicle', key: string, prefab: string, count: number) => {
