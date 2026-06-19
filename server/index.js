@@ -442,7 +442,7 @@ async function loadTopDownMapImage(id) {
 function drawReplayTopDownFrame(ctx, opts) {
   const {
     w, h, title, serverId, relMs, absTsMs, wallClockAbsMs, requester,
-    view, mapImage, world, deathXs, trails, playerNow, focusId,
+    view, mapImage, world, tileLayer, deathXs, trails, playerNow, focusId,
   } = opts;
 
   // World -> screen (north up: +Z maps to -screenY).
@@ -463,6 +463,36 @@ function drawReplayTopDownFrame(ctx, opts) {
     } catch {
       // ignore
     }
+  }
+
+  // Sharp native tile overlay (much crisper than the flattened base when zoomed in).
+  if (tileLayer && tileLayer.tileMap && tileLayer.worldSize > 0) {
+    const size = tileLayer.worldSize;
+    const drawLevel = (z) => {
+      const n = 1 << (9 - z);
+      const tileWS = size / n;
+      const lX = view.cx - (w / 2) / view.ppm;
+      const rX = view.cx + (w / 2) / view.ppm;
+      const bZ = view.cz - (h / 2) / view.ppm;
+      const tZ = view.cz + (h / 2) / view.ppm;
+      const x0 = Math.max(0, Math.floor(lX / tileWS));
+      const x1 = Math.min(n - 1, Math.floor(rX / tileWS));
+      const y0 = Math.max(0, Math.floor(bZ / tileWS));
+      const y1 = Math.min(n - 1, Math.floor(tZ / tileWS));
+      for (let x = x0; x <= x1; x++) {
+        for (let y = y0; y <= y1; y++) {
+          const img = tileLayer.tileMap.get(`${z}/${x}/${y}`);
+          if (!img) continue;
+          const sxL = sx(x * tileWS);
+          const syT = sy((y + 1) * tileWS); // north edge -> top
+          const wpx = tileWS * view.ppm;
+          try { ctx.drawImage(img, sxL, syT, wpx + 1, wpx + 1); } catch { /* ignore */ }
+        }
+      }
+    };
+    drawLevel(6);
+    const dz = pickTileZoomServer(view.ppm, size);
+    if (dz < 6) drawLevel(dz);
   }
 
   // Faint world-aligned grid for scale (every 250 m).
@@ -580,6 +610,44 @@ function drawReplayTopDownFrame(ctx, opts) {
   ctx.fillText(`requested by: ${who}`, 10, h - 14);
 }
 
+// Pick the native tile zoom whose resolution matches a top-down ppm (px/metre).
+function pickTileZoomServer(ppm, worldSize) {
+  const target = ppm * worldSize / 256; // = 2^(MAX-z)
+  const z = Math.round(TACOPS_MAX_NATIVE_ZOOM - Math.log2(Math.max(1e-6, target)));
+  return Math.max(2, Math.min(6, z));
+}
+
+// Tile (x,y) range visible in a GIF frame view, at native zoom z.
+function gifTileRange(view, w, h, worldSize, z) {
+  const n = 1 << (TACOPS_MAX_NATIVE_ZOOM - z);
+  const tileWS = worldSize / n;
+  const leftX = view.cx - (w / 2) / view.ppm;
+  const rightX = view.cx + (w / 2) / view.ppm;
+  const botZ = view.cz - (h / 2) / view.ppm;
+  const topZ = view.cz + (h / 2) / view.ppm;
+  const x0 = Math.max(0, Math.floor(leftX / tileWS));
+  const x1 = Math.min(n - 1, Math.floor(rightX / tileWS));
+  const y0 = Math.max(0, Math.floor(botZ / tileWS));   // y increases north
+  const y1 = Math.min(n - 1, Math.floor(topZ / tileWS));
+  return { n, tileWS, x0, x1, y0, y1 };
+}
+
+// Decode a cached tile (fetching+caching from tacops on miss) to a napi Image.
+async function getMapTileNapi(map, z, x, y) {
+  const cachePath = path.join(MAPTILES_DIR, map, String(z), String(x), `${y}.webp`);
+  try {
+    return await loadImage(cachePath);
+  } catch { /* miss */ }
+  try {
+    const buf = await fetchTacopsTile(map, z, x, y);
+    await ensureDir(path.dirname(cachePath));
+    await fs.writeFile(cachePath, buf);
+    return await loadImage(buf);
+  } catch {
+    return null;
+  }
+}
+
 async function buildReplayEventGif({ safeId, serverId, tsMs, title, pos, focusPlayerId, playerIds, wallClockAtMs, requester }) {
   const fromTsMs = tsMs - 5_000;
   const toTsMs = tsMs + 5_000;
@@ -598,27 +666,28 @@ async function buildReplayEventGif({ safeId, serverId, tsMs, title, pos, focusPl
     // ignore
   }
 
-  // Resolve the tacops background map (image + world bounds it covers).
+  // Resolve the tacops background map (image base + native tile streaming).
   let mapImage = null;
   let mapWorld = null;
+  let tacopsMapId = null;   // for streaming sharp native tiles
+  let tilesWorldSize = null;
   try {
     let worldSize = null;
-    let originX = 0;
-    let originZ = 0;
     if (terrain && terrain.bbMin && terrain.bbMax) {
       const sizeX = terrain.bbMax.x - terrain.bbMin.x;
       const sizeZ = terrain.bbMax.z - terrain.bbMin.z;
       if (Number.isFinite(sizeX) && Number.isFinite(sizeZ) && sizeX > 0 && sizeZ > 0) {
         worldSize = Math.max(sizeX, sizeZ);
-        originX = terrain.bbMin.x;
-        originZ = terrain.bbMin.z;
       }
     }
     const topDownMapId = resolveTopDownMapId(worldFile, worldSize);
     const def = topDownMapId ? TOPDOWN_MAP_DEFS[topDownMapId] : null;
     if (def) {
       mapImage = await loadTopDownMapImage(topDownMapId);
-      mapWorld = { originX, originZ, size: worldSize || def.worldSize };
+      // The base image + tiles both cover the full tacops map at origin (0,0).
+      mapWorld = { originX: 0, originZ: 0, size: def.worldSize };
+      tacopsMapId = def.id;
+      tilesWorldSize = def.worldSize;
     }
   } catch {
     // ignore
@@ -734,6 +803,7 @@ async function buildReplayEventGif({ safeId, serverId, tsMs, title, pos, focusPl
 
   const gif = GIFEncoder();
   let palette = null;
+  const frames = [];
 
   for (let fi = 0; fi < frameCount; fi++) {
     const absTsMs = fromTsMs + fi * stepMs;
@@ -808,7 +878,7 @@ async function buildReplayEventGif({ safeId, serverId, tsMs, title, pos, focusPl
       const pts = trailsById.get(id) || [];
       trails.push({
         id,
-        points: pts,
+        points: pts.slice(),   // snapshot — trails keep growing across frames
         color: id === focusId ? '#f9bc59' : 'rgba(255,255,255,0.9)',
         alpha: id === focusId ? 0.95 : 0.55,
       });
@@ -818,21 +888,48 @@ async function buildReplayEventGif({ safeId, serverId, tsMs, title, pos, focusPl
       ? (wallClockAtMs + relMs)
       : null;
 
+    frames.push({ absTsMs, relMs, view, deathXs, trails, playerNow, absWallClockMs });
+  }
+
+  // Stream the sharp native tiles needed across all frames (cached after first use).
+  const tileMap = new Map();
+  if (tacopsMapId && tilesWorldSize) {
+    const needed = new Set();
+    const collect = (view, z) => {
+      const r = gifTileRange(view, w, h, tilesWorldSize, z);
+      for (let x = r.x0; x <= r.x1; x++) for (let y = r.y0; y <= r.y1; y++) needed.add(`${z}/${x}/${y}`);
+    };
+    for (const f of frames) {
+      collect(f.view, 6);
+      const z = pickTileZoomServer(f.view.ppm, tilesWorldSize);
+      if (z < 6) collect(f.view, z);
+    }
+    await Promise.all([...needed].map(async (key) => {
+      const [z, x, y] = key.split('/').map(Number);
+      const tImg = await getMapTileNapi(tacopsMapId, z, x, y);
+      if (tImg) tileMap.set(key, tImg);
+    }));
+  }
+  const tileLayer = (tacopsMapId && tilesWorldSize) ? { tileMap, worldSize: tilesWorldSize } : null;
+
+  for (let fi = 0; fi < frames.length; fi++) {
+    const f = frames[fi];
     drawReplayTopDownFrame(ctx, {
       w,
       h,
       title,
       serverId,
-      relMs,
-      absTsMs,
-      wallClockAbsMs: absWallClockMs,
+      relMs: f.relMs,
+      absTsMs: f.absTsMs,
+      wallClockAbsMs: f.absWallClockMs,
       requester,
-      view,
+      view: f.view,
       mapImage,
       world: mapWorld,
-      deathXs,
-      trails,
-      playerNow,
+      tileLayer,
+      deathXs: f.deathXs,
+      trails: f.trails,
+      playerNow: f.playerNow,
       focusId,
     });
 
