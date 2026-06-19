@@ -11,17 +11,21 @@ export type MapDef = {
   worldSize: number;
 };
 
+// Bump when the map images change so browsers/CDN (Cloudflare) fetch the new
+// file instead of serving a stale cached copy.
+const MAP_IMAGE_VERSION = '3';
+
 export const MAP_DEFS: Record<string, MapDef> = {
   everon: {
     id: 'everon',
     name: 'Everon',
-    image: '/maps/everon.jpg',
+    image: `/maps/everon.jpg?v=${MAP_IMAGE_VERSION}`,
     worldSize: 12802,
   },
   chernarus: {
     id: 'chernarus',
     name: 'Chernarus',
-    image: '/maps/chernarus.jpg',
+    image: `/maps/chernarus.jpg?v=${MAP_IMAGE_VERSION}`,
     worldSize: 15362,
   },
 };
