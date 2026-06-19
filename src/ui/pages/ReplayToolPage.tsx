@@ -1883,18 +1883,22 @@ export function ReplayToolPage() {
     const mapId = resolveMapId(worldFile, worldSize);
     const def = getMapDef(mapId);
 
-    // Prefer the captured terrain bounds for georeferencing; fall back to the
-    // known world size for the detected map (origin at 0,0).
+    // When we have a known map image, georeference it to that map's full world
+    // size with origin (0,0) — the image spans the whole tacops map in game
+    // coordinates, so player positions (same origin) land correctly. We must NOT
+    // scale the image to the replay's captured terrain bounds: those can be a
+    // smaller/older version of the terrain (e.g. recorded before the map was
+    // expanded northward), which would stretch the image and misplace the coast.
     let world: WorldBounds | null = null;
-    if (terrain) {
+    if (def) {
+      world = { originX: 0, originZ: 0, size: def.worldSize };
+    } else if (terrain) {
+      // No map image: describe the terrain-raster fallback's own bounds.
       const sizeX = terrain.bbMax.x - terrain.bbMin.x;
       const sizeZ = terrain.bbMax.z - terrain.bbMin.z;
       if (Number.isFinite(sizeX) && Number.isFinite(sizeZ) && sizeX > 0 && sizeZ > 0) {
         world = { originX: terrain.bbMin.x, originZ: terrain.bbMin.z, size: Math.max(sizeX, sizeZ) };
       }
-    }
-    if (!world && def) {
-      world = { originX: 0, originZ: 0, size: def.worldSize };
     }
 
     return { imageUrl: def ? def.image : null, world };
