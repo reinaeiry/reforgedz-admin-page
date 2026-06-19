@@ -3976,6 +3976,40 @@ app.post('/api/dev/servers/regenerateTerrain', requireAuth, requireTool('dev'), 
   res.json({ ok: true });
 }));
 
+app.post('/api/dev/servers/delete', requireAuth, requireTool('dev'), asyncRoute(async (req, res) => {
+  const serverId = String(req.query.serverId || '');
+  if (!serverId) {
+    res.status(400).send('Missing serverId');
+    return;
+  }
+  const safeId = sanitizeServerId(serverId);
+
+  // Remove the dynamic ingest key (env-configured keys live in INGEST_KEYS and
+  // can only be removed by changing the env).
+  const existing = await readJsonOrNull(INGEST_KEYS_PATH);
+  const servers = existing && existing.servers && typeof existing.servers === 'object' && !Array.isArray(existing.servers)
+    ? existing.servers
+    : {};
+  let removedKey = false;
+  if (Object.prototype.hasOwnProperty.call(servers, serverId)) {
+    const next = { ...servers };
+    delete next[serverId];
+    await writeJsonAtomic(INGEST_KEYS_PATH, { servers: next });
+    await loadDynamicIngestKeys();
+    removedKey = true;
+  }
+
+  // Delete the server's stored data (replay history, pii, index, etc.).
+  await withIngestLock(safeId, async () => {
+    const serverDir = path.join(DATA_DIR, 'servers', safeId);
+    try { await fs.rm(serverDir, { recursive: true, force: true }); } catch { /* ignore */ }
+  });
+
+  // Flag if an env-configured key still allows this server to re-register.
+  const envKeyRemains = !removedKey && ingestKeyMap.has(serverId);
+  res.json({ ok: true, envKeyRemains });
+}));
+
 // Serve static frontend if built (dist/)
 const distDir = path.resolve('dist');
 app.use(express.static(distDir));

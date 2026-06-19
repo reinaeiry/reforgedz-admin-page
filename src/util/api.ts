@@ -435,3 +435,11 @@ export async function setDevDiscordWebhook(webhookUrl: string): Promise<{ ok: tr
   });
   return jsonOk<{ ok: true }>(res, 'Failed to save webhook');
 }
+
+export async function deleteDevServer(serverId: string): Promise<{ ok: true; envKeyRemains?: boolean }> {
+  const res = await fetch(`${requireApiBaseUrl()}/api/dev/servers/delete?serverId=${encodeURIComponent(serverId)}`, {
+    method: 'POST',
+    credentials: 'include',
+  });
+  return jsonOk<{ ok: true; envKeyRemains?: boolean }>(res, 'Failed to delete server');
+}

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import {
-  addDevServer, clearServerHistory, getDevDiscordWebhook,
+  addDevServer, clearServerHistory, deleteDevServer, getDevDiscordWebhook,
   listDevServers, regenerateTerrainData, setDevDiscordWebhook,
   type DevServerInfo,
 } from '../../util/api';
@@ -141,6 +141,18 @@ export function DevPage() {
                             catch (e) { setError(e instanceof Error ? e.message : 'Failed'); }
                             finally { setBusy(false); }
                           }}>Regen Terrain</button>
+                        <button className="button buttonDanger" style={{ fontSize: 10, padding: '4px 10px' }} disabled={busy}
+                          onClick={async () => {
+                            if (!confirm(`Delete server '${s.id}'?\n\nThis removes its ingest key and ALL stored replay history. This cannot be undone.`)) return;
+                            setBusy(true); setError(null);
+                            try {
+                              const r = await deleteDevServer(s.id);
+                              if (r.envKeyRemains) setError(`Deleted data for '${s.id}', but its key is set via INGEST_KEYS env and will re-register on next push. Remove it from the env to fully delete.`);
+                              await refresh();
+                            }
+                            catch (e) { setError(e instanceof Error ? e.message : 'Failed'); }
+                            finally { setBusy(false); }
+                          }}>Delete</button>
                       </div>
                     </div>
                   </div>
