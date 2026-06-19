@@ -33,10 +33,16 @@ export type ReplayMap2DProps = {
   onVehicleClick?: (entityId: string) => void;
   terrain?: TerrainGrid | null;
   towns?: TownLabel[];
-  // 2D-specific: background map image + the world bounds it covers.
-  mapImageUrl?: string | null;
+  // 2D-specific: tacops map id (for streaming native tiles) + world bounds.
+  mapId?: string | null;
   world?: WorldBounds | null;
 };
+
+// tacops native tiling: 256px tiles, tilesPerSide = 2^(MAX_NATIVE_ZOOM - z).
+const TILE_SIZE = 256;
+const MAX_NATIVE_ZOOM = 9;
+const BASE_TILE_ZOOM = 6;   // whole map = 8x8 tiles; always-loaded base layer
+const DEEPEST_TILE_ZOOM = 2; // deepest detail we request (tilesPerSide 128)
 
 function clamp(v: number, min: number, max: number): number {
   if (v < min) return min;
@@ -161,10 +167,10 @@ export function ReplayMap2D(props: ReplayMap2DProps) {
   const townsRef = useRef<TownLabel[]>([]);
   const worldRef = useRef<WorldBounds | null>(null);
 
-  // Background image (tacops map) handling.
-  const mapImageUrlRef = useRef<string | null>(null);
-  const mapImageRef = useRef<HTMLImageElement | null>(null);
-  const mapImageReadyRef = useRef<boolean>(false);
+  // Streamed map tiles (tacops imagery served by our /api/replay/maptile proxy).
+  const mapIdRef = useRef<string | null>(null);
+  // key `${z}/${x}/${y}` -> { img, state: 'loading'|'ready'|'empty' }
+  const tileCacheRef = useRef<Map<string, { img: HTMLImageElement | null; state: 'loading' | 'ready' | 'empty' }>>(new Map());
 
   // Cached terrain fallback raster.
   const terrainRasterRef = useRef<{ canvas: HTMLCanvasElement; bounds: WorldBounds } | null>(null);
@@ -197,30 +203,13 @@ export function ReplayMap2D(props: ReplayMap2DProps) {
   }, [props.towns]);
   useEffect(() => { worldRef.current = props.world || null; }, [props.world]);
 
-  // Load / swap the background image when the URL changes.
+  // Reset the tile cache when the map changes.
   useEffect(() => {
-    const url = props.mapImageUrl || null;
-    if (url === mapImageUrlRef.current) return;
-    mapImageUrlRef.current = url;
-    mapImageRef.current = null;
-    mapImageReadyRef.current = false;
-    if (!url) return;
-
-    const img = new Image();
-    img.onload = () => {
-      if (mapImageUrlRef.current === url) {
-        mapImageRef.current = img;
-        mapImageReadyRef.current = true;
-      }
-    };
-    img.onerror = () => {
-      if (mapImageUrlRef.current === url) {
-        mapImageRef.current = null;
-        mapImageReadyRef.current = false;
-      }
-    };
-    img.src = url;
-  }, [props.mapImageUrl]);
+    const id = props.mapId || null;
+    if (id === mapIdRef.current) return;
+    mapIdRef.current = id;
+    tileCacheRef.current = new Map();
+  }, [props.mapId]);
 
   useEffect(() => {
     const canvasElRaw = canvasRef.current;
@@ -253,21 +242,73 @@ export function ReplayMap2D(props: ReplayMap2DProps) {
     ro.observe(canvasEl);
     resize();
 
-    // Resolve the active background (image preferred, else terrain raster).
-    function activeBackground(): { src: CanvasImageSource; bounds: WorldBounds } | null {
-      if (mapImageReadyRef.current && mapImageRef.current && worldRef.current) {
-        return { src: mapImageRef.current, bounds: worldRef.current };
+    // Get (and lazily request) a streamed map tile.
+    function getTile(mapId: string, z: number, x: number, y: number): HTMLImageElement | null {
+      const cache = tileCacheRef.current;
+      const key = `${z}/${x}/${y}`;
+      const entry = cache.get(key);
+      if (entry) return entry.state === 'ready' ? entry.img : null;
+      const rec: { img: HTMLImageElement | null; state: 'loading' | 'ready' | 'empty' } = { img: null, state: 'loading' };
+      cache.set(key, rec);
+      const img = new Image();
+      img.onload = () => { rec.img = img; rec.state = 'ready'; };
+      img.onerror = () => { rec.state = 'empty'; };
+      img.src = `/api/replay/maptile/${mapId}/${z}/${x}/${y}.webp`;
+      return null;
+    }
+
+    // Draw one tile zoom level over the visible area. Returns true if every
+    // visible tile at this level is ready (so a finer level fully covers it).
+    function drawTileLevel(mapId: string, size: number, z: number): boolean {
+      const n = 1 << (MAX_NATIVE_ZOOM - z);   // tiles per side
+      const tileWS = size / n;                 // world metres per tile
+      const leftX = view.cx - (cssW / 2) / view.scale;
+      const rightX = view.cx + (cssW / 2) / view.scale;
+      const botZ = view.cz - (cssH / 2) / view.scale;
+      const topZ = view.cz + (cssH / 2) / view.scale;
+      const x0 = clamp(Math.floor(leftX / tileWS), 0, n - 1);
+      const x1 = clamp(Math.floor(rightX / tileWS), 0, n - 1);
+      const y0 = clamp(Math.floor(botZ / tileWS), 0, n - 1);   // y increases north
+      const y1 = clamp(Math.floor(topZ / tileWS), 0, n - 1);
+      let allReady = true;
+      for (let x = x0; x <= x1; x++) {
+        for (let y = y0; y <= y1; y++) {
+          const img = getTile(mapId, z, x, y);
+          if (!img) {
+            const e = tileCacheRef.current.get(`${z}/${x}/${y}`);
+            if (!e || e.state !== 'empty') allReady = false;
+            continue;
+          }
+          const sxL = worldToScreenX(x * tileWS);
+          const syT = worldToScreenY((y + 1) * tileWS); // north edge -> top
+          const w = (x + 1) * tileWS * view.scale - x * tileWS * view.scale;
+          const h = (y + 1) * tileWS * view.scale - y * tileWS * view.scale;
+          // +1px to hide hairline seams between tiles.
+          ctx.drawImage(img, sxL, syT, w + 1, h + 1);
+        }
       }
+      return allReady;
+    }
+
+    // Pick the native tile zoom whose resolution best matches the display scale.
+    function pickTileZoom(size: number): number {
+      // native px-per-metre at zoom z = (TILE_SIZE * 2^(MAX-z)) / size
+      // choose z so that >= view.scale (slightly oversampled => crisp).
+      const target = view.scale * size / TILE_SIZE; // = 2^(MAX-z)
+      const z = Math.round(MAX_NATIVE_ZOOM - Math.log2(Math.max(1e-6, target)));
+      return clamp(z, DEEPEST_TILE_ZOOM, BASE_TILE_ZOOM);
+    }
+
+    function drawTerrainFallback(): { src: CanvasImageSource; bounds: WorldBounds } | null {
       const t = terrainRef.current;
-      if (t) {
-        const key = `${t.gridW}x${t.gridH}|${t.bbMin.x},${t.bbMin.z}|${t.bbMax.x},${t.bbMax.z}|${t.heights.length}`;
-        if (key !== terrainRasterKeyRef.current) {
-          terrainRasterKeyRef.current = key;
-          terrainRasterRef.current = buildTerrainRaster(t);
-        }
-        if (terrainRasterRef.current) {
-          return { src: terrainRasterRef.current.canvas, bounds: terrainRasterRef.current.bounds };
-        }
+      if (!t) return null;
+      const key = `${t.gridW}x${t.gridH}|${t.bbMin.x},${t.bbMin.z}|${t.bbMax.x},${t.bbMax.z}|${t.heights.length}`;
+      if (key !== terrainRasterKeyRef.current) {
+        terrainRasterKeyRef.current = key;
+        terrainRasterRef.current = buildTerrainRaster(t);
+      }
+      if (terrainRasterRef.current) {
+        return { src: terrainRasterRef.current.canvas, bounds: terrainRasterRef.current.bounds };
       }
       return null;
     }
@@ -442,18 +483,24 @@ export function ReplayMap2D(props: ReplayMap2DProps) {
       ctx.fillRect(0, 0, cssW, cssH);
 
       // Background map.
-      const bg = activeBackground();
-      if (bg) {
-        const b = bg.bounds;
-        const x0 = worldToScreenX(b.originX);
-        const yTop = worldToScreenY(b.originZ + b.size); // north edge -> top
-        const wPx = b.size * view.scale;
-        ctx.imageSmoothingEnabled = true;
-        ctx.imageSmoothingQuality = 'high';
-        try {
-          ctx.drawImage(bg.src, x0, yTop, wPx, wPx);
-        } catch {
-          // ignore draw failures (e.g. image not decodable yet)
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = 'high';
+      const mapId = mapIdRef.current;
+      const world = worldRef.current;
+      if (mapId && world) {
+        // Always draw the coarse base layer first (instant context), then the
+        // detail level on top so finer tiles sharpen the view as they stream in.
+        drawTileLevel(mapId, world.size, BASE_TILE_ZOOM);
+        const z = pickTileZoom(world.size);
+        if (z < BASE_TILE_ZOOM) drawTileLevel(mapId, world.size, z);
+      } else {
+        const bg = drawTerrainFallback();
+        if (bg) {
+          const b = bg.bounds;
+          const x0 = worldToScreenX(b.originX);
+          const yTop = worldToScreenY(b.originZ + b.size);
+          const wPx = b.size * view.scale;
+          try { ctx.drawImage(bg.src, x0, yTop, wPx, wPx); } catch { /* ignore */ }
         }
       }
 

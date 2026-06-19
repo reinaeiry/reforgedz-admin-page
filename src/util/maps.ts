@@ -1,33 +1,17 @@
-// Static 2D map backgrounds (stitched from tacops.gg tiles) and the logic that
-// decides which one a server is running, based on the world file reported in the
-// replay data with the captured terrain size as a fallback.
+// Identifies which real-world map a server is running (from the world file the
+// replay reports, with the captured terrain size as a fallback). `id` is the
+// tacops map id used to stream native tiles via /api/replay/maptile.
 
 export type MapDef = {
   id: string;
   name: string;
-  // Background image covering world bounds [origin .. origin + worldSize] on both axes.
-  image: string;
-  // World extent in metres (square terrains).
+  // World extent in metres (square terrains); the tile pyramid covers [0..worldSize].
   worldSize: number;
 };
 
-// Bump when the map images change so browsers/CDN (Cloudflare) fetch the new
-// file instead of serving a stale cached copy.
-const MAP_IMAGE_VERSION = '4';
-
 export const MAP_DEFS: Record<string, MapDef> = {
-  everon: {
-    id: 'everon',
-    name: 'Everon',
-    image: `/maps/everon.jpg?v=${MAP_IMAGE_VERSION}`,
-    worldSize: 12802,
-  },
-  chernarus: {
-    id: 'chernarus',
-    name: 'Chernarus',
-    image: `/maps/chernarus.jpg?v=${MAP_IMAGE_VERSION}`,
-    worldSize: 15362,
-  },
+  everon: { id: 'everon', name: 'Everon', worldSize: 12802 },
+  chernarus: { id: 'chernarus', name: 'Chernarus', worldSize: 15362 },
 };
 
 // Match the world file string a server reports to a known map.

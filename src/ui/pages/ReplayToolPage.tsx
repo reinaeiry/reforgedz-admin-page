@@ -1869,7 +1869,7 @@ export function ReplayToolPage() {
   // Detect which real-world map this server is running, from the world file the
   // replay data reports (falling back to the captured terrain size), and resolve
   // the matching 2D background image + world bounds.
-  const mapView = useMemo((): { imageUrl: string | null; world: WorldBounds | null } => {
+  const mapView = useMemo((): { mapId: string | null; world: WorldBounds | null } => {
     let worldFile = '';
     for (const rec of events) {
       const p: any = rec.payload;
@@ -1901,7 +1901,7 @@ export function ReplayToolPage() {
       }
     }
 
-    return { imageUrl: def ? def.image : null, world };
+    return { mapId: def ? def.id : null, world };
   }, [events, terrain]);
 
   const scrubber = useMemo(() => {
@@ -2633,7 +2633,7 @@ export function ReplayToolPage() {
                 onVehicleClick={handleVehicleClick}
                 terrain={terrain}
                 towns={towns || undefined}
-                mapImageUrl={mapView.imageUrl}
+                mapId={mapView.mapId}
                 world={mapView.world}
               />
 

@@ -1607,6 +1607,107 @@ app.get('/api/replay/statusAll', requireAuth, requireTool('replay'), asyncRoute(
   res.json(out);
 }));
 
+// ─── Map tile proxy (tacops imagery) ────────────────────────────────────────
+// Tiles are fetched from tacops at most ONCE each, cached to disk, then served
+// from our own disk forever after — so the replay map streams native-resolution
+// imagery (crisp at any zoom) without repeatedly hitting tacops.
+const MAPTILES_DIR = path.join(DATA_DIR, 'maptiles');
+const TACOPS_MAPS = new Set(['everon', 'chernarus']);
+const TACOPS_MAX_NATIVE_ZOOM = 9;
+
+let tacopsToken = null; // { token, expires }
+async function getTacopsToken() {
+  const now = Date.now() / 1000;
+  if (tacopsToken && tacopsToken.expires - now > 15) return tacopsToken;
+  const r = await fetch('https://app.tacops.gg/api/tile-token');
+  if (!r.ok) throw new Error('tile-token ' + r.status);
+  const j = await r.json();
+  tacopsToken = { token: j.token, expires: j.expires };
+  return tacopsToken;
+}
+
+// Cap concurrent tacops fetches: Leaflet uses ~6 and gets correct tiles, while
+// large bursts make tacops return wrong "fallback" tiles.
+let tacopsInFlight = 0;
+const tacopsWaiters = [];
+function tacopsAcquire() {
+  return new Promise((resolve) => {
+    if (tacopsInFlight < 5) { tacopsInFlight++; resolve(); }
+    else tacopsWaiters.push(resolve);
+  });
+}
+function tacopsRelease() {
+  tacopsInFlight--;
+  const next = tacopsWaiters.shift();
+  if (next) { tacopsInFlight++; next(); }
+}
+
+const tileInflight = new Map(); // key -> Promise<Buffer>
+async function fetchTacopsTile(map, z, x, y) {
+  const key = `${map}/${z}/${x}/${y}`;
+  const existing = tileInflight.get(key);
+  if (existing) return existing;
+  const p = (async () => {
+    await tacopsAcquire();
+    try {
+      const tok = await getTacopsToken();
+      const url = `https://tiles.tacops.gg/${map}/${z}/${x}/${y}/tile.webp?v=11&token=${tok.token}&expires=${tok.expires}`;
+      const r = await fetch(url);
+      if (!r.ok) throw new Error('tile ' + r.status);
+      const ct = r.headers.get('content-type') || '';
+      const buf = Buffer.from(await r.arrayBuffer());
+      // tacops returns a tiny placeholder for empty / out-of-range tiles.
+      if (!ct.includes('image') || buf.length < 200) {
+        const e = new Error('empty'); e.empty = true; throw e;
+      }
+      return buf;
+    } finally {
+      tacopsRelease();
+    }
+  })();
+  tileInflight.set(key, p);
+  try { return await p; } finally { tileInflight.delete(key); }
+}
+
+app.get('/api/replay/maptile/:map/:z/:x/:y', requireAuth, requireTool('replay'), asyncRoute(async (req, res) => {
+  const map = String(req.params.map || '').toLowerCase();
+  const z = parseInt(req.params.z, 10);
+  const x = parseInt(req.params.x, 10);
+  const y = parseInt(String(req.params.y || '').replace(/\.webp$/i, ''), 10);
+  if (!TACOPS_MAPS.has(map) || ![z, x, y].every(Number.isInteger) || z < 0 || z > TACOPS_MAX_NATIVE_ZOOM) {
+    res.status(400).send('bad tile');
+    return;
+  }
+  const n = 1 << (TACOPS_MAX_NATIVE_ZOOM - z);
+  if (x < 0 || y < 0 || x >= n || y >= n) {
+    res.status(400).send('range');
+    return;
+  }
+
+  const cacheDir = path.join(MAPTILES_DIR, map, String(z), String(x));
+  const cachePath = path.join(cacheDir, `${y}.webp`);
+  const sendBuf = (buf) => {
+    res.set('Content-Type', 'image/webp');
+    res.set('Cache-Control', 'public, max-age=31536000, immutable');
+    res.send(buf);
+  };
+
+  try {
+    sendBuf(await fs.readFile(cachePath));
+    return;
+  } catch { /* cache miss */ }
+
+  try {
+    const buf = await fetchTacopsTile(map, z, x, y);
+    await ensureDir(cacheDir);
+    await fs.writeFile(cachePath, buf);
+    sendBuf(buf);
+  } catch (err) {
+    if (err && err.empty) { res.status(204).end(); return; }
+    res.status(502).send('tile fetch failed');
+  }
+}));
+
 app.get('/api/replay/mapTerrain', requireAuth, requireTool('replay'), asyncRoute(async (req, res) => {
   const serverId = String(req.query.serverId || '');
   if (!serverId) {
