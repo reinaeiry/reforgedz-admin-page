@@ -1004,7 +1004,7 @@ export function ReplayToolPage() {
         const data = await getReplayVehicles(serverIdValue);
         if (!cancelled && Array.isArray(data.vehicles)) setVehicleIndex(data.vehicles);
       } catch { /* ignore */ }
-      if (!cancelled) timer = window.setTimeout(poll, 30000);
+      if (!cancelled) timer = window.setTimeout(poll, 8000);
     }
     poll();
     return () => { cancelled = true; if (timer !== null) window.clearTimeout(timer); };
@@ -1555,6 +1555,11 @@ export function ReplayToolPage() {
       }
       if (idx < 0) return null;
 
+      // Each field is sampled on its own cadence (weapon every snapshot, inventory/hotbar
+      // every ~10s), so find the most recent value for EACH field independently. Returning
+      // on the first field found would stop at the latest weapon-only snapshot and never
+      // back-fill inventory/attachments.
+      const out: any = { tsMs: -1 };
       for (let i = idx; i >= 0; i--) {
         const rec = series[i];
         const age = tsMs - rec.tsMs;
@@ -1563,19 +1568,24 @@ export function ReplayToolPage() {
         const pj: any = rec.player;
         if (!pj || typeof pj !== 'object') continue;
 
-        const inv = pj.inventory;
-        const att = pj.attachments;
-        const w = pj.weapon;
+        if (!('inventory' in out) && Array.isArray(pj.inventory)) {
+          out.inventory = pj.inventory;
+          if (out.tsMs < 0) out.tsMs = rec.tsMs;
+        }
+        if (!('attachments' in out) && Array.isArray(pj.attachments)) {
+          out.attachments = pj.attachments;
+          if (out.tsMs < 0) out.tsMs = rec.tsMs;
+        }
+        if (!('weapon' in out) && pj.weapon && typeof pj.weapon === 'object' && typeof pj.weapon.name === 'string' && pj.weapon.name.length > 0) {
+          out.weapon = pj.weapon;
+          if (out.tsMs < 0) out.tsMs = rec.tsMs;
+        }
 
-        const out: any = { tsMs: rec.tsMs };
-        if (Array.isArray(inv)) out.inventory = inv;
-        if (Array.isArray(att)) out.attachments = att;
-        if (w && typeof w === 'object' && typeof w.name === 'string' && w.name.length > 0) out.weapon = w;
-
-        if ('inventory' in out || 'attachments' in out || 'weapon' in out) return out;
+        if ('inventory' in out && 'attachments' in out && 'weapon' in out) break;
       }
 
-      return null;
+      if (out.tsMs < 0) return null;
+      return out;
     };
   }, [playerSeriesById]);
 
