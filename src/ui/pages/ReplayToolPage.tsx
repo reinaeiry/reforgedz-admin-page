@@ -313,6 +313,7 @@ export function ReplayToolPage() {
   const [vehiclePanelOpen, setVehiclePanelOpen] = useState(false);
   const [selectedVehicleId, setSelectedVehicleId] = useState<string | null>(null);
   const [vehicleDetailData, setVehicleDetailData] = useState<VehicleDetail | null>(null);
+  const [vehicleDetailNonce, setVehicleDetailNonce] = useState(0);
   const [vehicleDetailLoading, setVehicleDetailLoading] = useState(false);
   // Right-click map context menu (screen px + world pos to ping).
   const [mapMenu, setMapMenu] = useState<{ sx: number; sy: number; x: number; z: number } | null>(null);
@@ -1052,7 +1053,7 @@ export function ReplayToolPage() {
     })();
 
     return () => { cancelled = true; };
-  }, [serverId, selectedVehicleId]);
+  }, [serverId, selectedVehicleId, vehicleDetailNonce]);
 
   const vehicleMarkers3D = useMemo((): VehicleMarker[] => {
     if (!showVehicleMarkers) return [];
@@ -1070,6 +1071,7 @@ export function ReplayToolPage() {
 
   const handleVehicleClick = useCallback((entityId: string) => {
     setSelectedVehicleId(entityId);
+    setVehicleDetailNonce((n) => n + 1); // re-fetch even if the same vehicle is clicked again
     setVehiclePanelOpen(true);
     setShowVehicleMarkers(true);
     const v = vehicleIndex.find((x) => x.entityId === entityId);
@@ -3473,7 +3475,10 @@ export function ReplayToolPage() {
                       <div style={{ borderBottom: '1px solid rgba(255,255,255,0.10)', paddingBottom: 8, marginBottom: 6 }}>
                         <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
                           <div style={{ fontWeight: 700, fontSize: 11 }}>{vehicleIndex.find((v) => v.entityId === selectedVehicleId)?.name || selectedVehicleId}</div>
-                          <button className="button" style={{ padding: '2px 6px', fontSize: 10 }} onClick={() => { setSelectedVehicleId(null); setVehicleDetailData(null); }}>Back</button>
+                          <div className="row" style={{ gap: 4 }}>
+                            <button className="button" style={{ padding: '2px 6px', fontSize: 10 }} title="Refresh inventory" onClick={() => setVehicleDetailNonce((n) => n + 1)}>↻</button>
+                            <button className="button" style={{ padding: '2px 6px', fontSize: 10 }} onClick={() => { setSelectedVehicleId(null); setVehicleDetailData(null); }}>Back</button>
+                          </div>
                         </div>
                         {(() => {
                           const lastBy = vehicleIndex.find((v) => v.entityId === selectedVehicleId)?.lastOccupiedBy;
@@ -3536,6 +3541,7 @@ export function ReplayToolPage() {
                           }}
                           onClick={() => {
                             setSelectedVehicleId(v.entityId);
+                            setVehicleDetailNonce((n) => n + 1);
                             const p = coerceVec3(v.pos);
                             if (p) { setFocusTarget(p); setFocusNonce((n) => n + 1); }
                           }}
