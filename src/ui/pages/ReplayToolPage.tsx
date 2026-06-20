@@ -3329,13 +3329,14 @@ export function ReplayToolPage() {
                           {sessionAcFlags.slice().reverse().map((f) => {
                             const crit = String(f.severity || '').toUpperCase() === 'CRITICAL';
                             return (
-                              <button key={f.id} type="button" className="button" title="Jump to this flag"
-                                style={{ display: 'block', width: '100%', textAlign: 'left', padding: '4px 8px', fontSize: 11, borderBottom: '1px solid rgba(255,255,255,0.06)' }}
+                              <button key={f.id} type="button" className="button" title={`${f.name || ''}${f.note ? ' — ' + f.note : ''}`}
+                                style={{ display: 'flex', alignItems: 'baseline', gap: 6, width: '100%', textAlign: 'left', padding: '4px 8px', fontSize: 11, borderBottom: '1px solid rgba(255,255,255,0.06)', overflow: 'hidden' }}
                                 onClick={() => doInvestigateAc(f)}>
-                                <span style={{ color: crit ? '#ff6a6a' : '#ffcc33', fontWeight: 700 }}>{crit ? 'CRIT' : 'WARN'}</span>{' '}
-                                <span>{f.name || '—'}</span>
-                                {f.note ? <span className="muted"> — {f.note}</span> : null}
-                                {formatWallClock ? <span className="muted" style={{ float: 'right' }}>{formatWallClock(f.tsMs)}</span> : null}
+                                <span style={{ color: crit ? '#ff6a6a' : '#ffcc33', fontWeight: 700, flexShrink: 0 }}>{crit ? 'CRIT' : 'WARN'}</span>
+                                <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                  {f.name || '—'}{f.note ? <span className="muted"> — {f.note}</span> : null}
+                                </span>
+                                {formatWallClock ? <span className="muted" style={{ flexShrink: 0, fontSize: 10 }}>{formatWallClock(f.tsMs)}</span> : null}
                               </button>
                             );
                           })}
