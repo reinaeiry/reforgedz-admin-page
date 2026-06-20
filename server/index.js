@@ -1202,10 +1202,26 @@ async function readNdjsonWindow(filePath, opts) {
     }
   }
 
+  // Cheap pre-skip for downsampling: when a snapshot line would be dropped by
+  // the sample interval, decide that from the raw text and skip JSON.parse
+  // entirely. Snapshots dominate the file (~1 per 100ms) and we keep ~1 per
+  // interval, so this avoids parsing the vast majority of lines. Only snapshot
+  // lines are short-circuited; sparse events (kills/joins/...) always fall
+  // through to the full parse below, so nothing is dropped.
+  function downsampleSkip(line) {
+    if (sampleIntervalMs <= 0) return false;
+    if (line.indexOf('"type":"snapshot"') === -1) return false;
+    const ti = line.indexOf('"tsMs":');
+    if (ti === -1) return false;
+    const ts = parseInt(line.slice(ti + 7), 10);
+    return Number.isFinite(ts) && (ts - lastSnapshotTsMs) < sampleIntervalMs;
+  }
+
   if (!tail) {
     try {
       for await (const line of rl) {
         if (!line) continue;
+        if (downsampleSkip(line)) continue;
 
         let obj;
         try {
@@ -1244,6 +1260,7 @@ async function readNdjsonWindow(filePath, opts) {
   try {
     for await (const line of rl) {
       if (!line) continue;
+      if (downsampleSkip(line)) continue;
 
       let obj;
       try {

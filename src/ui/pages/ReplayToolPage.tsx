@@ -485,30 +485,58 @@ export function ReplayToolPage() {
         if (townLabels) setTowns(townLabels);
 
         if (typeof r.maxTsMs === 'number') {
-          setCurrentTsMs(r.maxTsMs);
+          const maxTsMs = r.maxTsMs;
+          setCurrentTsMs(maxTsMs);
 
-          // Load the FULL history at startup using downsampled snapshots
-          // (1 snapshot per 10s instead of 10/s = 100x less data, ~4MB for 24h).
-          // All events (kills, joins, etc.) are included at full resolution.
-          const allHistory = await getReplayEvents({
+          // Fast initial paint: pull only a recent window so the map and recent
+          // activity render immediately instead of waiting on the full-history
+          // scan (which can take seconds on a multi-hundred-MB log).
+          const RECENT_MS = 10 * 60_000;
+          const recent = await getReplayEvents({
+            serverId: serverIdValue,
+            sinceTsMs: Math.max(0, maxTsMs - RECENT_MS),
+            untilTsMs: maxTsMs,
+            limit: 8000,
+          }).catch(() => [] as IngestRecord[]);
+          if (!cancelled) {
+            setEvents(recent);
+
+            let lastTs: number | null = null;
+            for (const e of recent) {
+              const ts = getRecordTsMs(e);
+              if (ts !== null && (lastTs === null || ts > lastTs)) lastTs = ts;
+            }
+            lastFetchedTsMsRef.current = (lastTs !== null) ? lastTs : Math.max(0, maxTsMs - 15000);
+          }
+
+          // Background: pull the full downsampled history (1 snapshot / 5s, all
+          // events at full resolution) and merge it in without blocking the
+          // initial render or the "Loading…" state.
+          getReplayEvents({
             serverId: serverIdValue,
             limit: 200000,
             tail: true,
             sampleIntervalMs: 5000,
-          }).catch(() => [] as IngestRecord[]);
-          if (!cancelled) {
-            setEvents(allHistory);
-
-            // Advance cursor to newest loaded event (fallback: a bit behind max)
-            let lastTs: number | null = null;
-            for (const e of allHistory) {
-              const p: any = (e as any).payload;
-              if (p && typeof p.tsMs === 'number') {
-                if (lastTs === null || p.tsMs > lastTs) lastTs = p.tsMs;
-              }
-            }
-            lastFetchedTsMsRef.current = (lastTs !== null) ? lastTs : Math.max(0, r.maxTsMs - 15000);
-          }
+          })
+            .then((allHistory) => {
+              if (cancelled || allHistory.length === 0) return;
+              setEvents((prev) => {
+                const seen = new Set<string>();
+                for (const e of prev) seen.add(getRecordKey(e));
+                const merged = prev.slice();
+                for (const e of allHistory) {
+                  const k = getRecordKey(e);
+                  if (seen.has(k)) continue;
+                  seen.add(k);
+                  merged.push(e);
+                }
+                merged.sort((a, b) => (getRecordTsMs(a) ?? 0) - (getRecordTsMs(b) ?? 0));
+                return trimEventsToCap(merged, 250000, currentTsMsRef.current);
+              });
+            })
+            .catch(() => {
+              // ignore — the recent window is already shown and live polling continues
+            });
         }
 
         // Avoid showing a burst of historical popups on initial load.
