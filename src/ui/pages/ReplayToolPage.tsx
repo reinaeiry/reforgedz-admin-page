@@ -27,6 +27,7 @@ import {
   type VehicleIndexEntry,
   type VehicleDetail,
 } from '../../util/api';
+import { listGameLogs, type GameLogRow } from '../../util/bmApi';
 import { type NameTagOptions, type PlayerMarker, type TerrainGrid, type TownLabel, type Trail, type VehicleMarker } from '../components/ReplayMap3D';
 import { ReplayMap2D, type WorldBounds } from '../components/ReplayMap2D';
 import { ItemSpawnControl } from '../components/ItemSpawnControl';
@@ -275,6 +276,8 @@ export function ReplayToolPage() {
   const [players, setPlayers] = useState<ReplayPlayer[]>([]);
   const [playerSearch, setPlayerSearch] = useState('');
   const [gotoCoords, setGotoCoords] = useState('');
+  const [anticheatLogs, setAnticheatLogs] = useState<GameLogRow[]>([]);
+  const [showAnticheat, setShowAnticheat] = useState(true);
   const [selectedPlayerId, setSelectedPlayerId] = useState<number | null>(null);
   const [focusTarget, setFocusTarget] = useState<{ x: number; y: number; z: number } | null>(null);
   const [focusNonce, setFocusNonce] = useState(0);
@@ -997,6 +1000,22 @@ export function ReplayToolPage() {
     poll();
     return () => { cancelled = true; if (timer !== null) window.clearTimeout(timer); };
   }, [serverId, showVehicleMarkers]);
+
+  // Poll anticheat logs (filtered/placed on the map by world + player-in-session).
+  useEffect(() => {
+    if (!serverId || !showAnticheat) { setAnticheatLogs([]); return; }
+    let cancelled = false;
+    let timer: number | null = null;
+    async function poll() {
+      try {
+        const data = await listGameLogs({ types: ['anticheat'], limit: 500 });
+        if (!cancelled) setAnticheatLogs(Array.isArray(data.logs) ? data.logs : []);
+      } catch { /* ignore (e.g. no BM access) */ }
+      if (!cancelled) timer = window.setTimeout(poll, live ? 20000 : 60000);
+    }
+    poll();
+    return () => { cancelled = true; if (timer !== null) window.clearTimeout(timer); };
+  }, [serverId, showAnticheat, live]);
 
   // Request vehicle detail on selection
   useEffect(() => {
@@ -2069,6 +2088,56 @@ export function ReplayToolPage() {
     };
   }, [wallClockAnchor]);
 
+  // Anticheat hits to show on the map. Matched to this replay by player-in-session and
+  // map bounds; placed on the replay timeline via the wall-clock anchor (so they appear
+  // as you scrub). Markers linger for a window after the event.
+  const visibleAcMarkers = useMemo((): Array<{ x: number; y: number; z: number; severity?: string; name?: string }> => {
+    if (!showAnticheat) return [];
+    const t = currentTsMs;
+    if (typeof t !== 'number') return [];
+    const anchor = wallClockAnchor;
+    if (!anchor) return [];
+
+    const nameSet = new Set<string>();
+    for (const p of knownPlayers) {
+      const n = (p.name || '').trim().toLowerCase();
+      if (n) nameSet.add(n);
+    }
+    if (nameSet.size === 0) return [];
+
+    const world = mapView.world;
+    const WINDOW_MS = 120000;
+    const out: Array<{ x: number; y: number; z: number; severity?: string; name?: string }> = [];
+
+    for (const log of anticheatLogs) {
+      const nm = (log.player_name || '').trim().toLowerCase();
+      if (!nm || !nameSet.has(nm)) continue; // player not in this session -> not this server
+
+      const d = log.details || {};
+      const pos = d.pos;
+      if (!pos || typeof pos.x !== 'number' || typeof pos.z !== 'number') continue;
+
+      if (world) {
+        if (pos.x < world.originX || pos.x > world.originX + world.size) continue;
+        if (pos.z < world.originZ || pos.z > world.originZ + world.size) continue;
+      }
+
+      if (typeof log.ts_ms !== 'number') continue;
+      const replayTs = anchor.tsMs + (log.ts_ms - anchor.receivedAt);
+      if (replayTs > t) continue;            // hasn't happened yet at the current scrub time
+      if (t - replayTs > WINDOW_MS) continue; // too old to still flag
+
+      out.push({
+        x: pos.x,
+        y: typeof pos.y === 'number' ? pos.y : 0,
+        z: pos.z,
+        severity: log.severity || undefined,
+        name: log.player_name || undefined,
+      });
+    }
+    return out;
+  }, [showAnticheat, currentTsMs, wallClockAnchor, anticheatLogs, knownPlayers, mapView.world]);
+
   const playersAtTime = useMemo((): ReplayPlayer[] => {
     const t = currentTsMs;
     if (typeof t !== 'number' || !Number.isFinite(t)) return [];
@@ -2751,6 +2820,7 @@ export function ReplayToolPage() {
                 showAimLines={showAimLines}
                 trail={focusedTrail}
                 deathMarkers={visibleDeathMarkers}
+                acMarkers={visibleAcMarkers}
                 vehicleMarkers={vehicleMarkers3D}
                 onVehicleClick={handleVehicleClick}
                 onMapContextMenu={(world, screen) => setMapMenu({ sx: screen.x, sy: screen.y, x: world.x, z: world.z })}
@@ -2916,6 +2986,10 @@ export function ReplayToolPage() {
                           <label className="row" style={{ gap: 8, marginBottom: 6 }}>
                             <input type="checkbox" checked={showDeathMarkers} onChange={(e) => setShowDeathMarkers(e.target.checked)} />
                             <span className="muted" style={{ fontSize: 11 }}>Death markers</span>
+                          </label>
+                          <label className="row" style={{ gap: 8, marginBottom: 6 }}>
+                            <input type="checkbox" checked={showAnticheat} onChange={(e) => setShowAnticheat(e.target.checked)} />
+                            <span className="muted" style={{ fontSize: 11 }}>Anticheat flags</span>
                           </label>
                           <label className="row" style={{ gap: 8, marginBottom: 6 }}>
                             <input type="checkbox" checked={showVehicleMarkers} onChange={(e) => { setShowVehicleMarkers(e.target.checked); if (e.target.checked) setVehiclePanelOpen(true); }} />

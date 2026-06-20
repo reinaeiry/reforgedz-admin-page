@@ -35,6 +35,8 @@ export type ReplayMap2DProps = {
   onMapContextMenu?: (world: { x: number; z: number }, screen: { x: number; y: number }) => void;
   // Drag a player marker to a new spot to teleport them (live only). When unset, markers don't drag.
   onTeleportPlayer?: (playerId: number, world: { x: number; z: number }) => void;
+  // Anticheat hits to flag with a warning triangle (time-gated upstream).
+  acMarkers?: Array<{ x: number; y: number; z: number; severity?: string; name?: string }>;
   terrain?: TerrainGrid | null;
   towns?: TownLabel[];
   // 2D-specific: tacops map id (for streaming native tiles) + world bounds.
@@ -169,6 +171,7 @@ export function ReplayMap2D(props: ReplayMap2DProps) {
   const onVehicleClickRef = useRef<((entityId: string) => void) | null>(null);
   const onMapContextMenuRef = useRef<((world: { x: number; z: number }, screen: { x: number; y: number }) => void) | null>(null);
   const onTeleportPlayerRef = useRef<((playerId: number, world: { x: number; z: number }) => void) | null>(null);
+  const acMarkersRef = useRef<Array<{ x: number; y: number; z: number; severity?: string; name?: string }>>([]);
   const terrainRef = useRef<TerrainGrid | null>(null);
   const townsRef = useRef<TownLabel[]>([]);
   const worldRef = useRef<WorldBounds | null>(null);
@@ -205,6 +208,7 @@ export function ReplayMap2D(props: ReplayMap2DProps) {
   useEffect(() => { onVehicleClickRef.current = props.onVehicleClick || null; }, [props.onVehicleClick]);
   useEffect(() => { onMapContextMenuRef.current = props.onMapContextMenu || null; }, [props.onMapContextMenu]);
   useEffect(() => { onTeleportPlayerRef.current = props.onTeleportPlayer || null; }, [props.onTeleportPlayer]);
+  useEffect(() => { acMarkersRef.current = Array.isArray(props.acMarkers) ? props.acMarkers : []; }, [props.acMarkers]);
   useEffect(() => { terrainRef.current = props.terrain || null; }, [props.terrain]);
   useEffect(() => {
     townsRef.current = Array.isArray(props.towns) ? props.towns : [];
@@ -657,6 +661,33 @@ export function ReplayMap2D(props: ReplayMap2DProps) {
         const sx = worldToScreenX(pmk.x);
         const sy = worldToScreenY(pmk.z);
         drawCross(sx, sy, 8, COLORS.ping, 2);
+      }
+
+      // Anticheat warning triangles.
+      for (const m of acMarkersRef.current) {
+        const sx = worldToScreenX(m.x);
+        const sy = worldToScreenY(m.z);
+        if (sx < -40 || sx > cssW + 40 || sy < -40 || sy > cssH + 40) continue;
+        const crit = String(m.severity || '').toUpperCase() === 'CRITICAL';
+        const col = crit ? '#ff4a4a' : '#ffcc33';
+        const r = 9;
+        ctx.beginPath();
+        ctx.moveTo(sx, sy - r);
+        ctx.lineTo(sx - r * 0.92, sy + r * 0.72);
+        ctx.lineTo(sx + r * 0.92, sy + r * 0.72);
+        ctx.closePath();
+        ctx.fillStyle = 'rgba(0,0,0,0.55)';
+        ctx.fill();
+        ctx.strokeStyle = col;
+        ctx.lineWidth = 2;
+        ctx.stroke();
+        ctx.fillStyle = col;
+        ctx.font = 'bold 11px system-ui, -apple-system, Segoe UI, Roboto, Arial';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('!', sx, sy + 2);
+        ctx.textAlign = 'start';
+        if (m.name) drawMarkerLabel(m.name, sx, sy + r + 9, { enabled: true, scale: 0.9, background: true });
       }
 
       // Players.
