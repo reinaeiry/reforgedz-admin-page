@@ -17,6 +17,7 @@ export function ItemSpawnControl({ items, onSpawn, busy }: Props) {
   const [query, setQuery] = useState('');
   const [selected, setSelected] = useState<string | null>(null);
   const [count, setCount] = useState(1);
+  const [rawPrefab, setRawPrefab] = useState('');
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -113,6 +114,25 @@ export function ItemSpawnControl({ items, onSpawn, busy }: Props) {
           </div>
         </>
       )}
+
+      {/* Give any item (incl. modded/non-catalog items like a Pickaxe) by prefab path. */}
+      <div className="row" style={{ gap: 6, alignItems: 'center', marginTop: 4, paddingTop: 6, borderTop: '1px solid rgba(255,255,255,0.10)' }}>
+        <input
+          className="input"
+          style={{ flex: 1, fontSize: 11, padding: '4px 6px' }}
+          placeholder="…or paste a prefab path"
+          value={rawPrefab}
+          onChange={(e) => setRawPrefab(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter' && rawPrefab.trim()) onSpawn(rawPrefab.trim(), count); }}
+        />
+        <button
+          type="button"
+          className="button"
+          style={{ padding: '5px 8px', fontSize: 11 }}
+          disabled={!rawPrefab.trim() || busy}
+          onClick={() => { const p = rawPrefab.trim(); if (p) onSpawn(p, count); }}
+        >Give</button>
+      </div>
     </div>
   );
 }
