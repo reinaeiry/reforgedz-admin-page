@@ -14,6 +14,8 @@ import {
   requestVehicleDetail,
   pollVehicleDetail,
   getItemCatalog,
+  getSpawnCatalog,
+  type SpawnCatalogEntry,
   spawnReplayItem,
   teleportReplayPlayer,
   sendReplayCommand,
@@ -316,6 +318,10 @@ export function ReplayToolPage() {
   const [mapMenu, setMapMenu] = useState<{ sx: number; sy: number; x: number; z: number } | null>(null);
   // Item catalog (for the give-item picker) + spawn busy flag.
   const [itemCatalog, setItemCatalog] = useState<ItemCatalogEntry[]>([]);
+  const [spawnCatalog, setSpawnCatalog] = useState<SpawnCatalogEntry[]>([]);
+  const [spawnPickerPos, setSpawnPickerPos] = useState<{ x: number; z: number } | null>(null);
+  const [spawnQuery, setSpawnQuery] = useState('');
+  const [spawnKind, setSpawnKind] = useState<'all' | 'vehicle' | 'character'>('all');
   const [spawnBusy, setSpawnBusy] = useState(false);
   const [scrubberZoom, setScrubberZoom] = useState(1); // 1 = full range, higher = zoomed in
   const [enableTrails, setEnableTrails] = useState(true);
@@ -1091,6 +1097,23 @@ export function ReplayToolPage() {
     return () => { cancelled = true; if (timer) clearTimeout(timer); };
   }, []);
 
+  // Load the vehicle/character spawn catalog (used by the 'spawn here' picker).
+  useEffect(() => {
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const load = () => {
+      getSpawnCatalog()
+        .then((items) => {
+          if (cancelled) return;
+          setSpawnCatalog(items);
+          if (!items || items.length === 0) timer = setTimeout(load, 15000);
+        })
+        .catch(() => { if (!cancelled) timer = setTimeout(load, 15000); });
+    };
+    load();
+    return () => { cancelled = true; if (timer) clearTimeout(timer); };
+  }, []);
+
   const doSpawnItem = useCallback((target: 'player' | 'vehicle', key: string, prefab: string, count: number) => {
     if (!serverId) return;
     const serverIdValue = serverId;
@@ -1119,6 +1142,45 @@ export function ReplayToolPage() {
       }
     })();
   }, [serverId]);
+
+  const doSpawnEntity = useCallback((prefab: string, pos: { x: number; z: number }, name: string) => {
+    if (!serverId) return;
+    const serverIdValue = serverId;
+    (async () => {
+      try {
+        await sendReplayCommand(serverIdValue, 'spawnEntity', { prefab, pos: { x: pos.x, z: pos.z } });
+        pushToast({ kind: 'event', title: 'Spawned', subtitle: name || (prefab.split('/').pop() || prefab) });
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Failed to spawn');
+      }
+    })();
+  }, [serverId]);
+
+  const doMessage = useCallback((target: 'all' | 'player', key: string, label: string) => {
+    if (!serverId) return;
+    const serverIdValue = serverId;
+    const text = window.prompt(target === 'all' ? 'Message to all players:' : `Message to ${label}:`);
+    if (text === null) return;
+    const trimmed = text.trim();
+    if (!trimmed) return;
+    (async () => {
+      try {
+        await sendReplayCommand(serverIdValue, 'message', { target, key, text: trimmed, title: 'Admin' });
+        pushToast({ kind: 'event', title: 'Message sent', subtitle: target === 'all' ? 'everyone' : label });
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Failed to send message');
+      }
+    })();
+  }, [serverId]);
+
+  const doInvestigateAc = useCallback((m: { x: number; y: number; z: number; tsMs?: number; playerId?: number }) => {
+    if (live) setLive(false);
+    setIsPlaying(false);
+    if (typeof m.tsMs === 'number') setCurrentTsMs(m.tsMs);
+    if (typeof m.playerId === 'number') setSelectedPlayerId(m.playerId);
+    setFocusTarget({ x: m.x, y: m.y, z: m.z });
+    setFocusNonce((n) => n + 1);
+  }, [live]);
 
   const doGotoCoords = useCallback((raw: string) => {
     const nums = (raw.match(/-?\d+(\.\d+)?/g) || []).map(Number).filter((n) => Number.isFinite(n));
@@ -2091,52 +2153,60 @@ export function ReplayToolPage() {
   // Anticheat hits to show on the map. Matched to this replay by player-in-session and
   // map bounds; placed on the replay timeline via the wall-clock anchor (so they appear
   // as you scrub). Markers linger for a window after the event.
-  const visibleAcMarkers = useMemo((): Array<{ x: number; y: number; z: number; severity?: string; name?: string }> => {
+  type AcFlag = { id: string; x: number; y: number; z: number; severity?: string; name?: string; tsMs: number; playerId?: number; note?: string };
+
+  // All anticheat flags that belong to this replay (player-in-session + map bounds),
+  // each placed on the replay timeline via the wall-clock anchor. Not time-gated.
+  const sessionAcFlags = useMemo((): AcFlag[] => {
     if (!showAnticheat) return [];
-    const t = currentTsMs;
-    if (typeof t !== 'number') return [];
     const anchor = wallClockAnchor;
     if (!anchor) return [];
 
-    const nameSet = new Set<string>();
+    const nameToId = new Map<string, number>();
     for (const p of knownPlayers) {
       const n = (p.name || '').trim().toLowerCase();
-      if (n) nameSet.add(n);
+      if (n && !nameToId.has(n)) nameToId.set(n, p.playerId);
     }
-    if (nameSet.size === 0) return [];
+    if (nameToId.size === 0) return [];
 
     const world = mapView.world;
-    const WINDOW_MS = 120000;
-    const out: Array<{ x: number; y: number; z: number; severity?: string; name?: string }> = [];
-
+    const out: AcFlag[] = [];
     for (const log of anticheatLogs) {
       const nm = (log.player_name || '').trim().toLowerCase();
-      if (!nm || !nameSet.has(nm)) continue; // player not in this session -> not this server
+      if (!nm || !nameToId.has(nm)) continue; // not in this session -> not this server
 
       const d = log.details || {};
       const pos = d.pos;
       if (!pos || typeof pos.x !== 'number' || typeof pos.z !== 'number') continue;
-
       if (world) {
         if (pos.x < world.originX || pos.x > world.originX + world.size) continue;
         if (pos.z < world.originZ || pos.z > world.originZ + world.size) continue;
       }
-
       if (typeof log.ts_ms !== 'number') continue;
-      const replayTs = anchor.tsMs + (log.ts_ms - anchor.receivedAt);
-      if (replayTs > t) continue;            // hasn't happened yet at the current scrub time
-      if (t - replayTs > WINDOW_MS) continue; // too old to still flag
 
       out.push({
+        id: String(log.id),
         x: pos.x,
         y: typeof pos.y === 'number' ? pos.y : 0,
         z: pos.z,
         severity: log.severity || undefined,
         name: log.player_name || undefined,
+        tsMs: anchor.tsMs + (log.ts_ms - anchor.receivedAt),
+        playerId: nameToId.get(nm),
+        note: (d.note || log.category || '') || undefined,
       });
     }
+    out.sort((a, b) => a.tsMs - b.tsMs);
     return out;
-  }, [showAnticheat, currentTsMs, wallClockAnchor, anticheatLogs, knownPlayers, mapView.world]);
+  }, [showAnticheat, wallClockAnchor, anticheatLogs, knownPlayers, mapView.world]);
+
+  // Time-gated subset shown as triangles on the map (linger ~2 min after the event).
+  const visibleAcMarkers = useMemo((): AcFlag[] => {
+    const t = currentTsMs;
+    if (typeof t !== 'number') return [];
+    const WINDOW_MS = 120000;
+    return sessionAcFlags.filter((f) => f.tsMs <= t && (t - f.tsMs) <= WINDOW_MS);
+  }, [sessionAcFlags, currentTsMs]);
 
   const playersAtTime = useMemo((): ReplayPlayer[] => {
     const t = currentTsMs;
@@ -2821,6 +2891,7 @@ export function ReplayToolPage() {
                 trail={focusedTrail}
                 deathMarkers={visibleDeathMarkers}
                 acMarkers={visibleAcMarkers}
+                onAcMarkerClick={doInvestigateAc}
                 vehicleMarkers={vehicleMarkers3D}
                 onVehicleClick={handleVehicleClick}
                 onMapContextMenu={(world, screen) => setMapMenu({ sx: screen.x, sy: screen.y, x: world.x, z: world.z })}
@@ -2873,6 +2944,19 @@ export function ReplayToolPage() {
                       📍 GM Ping here
                     </button>
 
+                    {live ? (
+                      <>
+                        <button type="button" className="button" style={{ width: '100%', textAlign: 'left', padding: '6px 10px', fontSize: 12 }}
+                          onClick={() => { const m = mapMenu; setMapMenu(null); if (m) setSpawnPickerPos({ x: m.x, z: m.z }); }}>
+                          🚙 Spawn here
+                        </button>
+                        <button type="button" className="button" style={{ width: '100%', textAlign: 'left', padding: '6px 10px', fontSize: 12 }}
+                          onClick={() => { setMapMenu(null); doMessage('all', '', ''); }}>
+                          📢 Message all
+                        </button>
+                      </>
+                    ) : null}
+
                     {live && gmTarget ? (
                       <>
                         <div style={{ borderTop: '1px solid rgba(255,255,255,0.12)', margin: '4px 0' }} />
@@ -2888,6 +2972,10 @@ export function ReplayToolPage() {
                         <button type="button" className="button" style={{ width: '100%', textAlign: 'left', padding: '6px 10px', fontSize: 12 }}
                           onClick={() => { setMapMenu(null); doPlayerAction(gmTarget.id, 'eject', 'Ejected'); }}>
                           🚪 Eject from vehicle
+                        </button>
+                        <button type="button" className="button" style={{ width: '100%', textAlign: 'left', padding: '6px 10px', fontSize: 12 }}
+                          onClick={() => { setMapMenu(null); doMessage('player', String(gmTarget.id), gmTarget.name); }}>
+                          💬 Message
                         </button>
                         <button type="button" className="button" style={{ width: '100%', textAlign: 'left', padding: '6px 10px', fontSize: 12 }}
                           onClick={() => { setMapMenu(null); doPlayerAction(gmTarget.id, 'strip', 'Inventory stripped'); }}>
@@ -2910,6 +2998,56 @@ export function ReplayToolPage() {
                         </button>
                       </>
                     ) : null}
+                  </div>
+                </>
+              ) : null}
+
+              {spawnPickerPos ? (
+                <>
+                  <div style={{ position: 'fixed', inset: 0, zIndex: 50 }} onClick={() => setSpawnPickerPos(null)} />
+                  <div className="card" style={{
+                    position: 'fixed', left: '50%', top: '50%', transform: 'translate(-50%, -50%)', zIndex: 51,
+                    width: 360, maxHeight: '70vh', display: 'flex', flexDirection: 'column',
+                    padding: 10, background: 'rgba(12,15,25,0.98)', border: '1px solid rgba(255,255,255,0.16)',
+                  }}>
+                    <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                      <div style={{ fontWeight: 800, fontSize: 13 }}>Spawn at {Math.round(spawnPickerPos.x)}, {Math.round(spawnPickerPos.z)}</div>
+                      <button type="button" className="button" style={{ padding: '2px 8px', fontSize: 11 }} onClick={() => setSpawnPickerPos(null)}>Close</button>
+                    </div>
+                    <div className="row" style={{ gap: 6, marginBottom: 6 }}>
+                      <input className="input" style={{ flex: 1, fontSize: 12 }} placeholder="Search…" autoFocus
+                        value={spawnQuery} onChange={(e) => setSpawnQuery(e.target.value)} />
+                      <select className="input" style={{ fontSize: 12 }} value={spawnKind} onChange={(e) => setSpawnKind(e.target.value as any)}>
+                        <option value="all">All</option>
+                        <option value="vehicle">Vehicles</option>
+                        <option value="character">Characters</option>
+                      </select>
+                    </div>
+                    <div className="scroll" style={{ flex: 1, minHeight: 0, overflow: 'auto', border: '1px solid rgba(255,255,255,0.10)', borderRadius: 6 }}>
+                      {spawnCatalog.length === 0 ? (
+                        <div className="muted" style={{ padding: 10, fontSize: 11 }}>No spawn catalog yet (the server sends it on startup).</div>
+                      ) : (() => {
+                        const q = spawnQuery.trim().toLowerCase();
+                        const list = spawnCatalog.filter((it) => {
+                          if (spawnKind !== 'all' && it.kind !== spawnKind) return false;
+                          if (!q) return true;
+                          return (it.name || '').toLowerCase().includes(q) || it.prefab.toLowerCase().includes(q);
+                        }).slice(0, 300);
+                        if (list.length === 0) return <div className="muted" style={{ padding: 10, fontSize: 11 }}>No matches.</div>;
+                        return list.map((it) => {
+                          const rawName = it.name || '';
+                          const dispName = (!rawName || rawName.startsWith('#')) ? ((it.prefab.split('/').pop() || 'Entity').replace(/\.et$/i, '')) : rawName;
+                          return (
+                            <button key={it.prefab} type="button" className="button" title={it.prefab}
+                              style={{ display: 'flex', justifyContent: 'space-between', gap: 8, width: '100%', textAlign: 'left', padding: '5px 8px', fontSize: 12, borderBottom: '1px solid rgba(255,255,255,0.06)' }}
+                              onClick={() => { const p = spawnPickerPos; setSpawnPickerPos(null); if (p) doSpawnEntity(it.prefab, p, dispName); }}>
+                              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{dispName}</span>
+                              <span className="muted" style={{ fontSize: 10, flexShrink: 0 }}>{it.kind}</span>
+                            </button>
+                          );
+                        });
+                      })()}
+                    </div>
                   </div>
                 </>
               ) : null}
@@ -3181,6 +3319,27 @@ export function ReplayToolPage() {
                         </option>
                       ))}
                     </select>
+
+                    {showAnticheat && sessionAcFlags.length > 0 ? (
+                      <details style={{ marginTop: 6 }}>
+                        <summary style={{ cursor: 'pointer', fontWeight: 700, fontSize: 11, color: '#ffcc33' }}>⚠ Anticheat flags ({sessionAcFlags.length})</summary>
+                        <div className="scroll" style={{ maxHeight: 150, overflow: 'auto', marginTop: 4, border: '1px solid rgba(255,255,255,0.10)', borderRadius: 6 }}>
+                          {sessionAcFlags.slice().reverse().map((f) => {
+                            const crit = String(f.severity || '').toUpperCase() === 'CRITICAL';
+                            return (
+                              <button key={f.id} type="button" className="button" title="Jump to this flag"
+                                style={{ display: 'block', width: '100%', textAlign: 'left', padding: '4px 8px', fontSize: 11, borderBottom: '1px solid rgba(255,255,255,0.06)' }}
+                                onClick={() => doInvestigateAc(f)}>
+                                <span style={{ color: crit ? '#ff6a6a' : '#ffcc33', fontWeight: 700 }}>{crit ? 'CRIT' : 'WARN'}</span>{' '}
+                                <span>{f.name || '—'}</span>
+                                {f.note ? <span className="muted"> — {f.note}</span> : null}
+                                {formatWallClock ? <span className="muted" style={{ float: 'right' }}>{formatWallClock(f.tsMs)}</span> : null}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </details>
+                    ) : null}
                   </div>
 
                   <div className="scroll" style={{ flex: 1, minHeight: 0, overflow: 'auto', marginTop: 8 }}>
@@ -3300,7 +3459,7 @@ export function ReplayToolPage() {
 
               {/* Vehicle panel */}
               {showVehicleMarkers && vehiclePanelOpen ? (
-                <div style={{ position: 'absolute', bottom: 148, left: 12, width: 280, maxHeight: 'calc(100% - 160px)', display: 'flex', flexDirection: 'column' }}>
+                <div style={{ position: 'absolute', top: 12, left: playersPanelOpen ? 320 : 64, width: 280, bottom: 148, display: 'flex', flexDirection: 'column' }}>
                   <div className="card" style={{ padding: 10, background: 'rgba(0,0,0,0.55)', border: '1px solid rgba(255,255,255,0.14)', display: 'flex', flexDirection: 'column', overflow: 'hidden', maxHeight: '100%' }}>
                     <div className="row" style={{ flexShrink: 0, justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
                       <div style={{ fontWeight: 800, fontSize: 12 }}>Vehicles ({vehicleIndex.length})</div>

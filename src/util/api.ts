@@ -458,6 +458,14 @@ export async function getItemCatalog(): Promise<ItemCatalogEntry[]> {
   return Array.isArray(data.items) ? data.items : [];
 }
 
+export type SpawnCatalogEntry = { prefab: string; name: string; kind: string };
+
+export async function getSpawnCatalog(): Promise<SpawnCatalogEntry[]> {
+  const res = await fetch(`${requireApiBaseUrl()}/api/replay/spawnCatalog`, { credentials: 'include' });
+  const data = await jsonOk<{ items: SpawnCatalogEntry[] }>(res, 'Failed to load spawn catalog');
+  return Array.isArray(data.items) ? data.items : [];
+}
+
 export async function spawnReplayItem(params: {
   serverId: string;
   target: 'player' | 'vehicle';

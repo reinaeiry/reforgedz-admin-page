@@ -36,7 +36,9 @@ export type ReplayMap2DProps = {
   // Drag a player marker to a new spot to teleport them (live only). When unset, markers don't drag.
   onTeleportPlayer?: (playerId: number, world: { x: number; z: number }) => void;
   // Anticheat hits to flag with a warning triangle (time-gated upstream).
-  acMarkers?: Array<{ x: number; y: number; z: number; severity?: string; name?: string }>;
+  acMarkers?: Array<{ id?: string; x: number; y: number; z: number; severity?: string; name?: string; tsMs?: number; playerId?: number }>;
+  // Click an anticheat triangle to investigate it.
+  onAcMarkerClick?: (marker: { id?: string; x: number; y: number; z: number; severity?: string; name?: string; tsMs?: number; playerId?: number }) => void;
   terrain?: TerrainGrid | null;
   towns?: TownLabel[];
   // 2D-specific: tacops map id (for streaming native tiles) + world bounds.
@@ -171,7 +173,8 @@ export function ReplayMap2D(props: ReplayMap2DProps) {
   const onVehicleClickRef = useRef<((entityId: string) => void) | null>(null);
   const onMapContextMenuRef = useRef<((world: { x: number; z: number }, screen: { x: number; y: number }) => void) | null>(null);
   const onTeleportPlayerRef = useRef<((playerId: number, world: { x: number; z: number }) => void) | null>(null);
-  const acMarkersRef = useRef<Array<{ x: number; y: number; z: number; severity?: string; name?: string }>>([]);
+  const acMarkersRef = useRef<Array<{ id?: string; x: number; y: number; z: number; severity?: string; name?: string; tsMs?: number; playerId?: number }>>([]);
+  const onAcMarkerClickRef = useRef<((marker: { id?: string; x: number; y: number; z: number; severity?: string; name?: string; tsMs?: number; playerId?: number }) => void) | null>(null);
   const terrainRef = useRef<TerrainGrid | null>(null);
   const townsRef = useRef<TownLabel[]>([]);
   const worldRef = useRef<WorldBounds | null>(null);
@@ -209,6 +212,7 @@ export function ReplayMap2D(props: ReplayMap2DProps) {
   useEffect(() => { onMapContextMenuRef.current = props.onMapContextMenu || null; }, [props.onMapContextMenu]);
   useEffect(() => { onTeleportPlayerRef.current = props.onTeleportPlayer || null; }, [props.onTeleportPlayer]);
   useEffect(() => { acMarkersRef.current = Array.isArray(props.acMarkers) ? props.acMarkers : []; }, [props.acMarkers]);
+  useEffect(() => { onAcMarkerClickRef.current = props.onAcMarkerClick || null; }, [props.onAcMarkerClick]);
   useEffect(() => { terrainRef.current = props.terrain || null; }, [props.terrain]);
   useEffect(() => {
     townsRef.current = Array.isArray(props.towns) ? props.towns : [];
@@ -453,11 +457,26 @@ export function ReplayMap2D(props: ReplayMap2DProps) {
     function onClick(e: MouseEvent) {
       if (suppressClick) { suppressClick = false; return; }
       if (drag.moved) return;
-      const cb = onVehicleClickRef.current;
-      if (!cb) return;
       const rect = canvasEl.getBoundingClientRect();
       const sx = e.clientX - rect.left;
       const sy = e.clientY - rect.top;
+
+      // Anticheat triangles take click priority.
+      const acCb = onAcMarkerClickRef.current;
+      if (acCb) {
+        let bestAc: typeof acMarkersRef.current[number] | null = null;
+        let bestAcDist = 13;
+        for (const m of acMarkersRef.current) {
+          const mx = worldToScreenX(m.x);
+          const my = worldToScreenY(m.z);
+          const d = Math.hypot(mx - sx, my - sy);
+          if (d < bestAcDist) { bestAcDist = d; bestAc = m; }
+        }
+        if (bestAc) { acCb(bestAc); return; }
+      }
+
+      const cb = onVehicleClickRef.current;
+      if (!cb) return;
       let bestKey: string | null = null;
       let bestDist = 12; // px hit radius
       for (const v of vehicleMarkersRef.current) {

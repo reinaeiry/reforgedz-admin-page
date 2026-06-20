@@ -2036,6 +2036,14 @@ app.get('/api/replay/itemCatalog', requireAuth, requireTool('replay'), asyncRout
   });
 }));
 
+app.get('/api/replay/spawnCatalog', requireAuth, requireTool('replay'), asyncRoute(async (req, res) => {
+  const data = await readJsonOrNull(path.join(DATA_DIR, 'spawnCatalog.json'));
+  res.json({
+    items: (data && Array.isArray(data.items)) ? data.items : [],
+    updatedAt: (data && typeof data.updatedAt === 'number') ? data.updatedAt : null,
+  });
+}));
+
 // Queue a spawn-item command for the exporter to execute in-game (live).
 app.post('/api/replay/spawnItem', requireAuth, requireTool('replay'), asyncRoute(async (req, res) => {
   const { serverId, target, key, prefab, count } = (req.body && typeof req.body === 'object') ? req.body : {};
@@ -2093,7 +2101,7 @@ app.post('/api/replay/teleport', requireAuth, requireTool('replay'), asyncRoute(
 
 // Generic GM command channel. Queues one entry under pendingCommands[type], which the
 // in-game exporter consumes via the ingest response. Type is whitelisted.
-const REPLAY_GM_COMMANDS = new Set(['playerAction', 'vehicleAction', 'spawnEntity', 'stripInventory', 'setTime', 'removeItem']);
+const REPLAY_GM_COMMANDS = new Set(['playerAction', 'vehicleAction', 'spawnEntity', 'stripInventory', 'setTime', 'removeItem', 'message']);
 app.post('/api/replay/command', requireAuth, requireTool('replay'), asyncRoute(async (req, res) => {
   const { serverId, type, data } = (req.body && typeof req.body === 'object') ? req.body : {};
   if (typeof serverId !== 'string' || !serverId) { res.status(400).send('Missing serverId'); return; }
@@ -3559,6 +3567,22 @@ app.post('/api/replay/ingest', async (req, res) => {
           : [];
         if (items.length > 0) {
           await writeJsonAtomic(path.join(DATA_DIR, 'itemCatalog.json'), {
+            items,
+            updatedAt: receivedAt,
+            serverId: typeof normalizedPayload.serverId === 'string' ? normalizedPayload.serverId : '',
+          });
+        }
+      }
+
+      if (normalizedPayload && normalizedPayload.type === 'spawnCatalog') {
+        const ev = normalizedPayload.event && typeof normalizedPayload.event === 'object' ? normalizedPayload.event : {};
+        const items = Array.isArray(ev.items)
+          ? ev.items
+              .filter((x) => x && typeof x.prefab === 'string' && x.prefab)
+              .map((x) => ({ prefab: x.prefab, name: typeof x.name === 'string' ? x.name : '', kind: typeof x.kind === 'string' ? x.kind : '' }))
+          : [];
+        if (items.length > 0) {
+          await writeJsonAtomic(path.join(DATA_DIR, 'spawnCatalog.json'), {
             items,
             updatedAt: receivedAt,
             serverId: typeof normalizedPayload.serverId === 'string' ? normalizedPayload.serverId : '',
