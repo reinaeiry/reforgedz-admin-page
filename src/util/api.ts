@@ -496,7 +496,7 @@ export async function teleportReplayPlayer(params: {
   return jsonOk<{ ok: true }>(res, 'Failed to teleport player');
 }
 
-export type ReplayGmCommandType = 'playerAction' | 'vehicleAction' | 'spawnEntity' | 'stripInventory' | 'setTime' | 'removeItem';
+export type ReplayGmCommandType = 'playerAction' | 'vehicleAction' | 'spawnEntity' | 'stripInventory' | 'setTime' | 'removeItem' | 'message';
 
 export async function sendReplayCommand(
   serverId: string,
