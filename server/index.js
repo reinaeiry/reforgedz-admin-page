@@ -2091,6 +2091,32 @@ app.post('/api/replay/teleport', requireAuth, requireTool('replay'), asyncRoute(
   res.json({ ok: true });
 }));
 
+// Generic GM command channel. Queues one entry under pendingCommands[type], which the
+// in-game exporter consumes via the ingest response. Type is whitelisted.
+const REPLAY_GM_COMMANDS = new Set(['playerAction', 'vehicleAction', 'spawnEntity', 'stripInventory', 'setTime']);
+app.post('/api/replay/command', requireAuth, requireTool('replay'), asyncRoute(async (req, res) => {
+  const { serverId, type, data } = (req.body && typeof req.body === 'object') ? req.body : {};
+  if (typeof serverId !== 'string' || !serverId) { res.status(400).send('Missing serverId'); return; }
+  if (typeof type !== 'string' || !REPLAY_GM_COMMANDS.has(type)) { res.status(400).send('Invalid command type'); return; }
+  if (!data || typeof data !== 'object' || Array.isArray(data)) { res.status(400).send('Invalid data'); return; }
+
+  const safeId = sanitizeServerId(serverId);
+  await withIngestLock(safeId, async () => {
+    const serverDir = path.join(DATA_DIR, 'servers', safeId);
+    await ensureDir(serverDir);
+    const idxPath = path.join(serverDir, 'index.json');
+    const idx = (await readJsonOrNull(idxPath)) || {};
+    const prevPending = (idx.pendingCommands && typeof idx.pendingCommands === 'object' && !Array.isArray(idx.pendingCommands))
+      ? idx.pendingCommands : {};
+    const prev = Array.isArray(prevPending[type]) ? prevPending[type] : [];
+    const nextArr = prev.slice(-19);
+    nextArr.push(data);
+    const nextIdx = { ...idx, id: safeId, pendingCommands: { ...prevPending, [type]: nextArr } };
+    await writeJsonAtomic(idxPath, nextIdx);
+  });
+  res.json({ ok: true });
+}));
+
 app.post('/api/replay/gmPing', requireAuth, requireTool('replay'), asyncRoute(async (req, res) => {
   const { serverId, tsMs, pos, title, reporterPlayerId } = (req.body && typeof req.body === 'object') ? req.body : {};
   if (typeof serverId !== 'string' || !serverId) {

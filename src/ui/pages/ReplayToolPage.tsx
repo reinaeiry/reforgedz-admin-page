@@ -16,6 +16,7 @@ import {
   getItemCatalog,
   spawnReplayItem,
   teleportReplayPlayer,
+  sendReplayCommand,
   type ItemCatalogEntry,
   type IngestRecord,
   type MapDescriptors,
@@ -1112,6 +1113,38 @@ export function ReplayToolPage() {
     })();
   }, [serverId]);
 
+  const doPlayerAction = useCallback((playerId: number, action: 'heal' | 'kill' | 'eject' | 'strip', label: string) => {
+    if (!serverId) return;
+    const serverIdValue = serverId;
+    (async () => {
+      try {
+        if (action === 'strip') {
+          await sendReplayCommand(serverIdValue, 'stripInventory', { playerId });
+        } else {
+          await sendReplayCommand(serverIdValue, 'playerAction', { playerId, action });
+        }
+        pushToast({ kind: 'event', title: label, subtitle: `#${playerId}` });
+      } catch (err) {
+        setError(err instanceof Error ? err.message : `Failed to ${action}`);
+      }
+    })();
+  }, [serverId]);
+
+  const doVehicleAction = useCallback((entityId: string, action: 'repair' | 'refuel' | 'teleport', label: string, world?: { x: number; z: number }) => {
+    if (!serverId) return;
+    const serverIdValue = serverId;
+    (async () => {
+      try {
+        const data: Record<string, unknown> = { entityId, action };
+        if (action === 'teleport' && world) data.pos = { x: world.x, z: world.z };
+        await sendReplayCommand(serverIdValue, 'vehicleAction', data);
+        pushToast({ kind: 'event', title: label, subtitle: entityId });
+      } catch (err) {
+        setError(err instanceof Error ? err.message : `Failed to ${action} vehicle`);
+      }
+    })();
+  }, [serverId]);
+
   const snapshots = useMemo(() => {
     const out: Array<{ tsMs: number; players: any[] }> = [];
     for (const e of events) {
@@ -2101,6 +2134,16 @@ export function ReplayToolPage() {
     return p ? p.name : String(attachedPlayerId);
   }, [attachedPlayerId, knownPlayers, playersAtTime]);
 
+  // The player GM actions target: the one selected in the detail panel, else the attached one.
+  const gmTarget = useMemo((): { id: number; name: string } | null => {
+    const id = (typeof selectedPlayerId === 'number') ? selectedPlayerId
+      : (typeof attachedPlayerId === 'number') ? attachedPlayerId : null;
+    if (id === null) return null;
+    const timeP = playersAtTime.find((x) => x.playerId === id);
+    const name = timeP ? timeP.name : (knownPlayers.find((x) => x.playerId === id)?.name || `#${id}`);
+    return { id, name };
+  }, [selectedPlayerId, attachedPlayerId, playersAtTime, knownPlayers]);
+
   const filteredPlayers = useMemo((): ReplayPlayer[] => {
     const q = playerSearch.trim().toLowerCase();
     const base = Array.isArray(playersAtTime) ? playersAtTime : [];
@@ -2707,9 +2750,9 @@ export function ReplayToolPage() {
                   <div
                     className="card"
                     style={{
-                      position: 'fixed', left: Math.min(mapMenu.sx, window.innerWidth - 160), top: Math.min(mapMenu.sy, window.innerHeight - 80),
+                      position: 'fixed', left: Math.min(mapMenu.sx, window.innerWidth - 200), top: Math.min(mapMenu.sy, window.innerHeight - 260),
                       zIndex: 41, padding: 4, background: 'rgba(12,15,25,0.96)', border: '1px solid rgba(255,255,255,0.16)',
-                      minWidth: 150,
+                      minWidth: 190,
                     }}
                   >
                     <button
@@ -2737,6 +2780,44 @@ export function ReplayToolPage() {
                     >
                       📍 GM Ping here
                     </button>
+
+                    {live && gmTarget ? (
+                      <>
+                        <div style={{ borderTop: '1px solid rgba(255,255,255,0.12)', margin: '4px 0' }} />
+                        <div className="muted" style={{ padding: '2px 10px', fontSize: 10 }}>{gmTarget.name}</div>
+                        <button type="button" className="button" style={{ width: '100%', textAlign: 'left', padding: '6px 10px', fontSize: 12 }}
+                          onClick={() => { const m = mapMenu; setMapMenu(null); if (m) doTeleportPlayer(gmTarget.id, { x: m.x, z: m.z }); }}>
+                          🧍 Teleport here
+                        </button>
+                        <button type="button" className="button" style={{ width: '100%', textAlign: 'left', padding: '6px 10px', fontSize: 12 }}
+                          onClick={() => { setMapMenu(null); doPlayerAction(gmTarget.id, 'heal', 'Healed'); }}>
+                          ❤️ Heal
+                        </button>
+                        <button type="button" className="button" style={{ width: '100%', textAlign: 'left', padding: '6px 10px', fontSize: 12 }}
+                          onClick={() => { setMapMenu(null); doPlayerAction(gmTarget.id, 'eject', 'Ejected'); }}>
+                          🚪 Eject from vehicle
+                        </button>
+                        <button type="button" className="button" style={{ width: '100%', textAlign: 'left', padding: '6px 10px', fontSize: 12 }}
+                          onClick={() => { setMapMenu(null); doPlayerAction(gmTarget.id, 'strip', 'Inventory stripped'); }}>
+                          🧺 Strip inventory
+                        </button>
+                        <button type="button" className="button" style={{ width: '100%', textAlign: 'left', padding: '6px 10px', fontSize: 12, color: '#ff7a7a' }}
+                          onClick={() => { setMapMenu(null); doPlayerAction(gmTarget.id, 'kill', 'Killed'); }}>
+                          💀 Kill
+                        </button>
+                      </>
+                    ) : null}
+
+                    {live && selectedVehicleId ? (
+                      <>
+                        <div style={{ borderTop: '1px solid rgba(255,255,255,0.12)', margin: '4px 0' }} />
+                        <div className="muted" style={{ padding: '2px 10px', fontSize: 10 }}>Vehicle</div>
+                        <button type="button" className="button" style={{ width: '100%', textAlign: 'left', padding: '6px 10px', fontSize: 12 }}
+                          onClick={() => { const m = mapMenu; setMapMenu(null); if (m && selectedVehicleId) doVehicleAction(selectedVehicleId, 'teleport', 'Vehicle teleported', { x: m.x, z: m.z }); }}>
+                          🚗 Teleport vehicle here
+                        </button>
+                      </>
+                    ) : null}
                   </div>
                 </>
               ) : null}
@@ -3135,6 +3216,13 @@ export function ReplayToolPage() {
 
                     {selectedVehicleId && live ? (
                       <div style={{ borderBottom: '1px solid rgba(255,255,255,0.10)', paddingBottom: 8, marginBottom: 6 }}>
+                        <div className="row" style={{ gap: 6 }}>
+                          <button type="button" className="button" style={{ flex: 1, padding: '5px 8px', fontSize: 11 }}
+                            onClick={() => { if (selectedVehicleId) doVehicleAction(selectedVehicleId, 'repair', 'Vehicle repaired'); }}>🔧 Repair</button>
+                          <button type="button" className="button" style={{ flex: 1, padding: '5px 8px', fontSize: 11 }}
+                            onClick={() => { if (selectedVehicleId) doVehicleAction(selectedVehicleId, 'refuel', 'Vehicle refueled'); }}>⛽ Refuel</button>
+                        </div>
+                        <div className="muted" style={{ fontSize: 10, marginTop: 4 }}>Right-click the map to teleport this vehicle.</div>
                         <ItemSpawnControl
                           items={itemCatalog}
                           busy={spawnBusy}

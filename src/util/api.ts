@@ -486,3 +486,19 @@ export async function teleportReplayPlayer(params: {
   });
   return jsonOk<{ ok: true }>(res, 'Failed to teleport player');
 }
+
+export type ReplayGmCommandType = 'playerAction' | 'vehicleAction' | 'spawnEntity' | 'stripInventory' | 'setTime';
+
+export async function sendReplayCommand(
+  serverId: string,
+  type: ReplayGmCommandType,
+  data: Record<string, unknown>,
+): Promise<{ ok: true }> {
+  const res = await fetch(`${requireApiBaseUrl()}/api/replay/command`, {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ serverId, type, data }),
+  });
+  return jsonOk<{ ok: true }>(res, 'Failed to send command');
+}
