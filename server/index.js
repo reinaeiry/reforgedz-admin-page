@@ -2093,7 +2093,7 @@ app.post('/api/replay/teleport', requireAuth, requireTool('replay'), asyncRoute(
 
 // Generic GM command channel. Queues one entry under pendingCommands[type], which the
 // in-game exporter consumes via the ingest response. Type is whitelisted.
-const REPLAY_GM_COMMANDS = new Set(['playerAction', 'vehicleAction', 'spawnEntity', 'stripInventory', 'setTime']);
+const REPLAY_GM_COMMANDS = new Set(['playerAction', 'vehicleAction', 'spawnEntity', 'stripInventory', 'setTime', 'removeItem']);
 app.post('/api/replay/command', requireAuth, requireTool('replay'), asyncRoute(async (req, res) => {
   const { serverId, type, data } = (req.body && typeof req.body === 'object') ? req.body : {};
   if (typeof serverId !== 'string' || !serverId) { res.status(400).send('Missing serverId'); return; }

@@ -94,6 +94,7 @@ export interface VehicleIndexEntry {
   pos: { x: number; y: number; z: number } | number[];
   destroyed: boolean;
   occupied: boolean;
+  lastOccupiedBy?: string;
 }
 
 export interface VehicleIndex {
@@ -487,7 +488,7 @@ export async function teleportReplayPlayer(params: {
   return jsonOk<{ ok: true }>(res, 'Failed to teleport player');
 }
 
-export type ReplayGmCommandType = 'playerAction' | 'vehicleAction' | 'spawnEntity' | 'stripInventory' | 'setTime';
+export type ReplayGmCommandType = 'playerAction' | 'vehicleAction' | 'spawnEntity' | 'stripInventory' | 'setTime' | 'removeItem';
 
 export async function sendReplayCommand(
   serverId: string,

@@ -212,19 +212,6 @@ function formatDurationMs(ms: number): string {
   return `${minutes}m`;
 }
 
-function groupByName(items: any[] | null | undefined, getName: (it: any) => string): Array<{ name: string; count: number }> {
-  if (!Array.isArray(items) || items.length === 0) return [];
-  const map = new Map<string, number>();
-  for (const it of items) {
-    const name = getName(it).trim();
-    if (!name) continue;
-    map.set(name, (map.get(name) || 0) + 1);
-  }
-  const out = Array.from(map.entries()).map(([name, count]) => ({ name, count }));
-  out.sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
-  return out;
-}
-
 function getRecordTsMs(rec: IngestRecord): number | null {
   const p: any = (rec as any).payload;
   return p && typeof p.tsMs === 'number' ? p.tsMs : null;
@@ -287,6 +274,7 @@ export function ReplayToolPage() {
 
   const [players, setPlayers] = useState<ReplayPlayer[]>([]);
   const [playerSearch, setPlayerSearch] = useState('');
+  const [gotoCoords, setGotoCoords] = useState('');
   const [selectedPlayerId, setSelectedPlayerId] = useState<number | null>(null);
   const [focusTarget, setFocusTarget] = useState<{ x: number; y: number; z: number } | null>(null);
   const [focusNonce, setFocusNonce] = useState(0);
@@ -1099,6 +1087,30 @@ export function ReplayToolPage() {
       }
     })();
   }, [serverId]);
+
+  const doRemoveItem = useCallback((target: 'player' | 'vehicle', key: string, prefab: string, name: string) => {
+    if (!serverId) return;
+    const serverIdValue = serverId;
+    (async () => {
+      try {
+        await sendReplayCommand(serverIdValue, 'removeItem', { target, key, prefab, count: 1 });
+        pushToast({ kind: 'event', title: 'Item removed', subtitle: name || (prefab.split('/').pop() || prefab) });
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Failed to remove item');
+      }
+    })();
+  }, [serverId]);
+
+  const doGotoCoords = useCallback((raw: string) => {
+    const nums = (raw.match(/-?\d+(\.\d+)?/g) || []).map(Number).filter((n) => Number.isFinite(n));
+    if (nums.length < 2) return;
+    // Accept "x, z" or "x, y, z" (game world: x east, z north).
+    const x = nums[0];
+    const y = nums.length >= 3 ? nums[1] : 0;
+    const z = nums.length >= 3 ? nums[2] : nums[1];
+    setFocusTarget({ x, y, z });
+    setFocusNonce((n) => n + 1);
+  }, []);
 
   const doTeleportPlayer = useCallback((playerId: number, world: { x: number; z: number }) => {
     if (!serverId) return;
@@ -2932,6 +2944,15 @@ export function ReplayToolPage() {
                       <input className="input" style={{ flexShrink: 0 }} placeholder="Search players…"
                         value={playerSearch} onChange={(e) => setPlayerSearch(e.target.value)} />
 
+                      <div className="row" style={{ gap: 6, flexShrink: 0 }}>
+                        <input className="input" style={{ flex: 1 }} placeholder="Go to coords (x, y, z)"
+                          value={gotoCoords}
+                          onChange={(e) => setGotoCoords(e.target.value)}
+                          onKeyDown={(e) => { if (e.key === 'Enter') doGotoCoords(gotoCoords); }} />
+                        <button type="button" className="button" style={{ padding: '4px 10px', fontSize: 11 }}
+                          onClick={() => doGotoCoords(gotoCoords)}>Go</button>
+                      </div>
+
                       <div className="scroll" style={{ flex: 1, minHeight: 0, overflow: 'auto', border: '1px solid rgba(255,255,255,0.10)', borderRadius: 8 }}>
                         {filteredPlayers.length === 0 ? (
                           <div className="muted" style={{ padding: 10, fontSize: 12 }}>No players.</div>
@@ -2991,13 +3012,26 @@ export function ReplayToolPage() {
                                 </summary>
                                 <div className="scroll" style={{ marginTop: 4, maxHeight: 120, overflow: 'auto', border: '1px solid rgba(255,255,255,0.10)', borderRadius: 6 }}>
                                   {(() => {
-                                    const grouped = groupByName((selectedPlayerStateWithEquipmentCache as any).inventory, (it) => (it && it.name) ? String(it.name) : 'Item');
-                                    if (grouped.length === 0) {
+                                    const inv = (selectedPlayerStateWithEquipmentCache as any).inventory;
+                                    if (!Array.isArray(inv) || inv.length === 0) {
                                       return <div className="muted" style={{ padding: 8, fontSize: 11 }}>No inventory data.</div>;
                                     }
-                                    return grouped.slice(0, 80).map((g, idx) => (
-                                      <div key={idx} style={{ padding: '4px 8px', borderBottom: '1px solid rgba(255,255,255,0.06)', fontSize: 11 }}>
-                                        {g.name}{g.count > 1 ? ` ×${g.count}` : ''}
+                                    const byPrefab = new Map<string, { name: string; prefab: string; count: number }>();
+                                    for (const it of inv) {
+                                      const prefab = it && typeof it.prefab === 'string' ? it.prefab : '';
+                                      const rawName = it && it.name ? String(it.name) : '';
+                                      const name = (!rawName || rawName.startsWith('#')) ? ((prefab.split('/').pop() || 'Item').replace(/\.et$/i, '')) : rawName;
+                                      const key = prefab || name;
+                                      const g = byPrefab.get(key);
+                                      if (g) g.count++; else byPrefab.set(key, { name, prefab, count: 1 });
+                                    }
+                                    return Array.from(byPrefab.values()).slice(0, 120).map((g, idx) => (
+                                      <div key={idx} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6, padding: '4px 8px', borderBottom: '1px solid rgba(255,255,255,0.06)', fontSize: 11 }}>
+                                        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{g.name}{g.count > 1 ? ` ×${g.count}` : ''}</span>
+                                        {live && selectedPlayerId !== null && g.prefab ? (
+                                          <button type="button" className="button" title="Remove one" style={{ padding: '0 6px', fontSize: 11, flexShrink: 0, color: '#ff7a7a' }}
+                                            onClick={() => doRemoveItem('player', String(selectedPlayerId), g.prefab, g.name)}>✕</button>
+                                        ) : null}
                                       </div>
                                     ));
                                   })()}
@@ -3208,17 +3242,30 @@ export function ReplayToolPage() {
                           <div style={{ fontWeight: 700, fontSize: 11 }}>{vehicleIndex.find((v) => v.entityId === selectedVehicleId)?.name || selectedVehicleId}</div>
                           <button className="button" style={{ padding: '2px 6px', fontSize: 10 }} onClick={() => { setSelectedVehicleId(null); setVehicleDetailData(null); }}>Back</button>
                         </div>
+                        {(() => {
+                          const lastBy = vehicleIndex.find((v) => v.entityId === selectedVehicleId)?.lastOccupiedBy;
+                          return lastBy ? <div className="muted" style={{ fontSize: 10, marginTop: 2 }}>Last occupied by {lastBy}</div> : null;
+                        })()}
                         {vehicleDetailLoading && !vehicleDetailData ? (
                           <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>Loading inventory...</div>
                         ) : vehicleDetailData ? (
                           <div className="scroll" style={{ marginTop: 4, maxHeight: 180, overflow: 'auto', border: '1px solid rgba(255,255,255,0.10)', borderRadius: 6 }}>
                             {(vehicleDetailData.inventory || []).length === 0 ? (
                               <div className="muted" style={{ padding: 8, fontSize: 11 }}>Empty.</div>
-                            ) : (vehicleDetailData.inventory || []).map((it, idx) => (
-                              <div key={idx} style={{ padding: '3px 8px', borderBottom: '1px solid rgba(255,255,255,0.06)', fontSize: 11 }}>
-                                {it.name || it.prefab || 'Item'}
-                              </div>
-                            ))}
+                            ) : (vehicleDetailData.inventory || []).map((it, idx) => {
+                              const prefab = typeof it.prefab === 'string' ? it.prefab : '';
+                              const rawName = it.name ? String(it.name) : '';
+                              const dispName = (!rawName || rawName.startsWith('#')) ? ((prefab.split('/').pop() || 'Item').replace(/\.et$/i, '')) : rawName;
+                              return (
+                                <div key={idx} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6, padding: '3px 8px', borderBottom: '1px solid rgba(255,255,255,0.06)', fontSize: 11 }}>
+                                  <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{dispName}</span>
+                                  {live && selectedVehicleId && prefab ? (
+                                    <button type="button" className="button" title="Remove one" style={{ padding: '0 6px', fontSize: 11, flexShrink: 0, color: '#ff7a7a' }}
+                                      onClick={() => doRemoveItem('vehicle', selectedVehicleId, prefab, dispName)}>✕</button>
+                                  ) : null}
+                                </div>
+                              );
+                            })}
                           </div>
                         ) : null}
                       </div>
