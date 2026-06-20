@@ -27,6 +27,7 @@ export type TerrainGrid = {
   gridW: number;
   gridH: number;
   heights: number[];
+  worldFile?: string;
 };
 
 export type TownLabel = {

@@ -95,7 +95,8 @@ function coerceTerrainGrid(t: MapTerrain | null): TerrainGrid | null {
     ? ((t as any).heights as any[]).filter((x) => typeof x === 'number') as number[]
     : [];
   if (bbMin && bbMax && gridW >= 2 && gridH >= 2 && heights.length >= gridW * gridH) {
-    return { bbMin, bbMax, gridW, gridH, heights };
+    const worldFile = typeof (t as any).worldFile === 'string' ? (t as any).worldFile : undefined;
+    return { bbMin, bbMax, gridW, gridH, heights, worldFile };
   }
   return null;
 }
@@ -2073,6 +2074,9 @@ export function ReplayToolPage() {
         break;
       }
     }
+    // The live map event ages out of the events window, so fall back to the terrain's
+    // worldFile (always fetched via its own endpoint) to keep map resolution reliable.
+    if (!worldFile && terrain && terrain.worldFile) worldFile = terrain.worldFile;
 
     const worldSize = terrain ? (terrain.bbMax.x - terrain.bbMin.x) : null;
     const mapId = resolveMapId(worldFile, worldSize);
