@@ -3444,8 +3444,22 @@ app.post('/api/replay/ingest', async (req, res) => {
           const townsPath = path.join(MAPS_DIR, `${mapId}.towns.json`);
           const existing = await readJsonOrNull(townsPath);
 
+          // Count towns with a real (non-origin) position. A town's pos is an [x,y,z] array.
+          const townHasPos = (t) => {
+            const p = t && t.pos;
+            if (Array.isArray(p)) return Math.abs(p[0] || 0) > 1 || Math.abs(p[2] || 0) > 1;
+            if (p && typeof p === 'object') return Math.abs(p.x || 0) > 1 || Math.abs(p.z || 0) > 1;
+            return false;
+          };
+          const incomingNonZero = Array.isArray(ev.towns) ? ev.towns.filter(townHasPos).length : 0;
+          const existingNonZero = (existing && Array.isArray(existing.towns)) ? existing.towns.filter(townHasPos).length : 0;
+
+          // Write when there's nothing yet, the world changed, or the incoming data is at
+          // least as good (has real positions) — so a corrected capture can replace cached
+          // 0,0,0 data, but a bad all-origin capture can't clobber good data.
           const shouldWrite = !existing
-            || (existing && typeof existing === 'object' && worldFile && typeof existing.worldFile === 'string' && existing.worldFile !== worldFile);
+            || (worldFile && typeof existing.worldFile === 'string' && existing.worldFile !== worldFile)
+            || (incomingNonZero > 0 && incomingNonZero >= existingNonZero);
 
           if (shouldWrite) {
             await writeJsonAtomic(townsPath, {
