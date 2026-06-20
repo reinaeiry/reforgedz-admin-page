@@ -1086,8 +1086,82 @@ export function ReplayToolPage() {
     return () => { cancelled = true; };
   }, [serverId, selectedVehicleId, vehicleDetailNonce]);
 
+  // Per-time vehicle index from the event stream, so markers reflect where
+  // vehicles actually were at the scrub time (not a single always-latest snapshot).
+  const vehicleHistory = useMemo(() => {
+    const out: Array<{ tsMs: number; vehicles: any[] }> = [];
+    for (const rec of events) {
+      const p: any = rec.payload;
+      if (!p || p.type !== 'vehicleIndex' || typeof p.tsMs !== 'number') continue;
+      const ev = p.event && typeof p.event === 'object' ? p.event : null;
+      out.push({ tsMs: p.tsMs, vehicles: ev && Array.isArray(ev.vehicles) ? ev.vehicles : [] });
+    }
+    out.sort((a, b) => a.tsMs - b.tsMs);
+    return out;
+  }, [events]);
+
+  // Static name lookup from the latest poll, used to label older vehicles whose
+  // slimmed history records don't carry a name.
+  const vehicleNameById = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const v of vehicleIndex) if (v && v.entityId && v.name) m.set(v.entityId, v.name);
+    return m;
+  }, [vehicleIndex]);
+
   const vehicleMarkers3D = useMemo((): VehicleMarker[] => {
     if (!showVehicleMarkers) return [];
+    const t = currentTsMs;
+
+    // Time-aware: render the vehicles present at-or-before t from the index history
+    // so destroyed / despawned / since-moved vehicles aren't carried through, and a
+    // driven vehicle's diamond tracks to where it actually was.
+    if (typeof t === 'number' && vehicleHistory.length > 0) {
+      let lo = 0;
+      let hi = vehicleHistory.length - 1;
+      let idx = -1;
+      while (lo <= hi) {
+        const mid = (lo + hi) >> 1;
+        if (vehicleHistory[mid].tsMs <= t) { idx = mid; lo = mid + 1; } else hi = mid - 1;
+      }
+      if (idx < 0) return [];
+
+      // If the nearest index is stale (a gap, e.g. server was down) and it isn't the
+      // live tail, show nothing rather than ghosts.
+      const FRESH_MS = 90_000;
+      if (t - vehicleHistory[idx].tsMs > FRESH_MS && idx !== vehicleHistory.length - 1) return [];
+
+      const cur = vehicleHistory[idx];
+      const next = (idx + 1 < vehicleHistory.length) ? vehicleHistory[idx + 1] : null;
+      let nextById: Map<string, any> | null = null;
+      let alpha = 0;
+      if (next && next.tsMs > cur.tsMs) {
+        nextById = new Map();
+        for (const v of next.vehicles) if (v && v.entityId) nextById.set(v.entityId, v);
+        alpha = Math.max(0, Math.min(1, (t - cur.tsMs) / (next.tsMs - cur.tsMs)));
+      }
+
+      const out: VehicleMarker[] = [];
+      for (const v of cur.vehicles) {
+        if (!v || v.destroyed) continue;
+        let pos = coerceVec3(v.pos);
+        if (!pos) continue;
+        if (nextById) {
+          const nv = nextById.get(v.entityId);
+          if (nv && !nv.destroyed) { const np = coerceVec3(nv.pos); if (np) pos = lerpVec3(pos, np, alpha); }
+        }
+        if (pos.x === 0 && pos.z === 0) continue;
+        out.push({
+          entityId: v.entityId,
+          name: v.name || vehicleNameById.get(v.entityId) || '',
+          pos,
+          destroyed: false,
+          occupied: !!v.occupied,
+        });
+      }
+      return out;
+    }
+
+    // Fallback (no history loaded yet): latest poll snapshot.
     return vehicleIndex.map((v) => {
       const p = coerceVec3(v.pos);
       return {
@@ -1098,7 +1172,7 @@ export function ReplayToolPage() {
         occupied: !!v.occupied,
       };
     }).filter((v) => v.pos.x !== 0 || v.pos.z !== 0);
-  }, [showVehicleMarkers, vehicleIndex]);
+  }, [showVehicleMarkers, currentTsMs, vehicleHistory, vehicleNameById, vehicleIndex]);
 
   const handleVehicleClick = useCallback((entityId: string) => {
     setSelectedVehicleId(entityId);

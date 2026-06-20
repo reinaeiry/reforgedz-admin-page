@@ -1177,9 +1177,11 @@ async function readNdjsonWindow(filePath, opts) {
   // cuts the historical transfer + client parse cost dramatically.
   const slim = !!(opts && opts.slim);
   // In slim/history mode these record types are dropped entirely: they are large
-  // and the client already loads them from their own endpoints (vehicle markers
-  // from /api/replay/vehicles, terrain/catalogs from their routes) or doesn't use
-  // them for playback (serverHealth). vehicleIndex alone is tens of MB.
+  // and the client either loads them from their own endpoints (terrain/catalogs),
+  // doesn't use them for playback (serverHealth), or only needs them in the recent
+  // full-res window (vehicleIndex — there can be hundreds of vehicles per record, so
+  // carrying 24h of them would dwarf everything else; the recent window still has
+  // them so vehicle markers stay time-aware for live/recent playback).
   const SLIM_DROP_TYPES = new Set(['vehicleIndex', 'serverHealth', 'itemCatalog', 'spawnCatalog']);
 
   // Returns the slimmed record, or null to drop it. Only snapshots are projected;
@@ -1203,10 +1205,7 @@ async function readNdjsonWindow(filePath, opts) {
         inVehicle: pl.inVehicle,
       };
     }
-    return {
-      receivedAt: obj.receivedAt,
-      payload: { type: 'snapshot', tsMs: p.tsMs, players: slimPlayers },
-    };
+    return { receivedAt: obj.receivedAt, payload: { type: 'snapshot', tsMs: p.tsMs, players: slimPlayers } };
   }
 
   const out = [];
