@@ -979,6 +979,49 @@ function requireTool(tool) {
   };
 }
 
+// Per-server replay scoping. perms.admin.replayServers is an allowlist of
+// server ids (lowercase). Empty/absent = all servers (no restriction).
+function allowedReplayServers(req) {
+  const adminPerms = (req.rzUser && req.rzUser.perms && req.rzUser.perms.admin) || {};
+  const list = adminPerms.replayServers;
+  if (!Array.isArray(list) || list.length === 0) return null;
+  const set = new Set();
+  for (const s of list) {
+    if (typeof s === 'string' && s.trim()) set.add(s.trim().toLowerCase());
+  }
+  return set.size > 0 ? set : null;
+}
+
+function isServerAllowed(req, serverId) {
+  const allowed = allowedReplayServers(req);
+  if (!allowed) return true;
+  return allowed.has(sanitizeServerId(serverId).toLowerCase());
+}
+
+// Gate a server-scoped replay route by the caller's per-server allowlist. Reads
+// the serverId from the query (GET) or body (POST); passes through when absent
+// (non-server-scoped routes such as the catalogs or aggregate status filter
+// their own output instead).
+function requireServerAccess(req, res, next) {
+  const serverId = (req.query && typeof req.query.serverId === 'string' && req.query.serverId)
+    || (req.body && typeof req.body === 'object' && typeof req.body.serverId === 'string' && req.body.serverId)
+    || '';
+  if (!serverId) return next();
+  if (isServerAllowed(req, serverId)) return next();
+  return res.status(403).send('Forbidden (server not permitted)');
+}
+
+// Fire-and-forget audit entry for a replay admin action. Posts to the central
+// auth audit log (category 'replay'); the action string is the subcategory.
+function auditReplay(req, action, detail) {
+  postAuditEvent({
+    actorUsername: (req.rzUser && req.rzUser.username) || (req.user && req.user.sub) || null,
+    action,
+    detail: detail || null,
+    ctx: ctxFromReq(req),
+  });
+}
+
 // requireBmPerm — closure factory for the Moderation dashboard router.
 // Chained behind attachSession; returns 401 if no session, 403 if missing perm.
 // Reads from perms.moderation, falling back to perms.battlemetrics for any
@@ -1586,36 +1629,55 @@ ticketEventRelay.start();
 // bottom of this file, after their helper functions and SSH-related consts
 // are initialised. See `mountIngameBansMutes` below.
 
-app.get('/api/servers', requireAuth, requireTool('replay'), asyncRoute(async (req, res) => {
+// List all servers (id + name) on disk, no per-user filtering. Used by the
+// helper below and the internal endpoint.
+async function listAllServers() {
   const serversDir = path.join(DATA_DIR, 'servers');
   await ensureDir(serversDir);
-
   let entries = [];
   try {
     entries = await fs.readdir(serversDir, { withFileTypes: true });
   } catch {
     // ignore
   }
-
   const out = [];
   for (const e of entries) {
     if (!e.isDirectory()) continue;
     const id = e.name;
-
-    const idxPath = path.join(serversDir, id, 'index.json');
-    const idx = await readJsonOrNull(idxPath);
-
-    out.push({
-      id,
-      name: (idx && typeof idx.name === 'string' && idx.name.length > 0) ? idx.name : id,
-    });
+    const idx = await readJsonOrNull(path.join(serversDir, id, 'index.json'));
+    out.push({ id, name: (idx && typeof idx.name === 'string' && idx.name.length > 0) ? idx.name : id });
   }
-
   out.sort((a, b) => a.id.localeCompare(b.id));
-  res.json(out);
+  return out;
+}
+
+// Internal: the auth service auto-fetches the server list from here (Bearer
+// INTERNAL_AUDIT_KEY) to populate the per-server replay permission picker.
+function checkInternalBearer(req) {
+  const expected = process.env.INTERNAL_AUDIT_KEY || '';
+  if (!expected) return false;
+  const header = String(req.headers.authorization || '');
+  const prefix = 'Bearer ';
+  if (!header.startsWith(prefix)) return false;
+  const got = Buffer.from(header.slice(prefix.length));
+  const exp = Buffer.from(expected);
+  return got.length === exp.length && crypto.timingSafeEqual(got, exp);
+}
+
+app.get('/api/internal/servers', asyncRoute(async (req, res) => {
+  if (!checkInternalBearer(req)) { res.status(401).json({ error: 'unauthorized' }); return; }
+  const servers = await listAllServers();
+  res.json({ servers });
 }));
 
-app.get('/api/replay/status', requireAuth, requireTool('replay'), asyncRoute(async (req, res) => {
+app.get('/api/servers', requireAuth, requireTool('replay'), requireServerAccess, asyncRoute(async (req, res) => {
+  const out = await listAllServers();
+  const allowed = allowedReplayServers(req);
+  const filtered = allowed ? out.filter((s) => allowed.has(sanitizeServerId(s.id).toLowerCase())) : out;
+  res.json(filtered);
+}));
+
+app.get('/api/replay/status', requireAuth, requireTool('replay'), requireServerAccess, asyncRoute(async (req, res) => {
   const serverId = String(req.query.serverId || '');
   if (!serverId) {
     res.status(400).send('Missing serverId');
@@ -1654,7 +1716,7 @@ app.get('/api/replay/status', requireAuth, requireTool('replay'), asyncRoute(asy
   });
 }));
 
-app.get('/api/replay/statusAll', requireAuth, requireTool('replay'), asyncRoute(async (req, res) => {
+app.get('/api/replay/statusAll', requireAuth, requireTool('replay'), requireServerAccess, asyncRoute(async (req, res) => {
   const serversDir = path.join(DATA_DIR, 'servers');
   await ensureDir(serversDir);
 
@@ -1701,7 +1763,9 @@ app.get('/api/replay/statusAll', requireAuth, requireTool('replay'), asyncRoute(
   }
 
   out.sort((a, b) => String(a.serverId).localeCompare(String(b.serverId)));
-  res.json(out);
+  const allowedAll = allowedReplayServers(req);
+  const filteredAll = allowedAll ? out.filter((s) => allowedAll.has(sanitizeServerId(s.serverId).toLowerCase())) : out;
+  res.json(filteredAll);
 }));
 
 // ─── Map tile proxy (tacops imagery) ────────────────────────────────────────
@@ -1766,7 +1830,7 @@ async function fetchTacopsTile(map, z, x, y) {
   try { return await p; } finally { tileInflight.delete(key); }
 }
 
-app.get('/api/replay/maptile/:map/:z/:x/:y', requireAuth, requireTool('replay'), asyncRoute(async (req, res) => {
+app.get('/api/replay/maptile/:map/:z/:x/:y', requireAuth, requireTool('replay'), requireServerAccess, asyncRoute(async (req, res) => {
   const map = String(req.params.map || '').toLowerCase();
   const z = parseInt(req.params.z, 10);
   const x = parseInt(req.params.x, 10);
@@ -1805,7 +1869,7 @@ app.get('/api/replay/maptile/:map/:z/:x/:y', requireAuth, requireTool('replay'),
   }
 }));
 
-app.get('/api/replay/mapTerrain', requireAuth, requireTool('replay'), asyncRoute(async (req, res) => {
+app.get('/api/replay/mapTerrain', requireAuth, requireTool('replay'), requireServerAccess, asyncRoute(async (req, res) => {
   const serverId = String(req.query.serverId || '');
   if (!serverId) {
     res.status(400).send('Missing serverId');
@@ -1833,7 +1897,7 @@ app.get('/api/replay/mapTerrain', requireAuth, requireTool('replay'), asyncRoute
   res.json(terrain);
 }));
 
-app.get('/api/replay/mapTowns', requireAuth, requireTool('replay'), asyncRoute(async (req, res) => {
+app.get('/api/replay/mapTowns', requireAuth, requireTool('replay'), requireServerAccess, asyncRoute(async (req, res) => {
   const serverId = String(req.query.serverId || '');
   if (!serverId) {
     res.status(400).send('Missing serverId');
@@ -1858,7 +1922,7 @@ app.get('/api/replay/mapTowns', requireAuth, requireTool('replay'), asyncRoute(a
   res.json(towns);
 }));
 
-app.get('/api/replay/mapDescriptors', requireAuth, requireTool('replay'), asyncRoute(async (req, res) => {
+app.get('/api/replay/mapDescriptors', requireAuth, requireTool('replay'), requireServerAccess, asyncRoute(async (req, res) => {
   const serverId = String(req.query.serverId || '');
   if (!serverId) {
     res.status(400).send('Missing serverId');
@@ -1891,7 +1955,7 @@ app.get('/api/replay/mapDescriptors', requireAuth, requireTool('replay'), asyncR
   res.status(404).send('No descriptors cached for map');
 }));
 
-app.get('/api/replay/range', requireAuth, requireTool('replay'), asyncRoute(async (req, res) => {
+app.get('/api/replay/range', requireAuth, requireTool('replay'), requireServerAccess, asyncRoute(async (req, res) => {
   const serverId = String(req.query.serverId || '');
   if (!serverId) {
     res.status(400).send('Missing serverId');
@@ -1908,7 +1972,7 @@ app.get('/api/replay/range', requireAuth, requireTool('replay'), asyncRoute(asyn
   res.json({ serverId: safeId, minTsMs, maxTsMs });
 }));
 
-app.get('/api/replay/players', requireAuth, requireTool('replay'), asyncRoute(async (req, res) => {
+app.get('/api/replay/players', requireAuth, requireTool('replay'), requireServerAccess, asyncRoute(async (req, res) => {
   const serverId = String(req.query.serverId || '');
   if (!serverId) {
     res.status(400).send('Missing serverId');
@@ -1934,7 +1998,7 @@ app.get('/api/replay/players', requireAuth, requireTool('replay'), asyncRoute(as
   res.json(out);
 }));
 
-app.get('/api/replay/events', requireAuth, requireTool('replay'), asyncRoute(async (req, res) => {
+app.get('/api/replay/events', requireAuth, requireTool('replay'), requireServerAccess, asyncRoute(async (req, res) => {
   const serverId = String(req.query.serverId || '');
   if (!serverId) {
     res.status(400).send('Missing serverId');
@@ -1975,7 +2039,7 @@ app.get('/api/replay/events', requireAuth, requireTool('replay'), asyncRoute(asy
   res.json(items);
 }));
 
-app.get('/api/replay/vehicles', requireAuth, requireTool('replay'), asyncRoute(async (req, res) => {
+app.get('/api/replay/vehicles', requireAuth, requireTool('replay'), requireServerAccess, asyncRoute(async (req, res) => {
   const serverId = String(req.query.serverId || '');
   if (!serverId) { res.status(400).send('Missing serverId'); return; }
 
@@ -1985,7 +2049,7 @@ app.get('/api/replay/vehicles', requireAuth, requireTool('replay'), asyncRoute(a
   res.json(data || { vehicles: [], tsMs: 0, updatedAt: 0 });
 }));
 
-app.post('/api/replay/vehicleDetail', requireAuth, requireTool('replay'), asyncRoute(async (req, res) => {
+app.post('/api/replay/vehicleDetail', requireAuth, requireTool('replay'), requireServerAccess, asyncRoute(async (req, res) => {
   const { serverId, entityId } = (req.body && typeof req.body === 'object') ? req.body : {};
   if (typeof serverId !== 'string' || !serverId) { res.status(400).send('Missing serverId'); return; }
   if (typeof entityId !== 'string' || !entityId) { res.status(400).send('Missing entityId'); return; }
@@ -2012,7 +2076,7 @@ app.post('/api/replay/vehicleDetail', requireAuth, requireTool('replay'), asyncR
   res.json({ ok: true, requestId });
 }));
 
-app.get('/api/replay/vehicleDetail', requireAuth, requireTool('replay'), asyncRoute(async (req, res) => {
+app.get('/api/replay/vehicleDetail', requireAuth, requireTool('replay'), requireServerAccess, asyncRoute(async (req, res) => {
   const serverId = String(req.query.serverId || '');
   const requestId = String(req.query.requestId || '');
   if (!serverId || !requestId) { res.status(400).send('Missing serverId or requestId'); return; }
@@ -2028,7 +2092,7 @@ app.get('/api/replay/vehicleDetail', requireAuth, requireTool('replay'), asyncRo
 }));
 
 // Carryable-item catalog (sent by the exporter at startup) for the item-spawn picker.
-app.get('/api/replay/itemCatalog', requireAuth, requireTool('replay'), asyncRoute(async (req, res) => {
+app.get('/api/replay/itemCatalog', requireAuth, requireTool('replay'), requireServerAccess, asyncRoute(async (req, res) => {
   const data = await readJsonOrNull(path.join(DATA_DIR, 'itemCatalog.json'));
   res.json({
     items: (data && Array.isArray(data.items)) ? data.items : [],
@@ -2036,7 +2100,7 @@ app.get('/api/replay/itemCatalog', requireAuth, requireTool('replay'), asyncRout
   });
 }));
 
-app.get('/api/replay/spawnCatalog', requireAuth, requireTool('replay'), asyncRoute(async (req, res) => {
+app.get('/api/replay/spawnCatalog', requireAuth, requireTool('replay'), requireServerAccess, asyncRoute(async (req, res) => {
   const data = await readJsonOrNull(path.join(DATA_DIR, 'spawnCatalog.json'));
   res.json({
     items: (data && Array.isArray(data.items)) ? data.items : [],
@@ -2045,7 +2109,7 @@ app.get('/api/replay/spawnCatalog', requireAuth, requireTool('replay'), asyncRou
 }));
 
 // Queue a spawn-item command for the exporter to execute in-game (live).
-app.post('/api/replay/spawnItem', requireAuth, requireTool('replay'), asyncRoute(async (req, res) => {
+app.post('/api/replay/spawnItem', requireAuth, requireTool('replay'), requireServerAccess, asyncRoute(async (req, res) => {
   const { serverId, target, key, prefab, count } = (req.body && typeof req.body === 'object') ? req.body : {};
   if (typeof serverId !== 'string' || !serverId) { res.status(400).send('Missing serverId'); return; }
   if (typeof key !== 'string' || !key) { res.status(400).send('Missing target key'); return; }
@@ -2067,10 +2131,11 @@ app.post('/api/replay/spawnItem', requireAuth, requireTool('replay'), asyncRoute
     const nextIdx = { ...idx, id: safeId, pendingCommands: { ...prevPending, spawnItem: nextArr } };
     await writeJsonAtomic(idxPath, nextIdx);
   });
+  auditReplay(req, 'replay.item.give', { serverId: safeId, target: tgt, targetKey: key, prefab, count: n });
   res.json({ ok: true });
 }));
 
-app.post('/api/replay/teleport', requireAuth, requireTool('replay'), asyncRoute(async (req, res) => {
+app.post('/api/replay/teleport', requireAuth, requireTool('replay'), requireServerAccess, asyncRoute(async (req, res) => {
   const { serverId, playerId, pos } = (req.body && typeof req.body === 'object') ? req.body : {};
   if (typeof serverId !== 'string' || !serverId) { res.status(400).send('Missing serverId'); return; }
   const pid = (typeof playerId === 'number' && Number.isFinite(playerId)) ? Math.floor(playerId) : null;
@@ -2096,13 +2161,14 @@ app.post('/api/replay/teleport', requireAuth, requireTool('replay'), asyncRoute(
     const nextIdx = { ...idx, id: safeId, pendingCommands: { ...prevPending, teleport: nextArr } };
     await writeJsonAtomic(idxPath, nextIdx);
   });
+  auditReplay(req, 'replay.teleport', { serverId: safeId, playerId: pid, pos: { x: Math.round(x), y: Math.round(y), z: Math.round(z) } });
   res.json({ ok: true });
 }));
 
 // Generic GM command channel. Queues one entry under pendingCommands[type], which the
 // in-game exporter consumes via the ingest response. Type is whitelisted.
 const REPLAY_GM_COMMANDS = new Set(['playerAction', 'vehicleAction', 'spawnEntity', 'stripInventory', 'setTime', 'removeItem', 'message']);
-app.post('/api/replay/command', requireAuth, requireTool('replay'), asyncRoute(async (req, res) => {
+app.post('/api/replay/command', requireAuth, requireTool('replay'), requireServerAccess, asyncRoute(async (req, res) => {
   const { serverId, type, data } = (req.body && typeof req.body === 'object') ? req.body : {};
   if (typeof serverId !== 'string' || !serverId) { res.status(400).send('Missing serverId'); return; }
   if (typeof type !== 'string' || !REPLAY_GM_COMMANDS.has(type)) { res.status(400).send('Invalid command type'); return; }
@@ -2122,10 +2188,23 @@ app.post('/api/replay/command', requireAuth, requireTool('replay'), asyncRoute(a
     const nextIdx = { ...idx, id: safeId, pendingCommands: { ...prevPending, [type]: nextArr } };
     await writeJsonAtomic(idxPath, nextIdx);
   });
+
+  // Map the command to a readable audit subcategory and carry its context.
+  const sub = String((data && typeof data.action === 'string') ? data.action : '').toLowerCase();
+  let auditAction = `replay.${type.toLowerCase()}`;
+  if (type === 'playerAction') auditAction = `replay.player.${sub || 'action'}`;
+  else if (type === 'vehicleAction') auditAction = `replay.vehicle.${sub || 'action'}`;
+  else if (type === 'spawnEntity') auditAction = 'replay.entity.spawn';
+  else if (type === 'stripInventory') auditAction = 'replay.player.strip';
+  else if (type === 'removeItem') auditAction = 'replay.item.remove';
+  else if (type === 'message') auditAction = 'replay.message';
+  else if (type === 'setTime') auditAction = 'replay.settime';
+  auditReplay(req, auditAction.slice(0, 64), { serverId: safeId, ...data });
+
   res.json({ ok: true });
 }));
 
-app.post('/api/replay/gmPing', requireAuth, requireTool('replay'), asyncRoute(async (req, res) => {
+app.post('/api/replay/gmPing', requireAuth, requireTool('replay'), requireServerAccess, asyncRoute(async (req, res) => {
   const { serverId, tsMs, pos, title, reporterPlayerId } = (req.body && typeof req.body === 'object') ? req.body : {};
   if (typeof serverId !== 'string' || !serverId) {
     res.status(400).send('Missing serverId');
@@ -2202,10 +2281,11 @@ app.post('/api/replay/gmPing', requireAuth, requireTool('replay'), asyncRoute(as
     pushReplayRecent(safeId, record);
   });
 
+  auditReplay(req, 'replay.gmping', { serverId: safeId, pos: { x: Math.round(x), y: Math.round(y), z: Math.round(z) }, title: cleanTitle || undefined, reporterPlayerId: reporterId });
   res.json({ ok: true });
 }));
 
-app.post('/api/replay/exportDiscord', requireAuth, requireTool('replay'), asyncRoute(async (req, res) => {
+app.post('/api/replay/exportDiscord', requireAuth, requireTool('replay'), requireServerAccess, asyncRoute(async (req, res) => {
   const body = (req.body && typeof req.body === 'object') ? req.body : {};
   const { serverId, tsMs, title, pos, focusPlayerId, playerIds } = body;
 
@@ -2309,6 +2389,7 @@ app.post('/api/replay/exportDiscord', requireAuth, requireTool('replay'), asyncR
     return;
   }
 
+  auditReplay(req, 'replay.export_discord', { serverId: safeId, title: title.trim().slice(0, 140), tsMs, focusPlayerId: fp });
   res.json({ ok: true });
 }));
 
