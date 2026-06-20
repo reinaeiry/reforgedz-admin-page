@@ -1343,7 +1343,10 @@ export function ReplayToolPage() {
       const ORIGIN_BOUND = 30;
       const MAX_SCAN_POINTS = 25;
       const MAX_SCAN_BACK_MS = 60_000;
-      const MAX_INTERP_GAP_MS = 2500;
+      // Full-rate live data is ~10 snapshots/s; historical data is downsampled to roughly
+      // 1 per 10s. Interpolate across gaps up to that downsample interval so old-data playback
+      // glides smoothly instead of freezing for ~10s and then jumping to the next snapshot.
+      const MAX_INTERP_GAP_MS = 12_000;
       const MAX_ANCHOR_WINDOW_MS = 5000;
       const MAX_ANCHOR_POINTS = 80;
 
@@ -1709,6 +1712,27 @@ export function ReplayToolPage() {
     };
   }, [presenceSeriesById]);
 
+  const nameSeriesById = useMemo(() => {
+    // Per-player display-name changes over time (join/disconnect carry the name).
+    // Precomputed once so playback does not rescan every event on each frame.
+    const m = new Map<number, Array<{ tsMs: number; name: string }>>();
+    for (const e of events) {
+      const ep: any = e.payload;
+      if (!ep || typeof ep !== 'object') continue;
+      if (ep.type !== 'join' && ep.type !== 'disconnect') continue;
+      if (typeof ep.tsMs !== 'number') continue;
+      const ev: any = (ep as any).event;
+      const id = ev && typeof ev.playerId === 'number' ? ev.playerId : null;
+      const nm = ev && typeof ev.name === 'string' ? ev.name.trim() : '';
+      if (id === null || !nm) continue;
+      let arr = m.get(id);
+      if (!arr) { arr = []; m.set(id, arr); }
+      arr.push({ tsMs: ep.tsMs, name: nm });
+    }
+    for (const arr of m.values()) arr.sort((a, b) => a.tsMs - b.tsMs);
+    return m;
+  }, [events]);
+
   const findFirstNonOriginPosAfter = useMemo(() => {
     // Best-effort: join/login snapshots can report 0,*,0 briefly. Find the first position after `tsMs`
     // that is not within the origin XZ box.
@@ -1864,20 +1888,21 @@ export function ReplayToolPage() {
     if (typeof t !== 'number') return [];
     if (playerSeriesById.size === 0) return [];
 
-    // Build time-aware names from join/disconnect events at-or-before t,
-    // so recycled player IDs show the correct name for the session.
-    const nameById = new Map<number, string>();
-    for (const e of events) {
-      const ep: any = e.payload;
-      if (!ep || typeof ep !== 'object') continue;
-      if (ep.type !== 'join' && ep.type !== 'disconnect') continue;
-      if (typeof ep.tsMs !== 'number' || ep.tsMs > t) continue;
-      const ev: any = (ep as any).event;
-      const id = ev && typeof ev.playerId === 'number' ? ev.playerId : null;
-      const nm = ev && typeof ev.name === 'string' ? ev.name.trim() : '';
-      if (id !== null && nm) nameById.set(id, nm);
-    }
-    for (const p of knownPlayers) { if (!nameById.has(p.playerId)) nameById.set(p.playerId, p.name); }
+    // Resolve the time-aware name for a player at t via the precomputed per-player
+    // name series (latest change at-or-before t), so recycled player IDs show the
+    // correct name for the session without rescanning every event each frame.
+    const nameAt = (playerId: number): string => {
+      const arr = nameSeriesById.get(playerId);
+      if (!arr || arr.length === 0) return '';
+      let lo = 0;
+      let hi = arr.length - 1;
+      let idx = -1;
+      while (lo <= hi) {
+        const mid = (lo + hi) >> 1;
+        if (arr[mid].tsMs <= t) { idx = mid; lo = mid + 1; } else hi = mid - 1;
+      }
+      return idx >= 0 ? arr[idx].name : '';
+    };
 
     const unknownPresenceMaxAgeMs = 120_000;
 
@@ -1918,7 +1943,7 @@ export function ReplayToolPage() {
       const deadUntil = deadUntilByPlayerId.get(playerId) || 0;
       const isDead = typeof snapTsMs === 'number' ? deadUntil > snapTsMs : false;
 
-      let label = nameById.get(playerId) || String(playerId);
+      let label = nameAt(playerId) || p.name || String(playerId);
       if (showVehicleInTags && inVehicle && vehicleName) label = `${label} (${vehicleName})`;
 
       out.push({
@@ -1932,7 +1957,7 @@ export function ReplayToolPage() {
       });
     }
     return out;
-  }, [currentTsMs, deadUntilByPlayerId, events, findBestPlayerPosAt, findPlayerStateAt, isConnectedAt, knownPlayers, playerSeriesById, selectedEventHighlightsByPlayerId, showVehicleInTags, terrain]);
+  }, [currentTsMs, deadUntilByPlayerId, nameSeriesById, findBestPlayerPosAt, findPlayerStateAt, isConnectedAt, knownPlayers, playerSeriesById, selectedEventHighlightsByPlayerId, showVehicleInTags, terrain]);
 
   const focusedTrail = useMemo((): Trail | null => {
     if (!enableTrails) return null;
@@ -3059,7 +3084,7 @@ export function ReplayToolPage() {
               ) : null}
 
               {attachedPlayerId !== null && attachedPlayerName ? (
-                <div style={{ position: 'absolute', left: 12, right: 12, bottom: 132, display: 'flex', justifyContent: 'center', pointerEvents: 'none' }}>
+                <div style={{ position: 'absolute', left: 12, right: 12, bottom: 156, display: 'flex', justifyContent: 'center', pointerEvents: 'none', zIndex: 12 }}>
                   <div className="card" style={{ padding: '8px 12px', background: 'rgba(0,0,0,0.55)', border: '1px solid rgba(255,255,255,0.14)' }}>
                     <div style={{ fontWeight: 800, fontSize: 12 }}>
                       Attached to {attachedPlayerName}, press F to unattach
