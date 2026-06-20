@@ -74,6 +74,7 @@ export async function getReplayEvents(params: {
   tail?: boolean;
   types?: string;
   sampleIntervalMs?: number;
+  slim?: boolean;
 }): Promise<IngestRecord[]> {
   const qs = new URLSearchParams();
   qs.set('serverId', params.serverId);
@@ -83,6 +84,7 @@ export async function getReplayEvents(params: {
   if (params.tail) qs.set('tail', '1');
   if (params.types) qs.set('types', params.types);
   if (typeof params.sampleIntervalMs === 'number' && params.sampleIntervalMs > 0) qs.set('sampleIntervalMs', String(params.sampleIntervalMs));
+  if (params.slim) qs.set('slim', '1');
   const res = await fetch(`${requireApiBaseUrl()}/api/replay/events?${qs.toString()}`, { credentials: 'include' });
   return jsonOk<IngestRecord[]>(res, 'Failed to get replay events');
 }

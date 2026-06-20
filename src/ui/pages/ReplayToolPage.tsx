@@ -509,14 +509,16 @@ export function ReplayToolPage() {
             lastFetchedTsMsRef.current = (lastTs !== null) ? lastTs : Math.max(0, maxTsMs - 15000);
           }
 
-          // Background: pull the full downsampled history (1 snapshot / 5s, all
-          // events at full resolution) and merge it in without blocking the
-          // initial render or the "Loading…" state.
+          // Background: pull the full history as a slimmed, coarsely-downsampled
+          // track (positions only, 1 snapshot / 15s) so 24h of old events load in
+          // seconds instead of minutes. The recent window above stays full-res for
+          // smooth recent playback; sparse events (kills/joins) are unaffected.
           getReplayEvents({
             serverId: serverIdValue,
             limit: 200000,
             tail: true,
-            sampleIntervalMs: 5000,
+            sampleIntervalMs: 15000,
+            slim: true,
           })
             .then((allHistory) => {
               if (cancelled || allHistory.length === 0) return;
@@ -1372,9 +1374,9 @@ export function ReplayToolPage() {
       const MAX_SCAN_POINTS = 25;
       const MAX_SCAN_BACK_MS = 60_000;
       // Full-rate live data is ~10 snapshots/s; historical data is downsampled to roughly
-      // 1 per 10s. Interpolate across gaps up to that downsample interval so old-data playback
-      // glides smoothly instead of freezing for ~10s and then jumping to the next snapshot.
-      const MAX_INTERP_GAP_MS = 12_000;
+      // 1 per 15s. Interpolate across gaps up to that downsample interval so old-data playback
+      // glides smoothly instead of freezing and then jumping to the next snapshot.
+      const MAX_INTERP_GAP_MS = 16_000;
       const MAX_ANCHOR_WINDOW_MS = 5000;
       const MAX_ANCHOR_POINTS = 80;
 

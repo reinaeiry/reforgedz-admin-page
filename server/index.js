@@ -1171,6 +1171,43 @@ async function readNdjsonWindow(filePath, opts) {
   // Downsampling: skip snapshot records closer than sampleIntervalMs to the last emitted snapshot.
   const sampleIntervalMs = (opts && typeof opts.sampleIntervalMs === 'number' && opts.sampleIntervalMs > 0) ? opts.sampleIntervalMs : 0;
   let lastSnapshotTsMs = -Infinity;
+  // Slim mode: project heavy snapshot records down to just what the map/playback
+  // needs (positions), dropping per-player identity/orientation and per-snapshot
+  // session metadata. Snapshots dominate the payload (tens of KB each), so this
+  // cuts the historical transfer + client parse cost dramatically.
+  const slim = !!(opts && opts.slim);
+  // In slim/history mode these record types are dropped entirely: they are large
+  // and the client already loads them from their own endpoints (vehicle markers
+  // from /api/replay/vehicles, terrain/catalogs from their routes) or doesn't use
+  // them for playback (serverHealth). vehicleIndex alone is tens of MB.
+  const SLIM_DROP_TYPES = new Set(['vehicleIndex', 'serverHealth', 'itemCatalog', 'spawnCatalog']);
+
+  // Returns the slimmed record, or null to drop it. Only snapshots are projected;
+  // sparse events (join/death/kill/disconnect/...) are kept as-is for the timeline.
+  function slimRecord(obj) {
+    const p = obj && obj.payload;
+    if (!p) return null;
+    const type = typeof p.type === 'string' ? p.type : '';
+    if (SLIM_DROP_TYPES.has(type)) return null;
+    if (type !== 'snapshot') return obj;
+    const players = Array.isArray(p.players) ? p.players : [];
+    const slimPlayers = new Array(players.length);
+    for (let i = 0; i < players.length; i++) {
+      const pl = players[i] || {};
+      slimPlayers[i] = {
+        playerId: pl.playerId,
+        name: pl.name,
+        entityId: pl.entityId,
+        pos: pl.pos,
+        aimDir: pl.aimDir,
+        inVehicle: pl.inVehicle,
+      };
+    }
+    return {
+      receivedAt: obj.receivedAt,
+      payload: { type: 'snapshot', tsMs: p.tsMs, players: slimPlayers },
+    };
+  }
 
   const out = [];
 
@@ -1242,7 +1279,13 @@ async function readNdjsonWindow(filePath, opts) {
           lastSnapshotTsMs = tsMs;
         }
 
-        out.push(obj);
+        if (slim) {
+          const s = slimRecord(obj);
+          if (!s) continue;
+          out.push(s);
+        } else {
+          out.push(obj);
+        }
         if (out.length >= limit) break;
       }
 
@@ -1281,11 +1324,16 @@ async function readNdjsonWindow(filePath, opts) {
         lastSnapshotTsMs = tsMs;
       }
 
+      let rec = obj;
+      if (slim) {
+        rec = slimRecord(obj);
+        if (!rec) continue;
+      }
       if (count < limit) {
-        ring[count] = obj;
+        ring[count] = rec;
         count++;
       } else {
-        ring[start] = obj;
+        ring[start] = rec;
         start = (start + 1) % limit;
       }
     }
@@ -2032,6 +2080,7 @@ app.get('/api/replay/events', requireAuth, requireTool('replay'), requireServerA
     : null;
 
   const sampleIntervalMs = req.query.sampleIntervalMs ? Number(req.query.sampleIntervalMs) : 0;
+  const slim = String(req.query.slim || '') === '1' || String(req.query.slim || '') === 'true';
 
   const opts = {
     sinceTsMs: (sinceTsMs !== null && Number.isFinite(sinceTsMs)) ? sinceTsMs : null,
@@ -2040,6 +2089,7 @@ app.get('/api/replay/events', requireAuth, requireTool('replay'), requireServerA
     tail,
     types,
     sampleIntervalMs: (Number.isFinite(sampleIntervalMs) && sampleIntervalMs > 0) ? sampleIntervalMs : 0,
+    slim,
   };
 
   // Fast path: skip cache when downsampling or type-filtering.
