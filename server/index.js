@@ -2062,6 +2062,81 @@ app.get('/api/replay/players', requireAuth, requireTool('replay'), requireServer
   res.json(out);
 }));
 
+// ─── Incremental slim-history cache ────────────────────────────────────────
+// The full slim-history scan reads the entire events.ndjson, which can be
+// multiple GB and take several seconds. Cache the slim records per server and,
+// on later requests, scan only the bytes appended since the last scan, so repeat
+// loads are near-instant. If the file shrinks (compaction) the cache rebuilds.
+const SLIM_HISTORY_DROP_TYPES = new Set(['vehicleIndex', 'serverHealth', 'itemCatalog', 'spawnCatalog']);
+const slimHistoryCache = new Map(); // safeId -> { intervalMs, size, records, lastSnapshotTsMs }
+
+async function scanSlimSlice(filePath, startByte, sampleIntervalMs, lastSnapshotTsMs) {
+  const records = [];
+  let lastSnap = lastSnapshotTsMs;
+  const stream = createReadStream(filePath, { encoding: 'utf8', start: startByte });
+  const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
+  try {
+    for await (const line of rl) {
+      if (!line) continue;
+      // Cheap pre-skip: drop downsampled snapshots without JSON.parse.
+      if (line.indexOf('"type":"snapshot"') !== -1) {
+        const ti = line.indexOf('"tsMs":');
+        if (ti !== -1) {
+          const ts = parseInt(line.slice(ti + 7), 10);
+          if (Number.isFinite(ts) && ts - lastSnap < sampleIntervalMs) continue;
+        }
+      }
+      let obj;
+      try { obj = JSON.parse(line); } catch { continue; }
+      const p = obj && obj.payload;
+      if (!p) continue;
+      const type = typeof p.type === 'string' ? p.type : '';
+      if (SLIM_HISTORY_DROP_TYPES.has(type)) continue;
+      if (type === 'snapshot') {
+        const tsMs = typeof p.tsMs === 'number' ? p.tsMs : null;
+        if (tsMs === null) continue;
+        if (tsMs - lastSnap < sampleIntervalMs) continue;
+        lastSnap = tsMs;
+        const players = Array.isArray(p.players) ? p.players : [];
+        const sp = new Array(players.length);
+        for (let i = 0; i < players.length; i++) {
+          const pl = players[i] || {};
+          sp[i] = { playerId: pl.playerId, name: pl.name, entityId: pl.entityId, pos: pl.pos, aimDir: pl.aimDir, inVehicle: pl.inVehicle };
+        }
+        records.push({ receivedAt: obj.receivedAt, payload: { type: 'snapshot', tsMs, players: sp } });
+      } else {
+        records.push(obj);
+      }
+    }
+  } finally {
+    try { rl.close(); } catch { /* ignore */ }
+    try { stream.destroy(); } catch { /* ignore */ }
+  }
+  return { records, lastSnapshotTsMs: lastSnap };
+}
+
+async function getSlimHistory(safeId, filePath, sampleIntervalMs, limit) {
+  let stat;
+  try { stat = await fs.stat(filePath); } catch { return []; }
+  if (!stat || stat.size <= 0) return [];
+
+  let c = slimHistoryCache.get(safeId);
+  if (c && c.intervalMs === sampleIntervalMs && stat.size >= c.size) {
+    if (stat.size > c.size) {
+      const slice = await scanSlimSlice(filePath, c.size, sampleIntervalMs, c.lastSnapshotTsMs);
+      if (slice.records.length) c.records = c.records.concat(slice.records);
+      c.lastSnapshotTsMs = slice.lastSnapshotTsMs;
+      c.size = stat.size;
+    }
+  } else {
+    const full = await scanSlimSlice(filePath, 0, sampleIntervalMs, -Infinity);
+    c = { intervalMs: sampleIntervalMs, size: stat.size, records: full.records, lastSnapshotTsMs: full.lastSnapshotTsMs };
+    slimHistoryCache.set(safeId, c);
+  }
+
+  return c.records.length > limit ? c.records.slice(c.records.length - limit) : c.records;
+}
+
 app.get('/api/replay/events', requireAuth, requireTool('replay'), requireServerAccess, asyncRoute(async (req, res) => {
   const serverId = String(req.query.serverId || '');
   if (!serverId) {
@@ -2090,6 +2165,15 @@ app.get('/api/replay/events', requireAuth, requireTool('replay'), requireServerA
     sampleIntervalMs: (Number.isFinite(sampleIntervalMs) && sampleIntervalMs > 0) ? sampleIntervalMs : 0,
     slim,
   };
+
+  // Slim full-history (the playback bootstrap): served from an incremental cache
+  // so repeat loads don't re-scan the whole (multi-GB) event log.
+  if (slim && opts.sampleIntervalMs > 0 && tail && opts.sinceTsMs === null && opts.untilTsMs === null && !types) {
+    const histPath = path.join(DATA_DIR, 'servers', safeId, 'events.ndjson');
+    const records = await getSlimHistory(safeId, histPath, opts.sampleIntervalMs, opts.limit);
+    res.json(records);
+    return;
+  }
 
   // Fast path: skip cache when downsampling or type-filtering.
   if (!types && !sampleIntervalMs) {
@@ -4326,6 +4410,25 @@ const server = app.listen(PORT, () => {
     // Periodic name resolution so newly-spotted admins get filled in without user action.
     setInterval(() => maybeAutoBackfill(), 30 * 60 * 1000);
   }
+
+  // Pre-warm the slim playback-history cache (one server at a time, gently) so the
+  // first old-event load is instant instead of scanning multi-GB logs on demand.
+  setTimeout(async () => {
+    try {
+      const dirs = await fs.readdir(path.join(DATA_DIR, 'servers'), { withFileTypes: true });
+      for (const d of dirs) {
+        if (!d.isDirectory()) continue;
+        const safeId = sanitizeServerId(d.name);
+        const histPath = path.join(DATA_DIR, 'servers', safeId, 'events.ndjson');
+        try {
+          const t0 = Date.now();
+          const recs = await getSlimHistory(safeId, histPath, 15000, 200000);
+          console.log(`[slimHistory] warmed ${safeId}: ${recs.length} records in ${Date.now() - t0}ms`);
+        } catch { /* ignore one server */ }
+        await sleep(2000);
+      }
+    } catch { /* ignore */ }
+  }, 8000);
 });
 
 server.on('error', (err) => {
