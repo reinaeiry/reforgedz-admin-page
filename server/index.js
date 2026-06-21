@@ -1572,7 +1572,7 @@ await loadDynamicIngestKeys();
 
 // Replay events are stored as NDJSON on disk. Reading a time window by scanning the file
 // can get expensive as the file grows. Keep a small in-memory tail for fast live polling.
-const REPLAY_RECENT_CACHE_MAX = Math.max(50, Math.min(5000, Number(process.env.REPLAY_RECENT_CACHE_MAX || 500)));
+const REPLAY_RECENT_CACHE_MAX = Math.max(50, Math.min(20000, Number(process.env.REPLAY_RECENT_CACHE_MAX || 4000)));
 
 /** @type {Map<string, { items: any[], minTsMs: number|null, maxTsMs: number|null }>} */
 const replayRecentByServer = new Map();
@@ -1652,6 +1652,47 @@ function tryReadReplayEventsFromCache(safeId, opts) {
 
   if (filtered.length <= limit) return filtered;
   return filtered.slice(0, limit);
+}
+
+// Warm the in-memory recent cache from the end of the event log so live loads are
+// instant right after a restart (instead of scanning the whole multi-GB file for
+// the recent window). Reads only the file tail.
+async function warmRecentCacheFromTail(safeId, filePath) {
+  let st;
+  try { st = await fs.stat(filePath); } catch { return; }
+  if (!st || st.size <= 0) return;
+  const TAIL_BYTES = 128 << 20; // 128MB tail is plenty for thousands of recent records
+  const start = Math.max(0, st.size - TAIL_BYTES);
+  const recs = [];
+  const stream = createReadStream(filePath, { encoding: 'utf8', start });
+  const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
+  let skipFirst = start > 0;
+  try {
+    for await (const line of rl) {
+      if (skipFirst) { skipFirst = false; continue; }
+      if (!line) continue;
+      let o;
+      try { o = JSON.parse(line); } catch { continue; }
+      if (o && o.payload) recs.push(o);
+    }
+  } finally {
+    try { rl.close(); } catch { /* ignore */ }
+    try { stream.destroy(); } catch { /* ignore */ }
+  }
+  const tail = recs.length > REPLAY_RECENT_CACHE_MAX ? recs.slice(recs.length - REPLAY_RECENT_CACHE_MAX) : recs;
+  if (tail.length === 0) return;
+  // Only seed if ingest hasn't already filled the cache for this server.
+  const existing = replayRecentByServer.get(safeId);
+  if (existing && Array.isArray(existing.items) && existing.items.length >= tail.length) return;
+  let minTsMs = null;
+  let maxTsMs = null;
+  for (const r of tail) {
+    const t = getPayloadTsMs(r);
+    if (typeof t !== 'number') continue;
+    if (minTsMs === null || t < minTsMs) minTsMs = t;
+    if (maxTsMs === null || t > maxTsMs) maxTsMs = t;
+  }
+  replayRecentByServer.set(safeId, { items: tail, minTsMs, maxTsMs });
 }
 
 app.get('/api/health', (req, res) => {
@@ -2068,6 +2109,10 @@ app.get('/api/replay/players', requireAuth, requireTool('replay'), requireServer
 // on later requests, scan only the bytes appended since the last scan, so repeat
 // loads are near-instant. If the file shrinks (compaction) the cache rebuilds.
 const SLIM_HISTORY_DROP_TYPES = new Set(['vehicleIndex', 'serverHealth', 'itemCatalog', 'spawnCatalog']);
+// Sampling interval for the cached 24h overview. Kept coarse so the overview stays
+// light (live re-derives over it every poll); fine detail comes from on-demand
+// full-resolution window reads when paused/scrubbing.
+const SLIM_HISTORY_INTERVAL_MS = 15000;
 const slimHistoryCache = new Map(); // safeId -> { intervalMs, size, records, lastSnapshotTsMs }
 
 async function scanSlimSlice(filePath, startByte, sampleIntervalMs, lastSnapshotTsMs) {
@@ -4411,24 +4456,27 @@ const server = app.listen(PORT, () => {
     setInterval(() => maybeAutoBackfill(), 30 * 60 * 1000);
   }
 
-  // Pre-warm the slim playback-history cache (one server at a time, gently) so the
-  // first old-event load is instant instead of scanning multi-GB logs on demand.
+  // Warm only the lightweight recent cache (file tail) on boot so live loads
+  // immediately for every server. The heavy 24h overview is NOT scanned on boot
+  // (that saturated disk I/O and slowed live); it warms lazily on first request
+  // and is cached/incremental thereafter.
   setTimeout(async () => {
     try {
-      const dirs = await fs.readdir(path.join(DATA_DIR, 'servers'), { withFileTypes: true });
+      const dirs = (await fs.readdir(path.join(DATA_DIR, 'servers'), { withFileTypes: true }))
+        .filter((d) => d.isDirectory());
       for (const d of dirs) {
-        if (!d.isDirectory()) continue;
         const safeId = sanitizeServerId(d.name);
         const histPath = path.join(DATA_DIR, 'servers', safeId, 'events.ndjson');
         try {
           const t0 = Date.now();
-          const recs = await getSlimHistory(safeId, histPath, 15000, 200000);
-          console.log(`[slimHistory] warmed ${safeId}: ${recs.length} records in ${Date.now() - t0}ms`);
+          await warmRecentCacheFromTail(safeId, histPath);
+          const e = replayRecentByServer.get(safeId);
+          console.log(`[recentCache] warmed ${safeId}: ${e ? e.items.length : 0} records in ${Date.now() - t0}ms`);
         } catch { /* ignore one server */ }
-        await sleep(2000);
+        await sleep(500);
       }
     } catch { /* ignore */ }
-  }, 8000);
+  }, 4000);
 });
 
 server.on('error', (err) => {

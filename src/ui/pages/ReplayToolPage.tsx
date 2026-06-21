@@ -509,15 +509,15 @@ export function ReplayToolPage() {
             lastFetchedTsMsRef.current = (lastTs !== null) ? lastTs : Math.max(0, maxTsMs - 15000);
           }
 
-          // Background: pull the full history as a slimmed, coarsely-downsampled
-          // track (positions only, 1 snapshot / 15s) so 24h of old events load in
-          // seconds instead of minutes. The recent window above stays full-res for
-          // smooth recent playback; sparse events (kills/joins) are unaffected.
+          // Background: pull the full history as a slimmed, downsampled track
+          // (positions only, 1 snapshot / 5s) so 24h of old events load fast from
+          // the server cache while staying smooth enough that movement doesn't jump.
+          // The recent window above stays full-res; sparse events are unaffected.
           getReplayEvents({
             serverId: serverIdValue,
             limit: 200000,
             tail: true,
-            sampleIntervalMs: 15000,
+            sampleIntervalMs: 5000,
             slim: true,
           })
             .then((allHistory) => {
@@ -1447,10 +1447,10 @@ export function ReplayToolPage() {
       const ORIGIN_BOUND = 30;
       const MAX_SCAN_POINTS = 25;
       const MAX_SCAN_BACK_MS = 60_000;
-      // Full-rate live data is ~10 snapshots/s; historical data is downsampled to roughly
-      // 1 per 15s. Interpolate across gaps up to that downsample interval so old-data playback
-      // glides smoothly instead of freezing and then jumping to the next snapshot.
-      const MAX_INTERP_GAP_MS = 16_000;
+      // Historical data is downsampled to ~1 snapshot / 5s. Interpolate across gaps up
+      // to a bit beyond that so old-data movement glides instead of jumping, while real
+      // dropouts (longer gaps) still break rather than drawing a false straight line.
+      const MAX_INTERP_GAP_MS = 7_000;
       const MAX_ANCHOR_WINDOW_MS = 5000;
       const MAX_ANCHOR_POINTS = 80;
 
