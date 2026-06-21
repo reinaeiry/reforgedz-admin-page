@@ -2120,8 +2120,12 @@ async function scanSlimSlice(filePath, startByte, sampleIntervalMs, lastSnapshot
   let lastSnap = lastSnapshotTsMs;
   const stream = createReadStream(filePath, { encoding: 'utf8', start: startByte });
   const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
+  let scanned = 0;
   try {
     for await (const line of rl) {
+      // Yield to the event loop periodically so a multi-GB scan never stalls live
+      // polling for other requests.
+      if ((++scanned & 0x1fff) === 0) await new Promise((r) => setImmediate(r));
       if (!line) continue;
       // Cheap pre-skip: drop downsampled snapshots without JSON.parse.
       if (line.indexOf('"type":"snapshot"') !== -1) {
@@ -4456,14 +4460,16 @@ const server = app.listen(PORT, () => {
     setInterval(() => maybeAutoBackfill(), 30 * 60 * 1000);
   }
 
-  // Warm only the lightweight recent cache (file tail) on boot so live loads
-  // immediately for every server. The heavy 24h overview is NOT scanned on boot
-  // (that saturated disk I/O and slowed live); it warms lazily on first request
-  // and is cached/incremental thereafter.
+  // Warm caches on boot so the replay tool is instant on demand. The recent cache
+  // (file tail) makes live load immediately; the slim 24h overview makes the full
+  // load instant. Both run in the background and the slim scan yields to the event
+  // loop (see scanSlimSlice), so warming never stalls live polling.
   setTimeout(async () => {
     try {
       const dirs = (await fs.readdir(path.join(DATA_DIR, 'servers'), { withFileTypes: true }))
         .filter((d) => d.isDirectory());
+
+      // Fast pass: live for every server right away.
       for (const d of dirs) {
         const safeId = sanitizeServerId(d.name);
         const histPath = path.join(DATA_DIR, 'servers', safeId, 'events.ndjson');
@@ -4473,7 +4479,19 @@ const server = app.listen(PORT, () => {
           const e = replayRecentByServer.get(safeId);
           console.log(`[recentCache] warmed ${safeId}: ${e ? e.items.length : 0} records in ${Date.now() - t0}ms`);
         } catch { /* ignore one server */ }
-        await sleep(500);
+        await sleep(300);
+      }
+
+      // Slow pass: the 24h overview (cooperative scan, gentle gaps).
+      for (const d of dirs) {
+        const safeId = sanitizeServerId(d.name);
+        const histPath = path.join(DATA_DIR, 'servers', safeId, 'events.ndjson');
+        try {
+          const t0 = Date.now();
+          const recs = await getSlimHistory(safeId, histPath, SLIM_HISTORY_INTERVAL_MS, 200000);
+          console.log(`[slimHistory] warmed ${safeId}: ${recs.length} records in ${Date.now() - t0}ms`);
+        } catch { /* ignore one server */ }
+        await sleep(3000);
       }
     } catch { /* ignore */ }
   }, 4000);

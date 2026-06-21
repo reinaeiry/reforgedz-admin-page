@@ -302,6 +302,8 @@ export function ReplayToolPage() {
   const [isPlaying, setIsPlaying] = useState(false);
   const [playbackSpeed, setPlaybackSpeed] = useState(1);
   const currentTsMsRef = useRef<number | null>(null);
+  // Which server's 24h overview has been merged in (loaded lazily when paused).
+  const slimHistoryLoadedRef = useRef<string | null>(null);
 
   const [nameTagsEnabled, setNameTagsEnabled] = useState(true);
   const [nameTagScale, setNameTagScale] = useState(1.0);
@@ -509,36 +511,10 @@ export function ReplayToolPage() {
             lastFetchedTsMsRef.current = (lastTs !== null) ? lastTs : Math.max(0, maxTsMs - 15000);
           }
 
-          // Background: pull the full history as a slimmed, downsampled track
-          // (positions only, 1 snapshot / 5s) so 24h of old events load fast from
-          // the server cache while staying smooth enough that movement doesn't jump.
-          // The recent window above stays full-res; sparse events are unaffected.
-          getReplayEvents({
-            serverId: serverIdValue,
-            limit: 200000,
-            tail: true,
-            sampleIntervalMs: 5000,
-            slim: true,
-          })
-            .then((allHistory) => {
-              if (cancelled || allHistory.length === 0) return;
-              setEvents((prev) => {
-                const seen = new Set<string>();
-                for (const e of prev) seen.add(getRecordKey(e));
-                const merged = prev.slice();
-                for (const e of allHistory) {
-                  const k = getRecordKey(e);
-                  if (seen.has(k)) continue;
-                  seen.add(k);
-                  merged.push(e);
-                }
-                merged.sort((a, b) => (getRecordTsMs(a) ?? 0) - (getRecordTsMs(b) ?? 0));
-                return trimEventsToCap(merged, 250000, currentTsMsRef.current);
-              });
-            })
-            .catch(() => {
-              // ignore — the recent window is already shown and live polling continues
-            });
+          // NOTE: the full 24h overview is NOT loaded here. While live we keep `events`
+          // small (recent only) so each poll's re-derivation is cheap and live updates
+          // at the snapshot rate. The overview loads on demand when the user pauses to
+          // scrub (see the historyLoad effect below).
         }
 
         // Avoid showing a burst of historical popups on initial load.
@@ -566,6 +542,42 @@ export function ReplayToolPage() {
       cancelled = true;
     };
   }, [serverId]);
+
+  // Load the coarse 24h overview only once the user leaves live (i.e. wants to scrub
+  // back). Loading it during live would bloat `events` and slow live updates; here it
+  // is fetched from the server's warm cache (fast) and merged in for scrubbing.
+  useEffect(() => {
+    if (!serverId) return;
+    if (live) {
+      // Returning to live sheds the overview from `events` (live cap), so allow it
+      // to reload on the next pause.
+      slimHistoryLoadedRef.current = null;
+      return;
+    }
+    if (slimHistoryLoadedRef.current === serverId) return;
+    slimHistoryLoadedRef.current = serverId;
+    const serverIdValue = serverId;
+    let cancelled = false;
+    getReplayEvents({ serverId: serverIdValue, limit: 200000, tail: true, sampleIntervalMs: 15000, slim: true })
+      .then((allHistory) => {
+        if (cancelled || allHistory.length === 0) return;
+        setEvents((prev) => {
+          const seen = new Set<string>();
+          for (const e of prev) seen.add(getRecordKey(e));
+          const merged = prev.slice();
+          for (const e of allHistory) {
+            const k = getRecordKey(e);
+            if (seen.has(k)) continue;
+            seen.add(k);
+            merged.push(e);
+          }
+          merged.sort((a, b) => (getRecordTsMs(a) ?? 0) - (getRecordTsMs(b) ?? 0));
+          return trimEventsToCap(merged, 250000, currentTsMsRef.current);
+        });
+      })
+      .catch(() => { /* ignore */ });
+    return () => { cancelled = true; };
+  }, [live, serverId]);
 
   useEffect(() => {
     if (!serverId) return;
@@ -745,10 +757,8 @@ export function ReplayToolPage() {
         }
 
         setRange({ minTsMs: r.minTsMs, maxTsMs: r.maxTsMs });
-
-        if (live && typeof r.maxTsMs === 'number') {
-          setCurrentTsMs(r.maxTsMs);
-        }
+        // currentTsMs is advanced by the event poll (to the freshest fetched snapshot)
+        // so it never runs ahead of loaded data; the range poll only tracks bounds.
       } catch {
         // ignore; range is optional
       }
@@ -834,11 +844,23 @@ export function ReplayToolPage() {
               next.push(e);
             }
 
-            return trimEventsToCap(next, 250000, currentTsMsRef.current);
+            // While live, keep `events` small so each poll's re-derivation stays cheap
+            // and updates land at the snapshot rate; this also sheds any 24h overview
+            // that was merged during a pause once the user returns to live.
+            const cap = live ? 12000 : 250000;
+            return trimEventsToCap(next, cap, currentTsMsRef.current);
           });
         }
 
         if (typeof lastTs === 'number') lastFetchedTsMsRef.current = lastTs;
+
+        // In live, advance the playhead to the freshest snapshot we just fetched so
+        // markers track at the snapshot rate instead of stepping on the slower range
+        // poll. `events` is kept small while live, so this stays cheap.
+        if (live && typeof lastTs === 'number' && !cancelled) {
+          currentTsMsRef.current = lastTs;
+          setCurrentTsMs(lastTs);
+        }
       } catch (err) {
         if (!cancelled) {
           const message = err instanceof Error ? err.message : 'Failed to fetch replay events';
@@ -847,7 +869,7 @@ export function ReplayToolPage() {
       }
 
       if (!cancelled) {
-        timer = window.setTimeout(fetchEvents, live ? 1000 : 1500);
+        timer = window.setTimeout(fetchEvents, live ? 500 : 1500);
       }
     }
 
@@ -1447,10 +1469,10 @@ export function ReplayToolPage() {
       const ORIGIN_BOUND = 30;
       const MAX_SCAN_POINTS = 25;
       const MAX_SCAN_BACK_MS = 60_000;
-      // Historical data is downsampled to ~1 snapshot / 5s. Interpolate across gaps up
-      // to a bit beyond that so old-data movement glides instead of jumping, while real
+      // The 24h overview is ~1 snapshot / 15s; interpolate across gaps up to a bit
+      // beyond that so old-data movement glides instead of stepping, while real
       // dropouts (longer gaps) still break rather than drawing a false straight line.
-      const MAX_INTERP_GAP_MS = 7_000;
+      const MAX_INTERP_GAP_MS = 17_000;
       const MAX_ANCHOR_WINDOW_MS = 5000;
       const MAX_ANCHOR_POINTS = 80;
 
