@@ -803,10 +803,11 @@ export function ReplayToolPage() {
         let lastTs: number | null = (typeof lastFetchedTsMsRef.current === 'number') ? lastFetchedTsMsRef.current : null;
 
         for (let i = 0; i < MAX_BATCHES; i++) {
+          // Don't cap at maxTsMs (which only refreshes on the slow range poll) — fetch
+          // everything since the cursor so live tracks the freshest ingested snapshot.
           const batch = await getReplayEvents({
             serverId: serverIdValue,
             sinceTsMs: cursorSince,
-            untilTsMs: maxTsMs,
             limit: LIMIT,
           });
 
@@ -822,7 +823,6 @@ export function ReplayToolPage() {
 
           // No more data, or we can't advance a cursor.
           if (batch.length < LIMIT || batchMaxTs === null) break;
-          if (batchMaxTs >= maxTsMs) break;
 
           cursorSince = batchMaxTs + 1;
         }
