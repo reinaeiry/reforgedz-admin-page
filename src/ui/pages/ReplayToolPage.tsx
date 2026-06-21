@@ -302,10 +302,6 @@ export function ReplayToolPage() {
   const [isPlaying, setIsPlaying] = useState(false);
   const [playbackSpeed, setPlaybackSpeed] = useState(1);
   const currentTsMsRef = useRef<number | null>(null);
-  // Live-edge tracking so live playback can advance smoothly between polls
-  // instead of stepping each time a poll lands.
-  const liveMaxTsMsRef = useRef<number | null>(null);
-  const liveMaxAtRef = useRef<number>(0);
 
   const [nameTagsEnabled, setNameTagsEnabled] = useState(true);
   const [nameTagScale, setNameTagScale] = useState(1.0);
@@ -666,39 +662,6 @@ export function ReplayToolPage() {
     return () => window.cancelAnimationFrame(raf);
   }, [isPlaying, live, playbackSpeed, range.maxTsMs, serverId]);
 
-  // Live smoothing: advance currentTsMs continuously toward the live edge so the
-  // clock and markers flow instead of freezing between polls and jumping. Renders
-  // a short buffer behind the newest data so there is always something to show.
-  useEffect(() => {
-    if (!serverId) return;
-    if (!live) return;
-
-    const BUFFER_MS = 2500;
-    // Never extrapolate past the last known live edge, so currentTsMs stays within
-    // loaded data and the scrubber doesn't overshoot when ingest briefly stalls.
-    const MAX_EXTRAP_MS = BUFFER_MS;
-    let raf = 0;
-
-    function tick() {
-      const baseMax = liveMaxTsMsRef.current;
-      if (typeof baseMax === 'number') {
-        // Extrapolate the live edge from the last poll (bounded so we never run far
-        // past real data if ingest stalls), then sit BUFFER_MS behind it.
-        const sinceUpdate = Math.min(Math.max(0, performance.now() - liveMaxAtRef.current), MAX_EXTRAP_MS);
-        const next = baseMax + sinceUpdate - BUFFER_MS;
-        const prev = currentTsMsRef.current;
-        if (typeof prev !== 'number' || next > prev) {
-          currentTsMsRef.current = next;
-          setCurrentTsMs(next);
-        }
-      }
-      raf = window.requestAnimationFrame(tick);
-    }
-
-    raf = window.requestAnimationFrame(tick);
-    return () => window.cancelAnimationFrame(raf);
-  }, [live, serverId]);
-
   // Keep player list fresh in live mode (new joins won't show up otherwise).
   useEffect(() => {
     if (!serverId) return;
@@ -784,10 +747,7 @@ export function ReplayToolPage() {
         setRange({ minTsMs: r.minTsMs, maxTsMs: r.maxTsMs });
 
         if (live && typeof r.maxTsMs === 'number') {
-          // Record the live edge; the smoothing loop advances currentTsMs from here
-          // continuously rather than jumping once per poll.
-          liveMaxTsMsRef.current = r.maxTsMs;
-          liveMaxAtRef.current = performance.now();
+          setCurrentTsMs(r.maxTsMs);
         }
       } catch {
         // ignore; range is optional
@@ -887,9 +847,7 @@ export function ReplayToolPage() {
       }
 
       if (!cancelled) {
-        // Each merge re-derives the history memos, so don't do it every second in
-        // live — the smoothing loop keeps motion continuous between merges.
-        timer = window.setTimeout(fetchEvents, live ? 2000 : 1500);
+        timer = window.setTimeout(fetchEvents, live ? 1000 : 1500);
       }
     }
 
