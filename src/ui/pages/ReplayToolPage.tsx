@@ -304,6 +304,9 @@ export function ReplayToolPage() {
   const currentTsMsRef = useRef<number | null>(null);
   // Which server's 24h overview has been merged in (loaded lazily when paused).
   const slimHistoryLoadedRef = useRef<string | null>(null);
+  // The full-resolution window currently loaded around the scrub point (for buttery
+  // playback + inventories), so we only refetch when scrubbing out of it.
+  const fullResWindowRef = useRef<{ serverId: string; min: number; max: number } | null>(null);
 
   const [nameTagsEnabled, setNameTagsEnabled] = useState(true);
   const [nameTagScale, setNameTagScale] = useState(1.0);
@@ -578,6 +581,42 @@ export function ReplayToolPage() {
       .catch(() => { /* ignore */ });
     return () => { cancelled = true; };
   }, [live, serverId]);
+
+  // On-demand full-resolution window around the scrub point (paused only). Replaces
+  // the coarse overview in that span with every snapshot, so playback is as smooth as
+  // live and the selected player's inventory/weapon is available. Served by a fast
+  // byte-range read, debounced, and only refetched when scrubbing out of the window.
+  useEffect(() => {
+    if (!serverId || live) return;
+    if (typeof currentTsMs !== 'number') return;
+    const cur = currentTsMs;
+    const loaded = fullResWindowRef.current;
+    if (loaded && loaded.serverId === serverId && cur >= loaded.min + 45_000 && cur <= loaded.max - 20_000) return;
+
+    const serverIdValue = serverId;
+    const since = Math.max(0, cur - 180_000); // 3 min back
+    const until = cur + 60_000;               // 1 min forward
+    let cancelled = false;
+    const t = window.setTimeout(() => {
+      getReplayEvents({ serverId: serverIdValue, sinceTsMs: since, untilTsMs: until, limit: 20000 })
+        .then((windowItems) => {
+          if (cancelled || windowItems.length === 0) return;
+          fullResWindowRef.current = { serverId: serverIdValue, min: since, max: until };
+          setEvents((prev) => {
+            // Drop existing records inside the window and replace them with full-res.
+            const filtered = prev.filter((e) => {
+              const ts = getRecordTsMs(e);
+              return ts === null || ts < since || ts > until;
+            });
+            const merged = filtered.concat(windowItems);
+            merged.sort((a, b) => (getRecordTsMs(a) ?? 0) - (getRecordTsMs(b) ?? 0));
+            return trimEventsToCap(merged, 250000, currentTsMsRef.current);
+          });
+        })
+        .catch(() => { /* ignore */ });
+    }, 180);
+    return () => { cancelled = true; window.clearTimeout(t); };
+  }, [live, serverId, currentTsMs]);
 
   useEffect(() => {
     if (!serverId) return;

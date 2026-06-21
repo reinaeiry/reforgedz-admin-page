@@ -2186,6 +2186,87 @@ async function getSlimHistory(safeId, filePath, sampleIntervalMs, limit) {
   return c.records.length > limit ? c.records.slice(c.records.length - limit) : c.records;
 }
 
+// Fast windowed read for the large, time-ordered (monotonic tsMs) append-only log:
+// binary-search the byte offset of sinceTsMs, then stream forward collecting the
+// window. The [since,until] filter guarantees correctness regardless of where the
+// search lands; the search just keeps it fast. Mid-based search cannot infinite-loop.
+async function readNdjsonByteWindow(filePath, sinceTsMs, untilTsMs, limit, types) {
+  let fh;
+  try { fh = await fs.open(filePath, 'r'); } catch { return []; }
+  try {
+    const st = await fh.stat();
+    const size = st.size;
+    if (!size) return [];
+    const CHUNK = 1 << 18; // 256KB > any single line
+    const tmp = Buffer.allocUnsafe(CHUNK);
+
+    // tsMs of the first complete line at/after byte `off`, or null.
+    async function tsAtOffset(off) {
+      let lineStart = off;
+      if (off > 0) {
+        const r = await fh.read(tmp, 0, CHUNK, off);
+        if (!r.bytesRead) return null;
+        const nl = tmp.indexOf(0x0a, 0);
+        if (nl === -1) return null;
+        lineStart = off + nl + 1;
+      }
+      if (lineStart >= size) return null;
+      const r = await fh.read(tmp, 0, CHUNK, lineStart);
+      if (!r.bytesRead) return null;
+      let nl = tmp.indexOf(0x0a, 0);
+      if (nl === -1) nl = r.bytesRead;
+      try {
+        const o = JSON.parse(tmp.toString('utf8', 0, nl));
+        return o && o.payload && typeof o.payload.tsMs === 'number' ? o.payload.tsMs : null;
+      } catch { return null; }
+    }
+
+    let lo = 0;
+    if (typeof sinceTsMs === 'number') {
+      let hi = size;
+      while (lo < hi) {
+        // Math.floor, not >>1: byte offsets exceed 2^31 in multi-GB files and the
+        // 32-bit bitwise shift would overflow.
+        const mid = Math.floor((lo + hi) / 2);
+        const ts = await tsAtOffset(mid);
+        if (ts === null) { hi = mid; continue; }
+        if (ts < sinceTsMs) lo = mid + 1; else hi = mid;
+      }
+    }
+    const startByte = Math.max(0, lo - (4 << 20)); // 4MB margin back for safety
+
+    const out = [];
+    const stream = createReadStream(filePath, { encoding: 'utf8', start: startByte });
+    const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
+    let skipFirst = startByte > 0;
+    const SLACK = 60000;
+    try {
+      for await (const line of rl) {
+        if (skipFirst) { skipFirst = false; continue; }
+        if (!line) continue;
+        let o; try { o = JSON.parse(line); } catch { continue; }
+        const p = o && o.payload;
+        const ts = p && typeof p.tsMs === 'number' ? p.tsMs : null;
+        if (ts === null) continue;
+        if (typeof sinceTsMs === 'number' && ts < sinceTsMs) continue;
+        if (typeof untilTsMs === 'number' && ts > untilTsMs) {
+          if (ts > untilTsMs + SLACK) break;
+          continue;
+        }
+        if (types && !types.has(typeof p.type === 'string' ? p.type : '')) continue;
+        out.push(o);
+        if (out.length >= limit) break;
+      }
+    } finally {
+      try { rl.close(); } catch { /* ignore */ }
+      try { stream.destroy(); } catch { /* ignore */ }
+    }
+    return out;
+  } finally {
+    try { await fh.close(); } catch { /* ignore */ }
+  }
+}
+
 app.get('/api/replay/events', requireAuth, requireTool('replay'), requireServerAccess, asyncRoute(async (req, res) => {
   const serverId = String(req.query.serverId || '');
   if (!serverId) {
@@ -2234,6 +2315,15 @@ app.get('/api/replay/events', requireAuth, requireTool('replay'), requireServerA
   }
 
   const eventsPath = path.join(DATA_DIR, 'servers', safeId, 'events.ndjson');
+
+  // Full-resolution time window (e.g. the on-demand window the client loads around
+  // the scrub point): serve via a byte-range read so it doesn't scan the whole log.
+  if (!opts.slim && !opts.sampleIntervalMs && opts.sinceTsMs !== null) {
+    const items = await readNdjsonByteWindow(eventsPath, opts.sinceTsMs, opts.untilTsMs, opts.limit, opts.types);
+    res.json(items);
+    return;
+  }
+
   const items = await readNdjsonWindow(eventsPath, opts);
   res.json(items);
 }));
