@@ -256,6 +256,7 @@ export function ReplayToolPage() {
   const navigate = useNavigate();
 
   const [servers, setServers] = useState<ServerInfo[]>([]);
+  const [fetchingHistory, setFetchingHistory] = useState(false);
   const [selectedServerId, setSelectedServerId] = useState<string>(serverIdFromQuery || '');
 
   const selectServer = useCallback((id: string) => {
@@ -3008,6 +3009,37 @@ export function ReplayToolPage() {
     lastPlaybackToastTsMsRef.current = t;
   }, [currentTsMs, live, serverId, toastTimeline]);
 
+  // Explicitly load the whole 24h history overview now (the full timeline), instead of
+  // waiting for it to load when you first pause. Uses the server's warmed 15s cache so
+  // it's fast; pauses live so it persists (live keeps `events` trimmed). Full-resolution
+  // detail still streams in around the scrub point.
+  const fetchWholeHistory = useCallback(() => {
+    if (!serverId || fetchingHistory) return;
+    const sid = serverId;
+    setFetchingHistory(true);
+    if (live) setLive(false);
+    slimHistoryLoadedRef.current = sid;
+    getReplayEvents({ serverId: sid, limit: 200000, tail: true, sampleIntervalMs: 15000, slim: true })
+      .then((all) => {
+        if (all.length === 0) return;
+        setEvents((prev) => {
+          const seen = new Set<string>();
+          for (const e of prev) seen.add(getRecordKey(e));
+          const merged = prev.slice();
+          for (const e of all) {
+            const k = getRecordKey(e);
+            if (seen.has(k)) continue;
+            seen.add(k);
+            merged.push(e);
+          }
+          merged.sort((a, b) => (getRecordTsMs(a) ?? 0) - (getRecordTsMs(b) ?? 0));
+          return trimEventsToCap(merged, 250000, currentTsMsRef.current);
+        });
+      })
+      .catch(() => { /* ignore */ })
+      .finally(() => setFetchingHistory(false));
+  }, [serverId, fetchingHistory, live]);
+
   return (
     <div style={{ width: '100%', height: '100%', overflow: 'hidden', position: 'relative' }}>
       <div className="row" style={{ gap: 12, padding: 12, alignItems: 'center', flexShrink: 0 }}>
@@ -3044,6 +3076,17 @@ export function ReplayToolPage() {
             </div>
           ) : null}
         </div>
+
+        {serverId ? (
+          <button
+            className="button"
+            onClick={fetchWholeHistory}
+            disabled={fetchingHistory}
+            title="Load the entire 24h timeline now (pauses live)"
+          >
+            {fetchingHistory ? 'Fetching…' : 'Fetch whole history'}
+          </button>
+        ) : null}
 
         {serverId ? null : (
           <button
