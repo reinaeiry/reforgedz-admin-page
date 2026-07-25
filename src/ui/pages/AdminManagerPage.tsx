@@ -509,6 +509,9 @@ function GmsTab() {
               {orderedServers.map((s) => (
                 <th key={s.pteroId} className={`gm-col-server ${s.region.toLowerCase()}`}>
                   <span className="gm-tag">{s.tag}</span>
+                  <span className="gm-col-count" title={`${gmServerCounts[s.pteroId] ?? 0} GMs on ${s.tag}`}>
+                    ({gmServerCounts[s.pteroId] ?? 0})
+                  </span>
                 </th>
               ))}
               <th />
@@ -883,6 +886,9 @@ function PriorityQueueTab() {
                 return (
                   <th key={s.id} className={`gm-col-server ${region.toLowerCase()}`}>
                     <span className="gm-tag" title={s.label}>{shortServer(s.label)}</span>
+                    <span className="gm-col-count" title={`${serverCounts[s.id] ?? 0} on priority queue on ${s.label}`}>
+                      ({serverCounts[s.id] ?? 0})
+                    </span>
                   </th>
                 );
               })}
