@@ -3190,6 +3190,12 @@ async function buildAdminsSnapshot() {
     }
   }
   for (const [guid, c] of Object.entries(state.admins || {})) {
+    // state.admins doubles as the display-name cache and the backfill writes an
+    // entry for EVERY guid it encounters, priority-queue buyers included. Only a
+    // guid registered through the GM tab ('manual') is actually a GM — treating
+    // the cache as a roster made queue holders appear here the moment they were
+    // removed from the queue and stopped being filtered out.
+    if (c.source !== 'manual') continue;
     if (hideAsPq(guid)) continue;
     if (!guidMap.has(guid)) {
       guidMap.set(guid, {
