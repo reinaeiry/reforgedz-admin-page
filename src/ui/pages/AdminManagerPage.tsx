@@ -91,6 +91,37 @@ function SlotTotal({ tag, capacity }: { tag: string; capacity?: Record<string, S
   );
 }
 
+// One bar, identical on both tabs: every server's slot usage plus the fewest
+// slots free anywhere, which is the number that actually limits granting.
+function SlotChips({ capacity }: { capacity?: Record<string, ServerCapacity | null> }) {
+  const all = Object.values(capacity || {}).filter(Boolean) as ServerCapacity[];
+  if (!all.length) return null;
+  const servers = [...all].sort((a, b) => a.tag.localeCompare(b.tag));
+  const free = Math.min(...servers.map((c) => c.remaining));
+  const freeColor = free <= 0 ? 'var(--danger, #e66)' : free <= 5 ? '#e6a23c' : undefined;
+
+  return (
+    <div className="pq-stats">
+      {servers.map((c) => {
+        const pct = c.limit > 0 ? c.total / c.limit : 0;
+        const color = pct >= 1 ? 'var(--danger, #e66)' : pct >= 0.9 ? '#e6a23c' : undefined;
+        return (
+          <span
+            key={c.tag}
+            className="pq-stat"
+            title={`${c.tag}: ${c.gms} GM + ${c.pq} priority queue = ${c.total} of ${c.limit} slots · ${c.remaining} free`}
+          >
+            {c.tag} <b style={color ? { color } : undefined}>{c.total}/{c.limit}</b>
+          </span>
+        );
+      })}
+      <span className="pq-stat total" title="Fewest slots free on any one server">
+        Free <b style={freeColor ? { color: freeColor } : undefined}>{free}</b>
+      </span>
+    </div>
+  );
+}
+
 // Unix seconds -> "YYYY-MM-DD" (local) for <input type="date">.
 function toYMD(tsSeconds: number): string {
   const d = new Date(tsSeconds * 1000);
@@ -387,21 +418,22 @@ function GmsTab() {
   return (
     <>
       <div className="gm-page-head" style={{ marginTop: -10 }}>
-        <div className="pq-stats">
-          {orderedServers.map((s) => (
-            <span
-              key={s.pteroId}
-              className={`pq-stat ${s.region.toLowerCase()}`}
-              title={`${s.tag}: ${gmServerCounts[s.pteroId] ?? 0} GMs`}
-            >
-              {s.tag}
-              {slotTotalFor(s.tag, snapshot?.capacity)
-                ? <SlotTotal tag={s.tag} capacity={snapshot?.capacity} />
-                : <b> {gmServerCounts[s.pteroId] ?? 0}</b>}
-            </span>
-          ))}
-          <span className="pq-stat total" title="Total GMs">Total <b>{snapshot?.admins.length ?? 0}</b></span>
-        </div>
+        {snapshot?.capacity ? (
+          <SlotChips capacity={snapshot.capacity} />
+        ) : (
+          <div className="pq-stats">
+            {orderedServers.map((s) => (
+              <span
+                key={s.pteroId}
+                className={`pq-stat ${s.region.toLowerCase()}`}
+                title={`${s.tag}: ${gmServerCounts[s.pteroId] ?? 0} GMs`}
+              >
+                {s.tag} <b>{gmServerCounts[s.pteroId] ?? 0}</b>
+              </span>
+            ))}
+            <span className="pq-stat total" title="Total GMs">Total <b>{snapshot?.admins.length ?? 0}</b></span>
+          </div>
+        )}
         {snapshot?.dryRun ? <span className="gm-dryrun">Dry run</span> : null}
         <span className="spacer" />
         <button className="button" onClick={() => setShowAdd((v) => !v)}>
@@ -767,23 +799,24 @@ function PriorityQueueTab() {
   return (
     <>
       <div className="gm-page-head" style={{ marginTop: -10 }}>
-        <div className="pq-stats">
-          {servers.map((s) => (
-            <span
-              key={s.id}
-              className={`pq-stat ${pqRegion(s.id).toLowerCase()}`}
-              title={`${s.label}: ${serverCounts[s.id] ?? 0} on priority queue`}
-            >
-              {shortServer(s.label)}
-              {slotTotalFor(shortServer(s.label), capacity)
-                ? <SlotTotal tag={shortServer(s.label)} capacity={capacity} />
-                : <b> {serverCounts[s.id] ?? 0}</b>}
+        {capacity ? (
+          <SlotChips capacity={capacity} />
+        ) : (
+          <div className="pq-stats">
+            {servers.map((s) => (
+              <span
+                key={s.id}
+                className={`pq-stat ${pqRegion(s.id).toLowerCase()}`}
+                title={`${s.label}: ${serverCounts[s.id] ?? 0} on priority queue`}
+              >
+                {shortServer(s.label)} <b>{serverCounts[s.id] ?? 0}</b>
+              </span>
+            ))}
+            <span className="pq-stat total" title="Total people on priority queue">
+              Total <b>{snapshot?.entries.length ?? 0}</b>
             </span>
-          ))}
-          <span className="pq-stat total" title="Total people on priority queue">
-            Total <b>{snapshot?.entries.length ?? 0}</b>
-          </span>
-        </div>
+          </div>
+        )}
         <span className="spacer" />
         <button className="button" onClick={() => setShowAdd((v) => !v)}>
           {showAdd ? 'Cancel' : '+ Grant priority queue'}
