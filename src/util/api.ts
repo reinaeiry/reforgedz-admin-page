@@ -306,6 +306,10 @@ export type PriorityQueueEntry = {
   expiry?: Record<string, number | null>;
   // Soonest dated expiry across servers held (null = all permanent / lifetime).
   expiresAt?: number | null;
+  // When they last bought priority queue (unix seconds; null = manual grant only).
+  purchasedAt?: number | null;
+  // When their most recent manual grant was made (unix seconds).
+  grantedAt?: number | null;
 };
 
 export type PriorityQueueSnapshot = {

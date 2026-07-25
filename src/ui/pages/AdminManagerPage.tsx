@@ -42,6 +42,16 @@ function shortServer(label: string): string {
   return (label || '').split(/\s+[—–-]\s+|\s*\(/)[0].trim() || label;
 }
 
+// When they bought / were granted priority queue. Falls back to the manual-grant
+// date so entries with no purchase behind them still show something useful.
+function fmtPqPurchased(e: { purchasedAt?: number | null; grantedAt?: number | null }): { text: string; title: string } {
+  const ts = e.purchasedAt ?? e.grantedAt ?? null;
+  if (ts == null) return { text: '—', title: 'No purchase or grant date recorded' };
+  const text = new Date(ts * 1000).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' });
+  const kind = e.purchasedAt != null ? 'Purchased' : 'Manually granted';
+  return { text, title: `${kind} ${new Date(ts * 1000).toLocaleString()}` };
+}
+
 // Unix seconds -> "YYYY-MM-DD" (local) for <input type="date">.
 function toYMD(tsSeconds: number): string {
   const d = new Date(tsSeconds * 1000);
@@ -780,6 +790,7 @@ function PriorityQueueTab() {
                   </th>
                 );
               })}
+              <th>Purchased</th>
               <th>Expires</th>
               <th />
             </tr>
@@ -787,7 +798,7 @@ function PriorityQueueTab() {
           <tbody>
             {filtered.length === 0 ? (
               <tr>
-                <td colSpan={4 + servers.length} className="gm-empty">
+                <td colSpan={5 + servers.length} className="gm-empty">
                   {snapshot ? 'Nobody has priority queue yet.' : 'Loading...'}
                 </td>
               </tr>
@@ -821,6 +832,12 @@ function PriorityQueueTab() {
                       </td>
                     );
                   })}
+                  <td>
+                    {(() => {
+                      const p = fmtPqPurchased(e);
+                      return <span className="pq-purchased" title={p.title} style={{ color: 'var(--text-dim)' }}>{p.text}</span>;
+                    })()}
+                  </td>
                   <td>
                     {(() => {
                       const x = fmtPqExpiry(e.expiresAt);
