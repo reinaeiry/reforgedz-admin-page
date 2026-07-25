@@ -2797,8 +2797,10 @@ function isReforgerGameServer(name) {
   const n = String(name || '');
   if (!n) return false;
   if (n.includes('.net') || n.includes('.com')) return false;
-  // Accepts a bare [DEV] as well as suffixed forms like [DEV-1]/[DEV_X].
-  return /\[(EU\d+|NA\d+|DEV(?:[-_][A-Z0-9]+)?)\]/i.test(n);
+  // Accepts a bare [DEV], suffixed forms like [DEV-1]/[DEV_X], and region-prefixed
+  // dev tags such as [EU-DEV] / [NA Dev] so renaming one in the panel can't make
+  // the server silently disappear from GM management.
+  return /\[(EU\d+|NA\d+|(?:EU|NA)[-_ ]?DEV\d*|DEV(?:[-_][A-Z0-9]+)?)\]/i.test(n);
 }
 
 function adminMgrRegionFor(name, node) {
@@ -2815,6 +2817,16 @@ function adminMgrRegionFor(name, node) {
   if (/(^|[-_])eu\d*$/.test(nd) || nd.startsWith('ger')) return 'EU';
   if (/(^|[-_])na\d*$/.test(nd) || nd.startsWith('nj')) return 'NA';
   return 'unknown';
+}
+
+// Column labels for the GM grid. The raw tag comes from the [...] block of the
+// Pterodactyl name; these overrides let a server read differently in the UI
+// without renaming it in the panel. EU3 is the EU dev box, [DEV] the NA one.
+const ADMIN_MGR_TAG_LABELS = { EU3: 'EU Dev', DEV: 'NA Dev' };
+
+function adminMgrDisplayTag(name) {
+  const raw = adminMgrShortTag(name);
+  return ADMIN_MGR_TAG_LABELS[raw.toUpperCase()] || raw;
 }
 
 function adminMgrShortTag(name) {
@@ -2844,7 +2856,7 @@ async function listReforgerServers() {
         pteroId: a.identifier,
         volumeUuid: a.uuid,
         name: a.name,
-        tag: adminMgrShortTag(a.name),
+        tag: adminMgrDisplayTag(a.name),
         node: a.node,
         region,
         ip,
