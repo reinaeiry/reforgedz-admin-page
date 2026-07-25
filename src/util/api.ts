@@ -215,10 +215,23 @@ export type AdminEntry = {
   presence: Record<string, boolean>;
 };
 
+// Slot usage per server. GMs and priority-queue holders share one game.admins
+// allowance, so this is measured off the real config array.
+export type ServerCapacity = {
+  tag: string;
+  total: number;
+  gms: number;
+  pq: number;
+  limit: number;
+  remaining: number;
+};
+
 export type AdminManagerSnapshot = {
   servers: ReforgerServer[];
   admins: AdminEntry[];
   errors: { pteroId: string; tag: string; error: string }[];
+  // null for a server whose config could not be read.
+  capacity?: Record<string, ServerCapacity | null>;
   lastBackfillAt: number | null;
   lastSyncAt: number | null;
   dryRun: boolean;
@@ -310,6 +323,11 @@ export type PriorityQueueEntry = {
   purchasedAt?: number | null;
   // When their most recent manual grant was made (unix seconds).
   grantedAt?: number | null;
+  // False when no server is selected — they hold nothing right now, and expiresAt
+  // then describes the underlying entitlement rather than live access.
+  assigned?: boolean;
+  // Whether any grant or order backs this holder at all.
+  hasEntitlement?: boolean;
 };
 
 export type PriorityQueueSnapshot = {

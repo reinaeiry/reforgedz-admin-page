@@ -7,6 +7,7 @@ import {
   type PriorityQueueSnapshot,
   type PriorityQueueSource,
   type ReforgerServer,
+  type ServerCapacity,
   addAdminToCache,
   addManualPriorityQueue,
   deleteAdmin,
@@ -26,13 +27,25 @@ const PQ_SESSION_KEY = 'pq.snapshot.v1';
 const PQ_REVALIDATE_INTERVAL_MS = 30 * 1000;
 
 // Format a priority-queue expiry (unix seconds). null = permanent, undefined = unknown.
-function fmtPqExpiry(ts: number | null | undefined): { text: string; soon: boolean } {
-  if (ts === undefined) return { text: '—', soon: false };
-  if (ts === null) return { text: 'Permanent', soon: false };
+function fmtPqExpiry(
+  ts: number | null | undefined,
+  opts?: { assigned?: boolean; hasEntitlement?: boolean },
+): { text: string; soon: boolean; note: string } {
+  // No server selected means they hold nothing right now, so a null date is "no
+  // access" rather than "permanent" — saying Permanent there reads as the opposite
+  // of the truth.
+  const unassigned = opts?.assigned === false;
+  const note = unassigned ? 'No server selected — this holder currently has no priority queue' : '';
+  if (ts === undefined) return { text: '—', soon: false, note };
+  if (ts === null) {
+    if (unassigned) return { text: opts?.hasEntitlement ? 'Permanent' : '—', soon: false, note };
+    return { text: 'Permanent', soon: false, note };
+  }
   const days = Math.ceil((ts * 1000 - Date.now()) / 86400000);
   return {
     text: new Date(ts * 1000).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' }),
     soon: days <= 7,
+    note,
   };
 }
 
@@ -50,6 +63,60 @@ function fmtPqPurchased(e: { purchasedAt?: number | null; grantedAt?: number | n
   const text = new Date(ts * 1000).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' });
   const kind = e.purchasedAt != null ? 'Purchased' : 'Manually granted';
   return { text, title: `${kind} ${new Date(ts * 1000).toLocaleString()}` };
+}
+
+// Slots used per server. GMs and priority-queue holders draw on the same
+// game.admins allowance, so this counts both together against the limit.
+function SlotUsageBar({
+  items,
+  capacity,
+}: {
+  items: { key: string; tag: string }[];
+  capacity?: Record<string, ServerCapacity | null>;
+}) {
+  if (!capacity) return null;
+  // Matched on tag so both tabs can use this — the GM tab keys servers by
+  // Pterodactyl id while the priority-queue tab keys them by shop id.
+  const byTag = new Map<string, ServerCapacity>();
+  for (const c of Object.values(capacity)) if (c) byTag.set(c.tag.toUpperCase(), c);
+
+  const known = items.map((s) => byTag.get(s.tag.toUpperCase())).filter(Boolean) as ServerCapacity[];
+  if (!known.length) return null;
+  const tightest = Math.min(...known.map((c) => c.remaining));
+
+  return (
+    <div className="pq-stats pq-stats--slots" style={{ marginTop: 6, width: '100%' }}>
+      <span className="pq-stat" style={{ opacity: 0.75 }}>Slots used (GM + queue)</span>
+      {items.map((s) => {
+        const c = byTag.get(s.tag.toUpperCase());
+        if (!c) {
+          return (
+            <span key={s.key} className="pq-stat" title={`${s.tag}: config could not be read`}>
+              {s.tag} <b>—</b>
+            </span>
+          );
+        }
+        const pct = c.limit > 0 ? c.total / c.limit : 0;
+        const color = pct >= 1 ? 'var(--danger, #e66)' : pct >= 0.9 ? '#e6a23c' : undefined;
+        return (
+          <span
+            key={s.key}
+            className="pq-stat"
+            style={color ? { color } : undefined}
+            title={`${s.tag}: ${c.gms} GM + ${c.pq} priority queue = ${c.total} of ${c.limit} slots · ${c.remaining} free`}
+          >
+            {s.tag} <b>{c.total}/{c.limit}</b>
+            <span style={{ opacity: 0.7 }}> · {c.remaining} left</span>
+          </span>
+        );
+      })}
+      {tightest != null ? (
+        <span className="pq-stat total" title="Fewest free slots on any server">
+          Tightest <b>{tightest} left</b>
+        </span>
+      ) : null}
+    </div>
+  );
 }
 
 // Unix seconds -> "YYYY-MM-DD" (local) for <input type="date">.
@@ -360,6 +427,10 @@ function GmsTab() {
           ))}
           <span className="pq-stat total" title="Total GMs">Total <b>{snapshot?.admins.length ?? 0}</b></span>
         </div>
+        <SlotUsageBar
+          items={orderedServers.map((s) => ({ key: s.pteroId, tag: s.tag }))}
+          capacity={snapshot?.capacity}
+        />
         {snapshot?.dryRun ? <span className="gm-dryrun">Dry run</span> : null}
         <span className="spacer" />
         <button className="button" onClick={() => setShowAdd((v) => !v)}>
@@ -541,6 +612,11 @@ function PriorityQueueTab() {
   const [newGuid, setNewGuid] = useState('');
   const [newName, setNewName] = useState('');
   const [newServerId, setNewServerId] = useState<string>('');
+  // Slot usage lives on the GM snapshot (it is read from each server's real
+  // game.admins), but the same allowance is what the queue eats into.
+  const [capacity, setCapacity] = useState<Record<string, ServerCapacity | null> | undefined>(
+    () => loadCachedSnapshot()?.capacity,
+  );
 
   async function revalidate(): Promise<void> {
     try {
@@ -549,6 +625,12 @@ function PriorityQueueTab() {
       saveCachedPq(s);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to load priority queue');
+    }
+    try {
+      const gm = await getAdminManagerSnapshot();
+      if (gm?.capacity) setCapacity(gm.capacity);
+    } catch {
+      // Slot usage is supplementary — leave the last known figures in place.
     }
   }
 
@@ -721,6 +803,10 @@ function PriorityQueueTab() {
             Total <b>{snapshot?.entries.length ?? 0}</b>
           </span>
         </div>
+        <SlotUsageBar
+          items={servers.map((s) => ({ key: s.id, tag: shortServer(s.label) }))}
+          capacity={capacity}
+        />
         <span className="spacer" />
         <button className="button" onClick={() => setShowAdd((v) => !v)}>
           {showAdd ? 'Cancel' : '+ Grant priority queue'}
@@ -840,9 +926,9 @@ function PriorityQueueTab() {
                   </td>
                   <td>
                     {(() => {
-                      const x = fmtPqExpiry(e.expiresAt);
+                      const x = fmtPqExpiry(e.expiresAt, { assigned: e.assigned, hasEntitlement: e.hasEntitlement });
                       return (
-                        <span className="pq-expiry">
+                        <span className="pq-expiry" title={x.note || undefined}>
                           <button
                             type="button"
                             className="pq-date-btn"

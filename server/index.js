@@ -2703,6 +2703,10 @@ const ADMIN_MGR_STATE_PATH = path.join(DATA_DIR, 'adminManager.json');
 // outage doesn't cause every PQ buyer to leak into the admin list.
 const ADMIN_MGR_PQ_CACHE_PATH = path.join(DATA_DIR, 'adminManagerPqCache.json');
 const ADMIN_MGR_BM_TOKEN = process.env.BATTLEMETRICS_API_KEY || '';
+// Reforger errors on a config with more than this many entries in game.admins.
+// GMs and priority-queue holders share the same allowance. Mirrors ADMIN_CEILING
+// in the shop, which squeezes PQ stock so PQ + GMs can never exceed it.
+const ADMIN_MGR_SLOT_LIMIT = parseInt(process.env.ADMIN_CEILING || '50', 10);
 const ADMIN_MGR_CACHE_TTL_MS = 5 * 60 * 1000;
 
 // NA box is not directly reachable; SSH connects to EU box and bounces over.
@@ -3213,10 +3217,29 @@ async function buildAdminsSnapshot() {
     .filter((r) => !r.ok)
     .map((r) => ({ pteroId: r.server.pteroId, tag: r.server.tag, error: r.error }));
 
+  // Slot usage straight off each server's real game.admins array — GMs and PQ
+  // holders draw on the same allowance, so this is what actually fills up.
+  const capacity = {};
+  for (const r of reads) {
+    if (!r.ok) { capacity[r.server.pteroId] = null; continue; }
+    const total = r.admins.length;
+    let pq = 0;
+    for (const g of r.admins) if (pqGuids.has(String(g).toLowerCase())) pq++;
+    capacity[r.server.pteroId] = {
+      tag: r.server.tag,
+      total,
+      pq,
+      gms: total - pq,
+      limit: ADMIN_MGR_SLOT_LIMIT,
+      remaining: Math.max(0, ADMIN_MGR_SLOT_LIMIT - total),
+    };
+  }
+
   return {
     servers: enriched,
     admins,
     errors,
+    capacity,
     pqFilter: { source: pqSource, count: pqGuids.size },
     lastBackfillAt: state.lastBackfillAt,
     lastSyncAt: state.lastSyncAt,
