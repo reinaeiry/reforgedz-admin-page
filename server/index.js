@@ -2699,6 +2699,9 @@ const ADMIN_MGR_CONFIG_BASENAME = process.env.ADMIN_MANAGER_CONFIG_BASENAME || '
 const ADMIN_MGR_CONFIG_FIELD = process.env.ADMIN_MANAGER_CONFIG_FIELD || 'game.admins';
 const ADMIN_MGR_VOLUMES_ROOT = (process.env.ADMIN_MANAGER_VOLUMES_ROOT || '/var/lib/pterodactyl/volumes').replace(/\/+$/, '');
 const ADMIN_MGR_STATE_PATH = path.join(DATA_DIR, 'adminManager.json');
+// Last-known-good set of priority-queue GUIDs, persisted so a transient shop
+// outage doesn't cause every PQ buyer to leak into the admin list.
+const ADMIN_MGR_PQ_CACHE_PATH = path.join(DATA_DIR, 'adminManagerPqCache.json');
 const ADMIN_MGR_BM_TOKEN = process.env.BATTLEMETRICS_API_KEY || '';
 const ADMIN_MGR_CACHE_TTL_MS = 5 * 60 * 1000;
 
@@ -2794,7 +2797,8 @@ function isReforgerGameServer(name) {
   const n = String(name || '');
   if (!n) return false;
   if (n.includes('.net') || n.includes('.com')) return false;
-  return /\[(EU\d+|NA\d+|DEV[-_][A-Z0-9]+)\]/i.test(n);
+  // Accepts a bare [DEV] as well as suffixed forms like [DEV-1]/[DEV_X].
+  return /\[(EU\d+|NA\d+|DEV(?:[-_][A-Z0-9]+)?)\]/i.test(n);
 }
 
 function adminMgrRegionFor(name, node) {
@@ -2803,10 +2807,13 @@ function adminMgrRegionFor(name, node) {
     const tag = m[1].toUpperCase();
     if (tag === 'EU') return 'EU';
     if (tag === 'NA') return 'NA';
+    // [DEV] carries no region of its own — fall through and use the node.
   }
+  // Node names are the OVH ones now (OVH-EU / OVH-NA); the ger*/nj* prefixes are
+  // the pre-migration Hetzner/InterServer nodes, kept so old names still resolve.
   const nd = String(node || '').toLowerCase();
-  if (nd.startsWith('ger')) return 'EU';
-  if (nd.startsWith('nj')) return 'NA';
+  if (/(^|[-_])eu\d*$/.test(nd) || nd.startsWith('ger')) return 'EU';
+  if (/(^|[-_])na\d*$/.test(nd) || nd.startsWith('nj')) return 'NA';
   return 'unknown';
 }
 
@@ -3095,6 +3102,19 @@ function applyCacheNameResolutions(updates) {
   bumpAdminsCacheVersion();
 }
 
+async function loadPqGuidCache() {
+  const obj = await readJsonOrNull(ADMIN_MGR_PQ_CACHE_PATH);
+  return obj && Array.isArray(obj.guids) ? obj.guids.filter((g) => typeof g === 'string') : [];
+}
+
+async function savePqGuidCache(guids) {
+  try {
+    await writeJsonAtomic(ADMIN_MGR_PQ_CACHE_PATH, { guids, updatedAt: Date.now() });
+  } catch (e) {
+    console.warn('[adminmgr] failed to persist PQ guid cache:', e.message);
+  }
+}
+
 async function buildAdminsSnapshot() {
   const servers = await listReforgerServersCached();
   const state = await readAdminMgrState();
@@ -3103,10 +3123,16 @@ async function buildAdminsSnapshot() {
     servers.map(async (s) => ({ server: s, ...(await readServerAdmins(s, state.configOverrides)) }))
   );
 
-  // Priority-queue buyers are auto-injected into game.admins to get queue-skip,
-  // but they aren't real GMs — they're surfaced separately on the Priority Queue
-  // tab, so hide them here to keep this view to actual admins/GMs only.
-  const pqGuids = new Set();
+  // Priority-queue buyers are auto-injected into game.admins for queue-skip, but
+  // they aren't real GMs, so hide them from this view. Two guards:
+  //  1. A GUID explicitly registered as a GM (state source 'manual') is ALWAYS
+  //     shown, even if that person also holds a PQ entry — otherwise a real admin
+  //     who bought priority queue silently disappears from the list.
+  //  2. On a shop/PQ fetch failure we reuse the last-known-good PQ set instead of
+  //     showing an unfiltered list (which would dump every PQ buyer in as a fake
+  //     "admin"). With no cache at all we fail closed on unclassified entries.
+  let pqGuids = new Set();
+  let pqSource = 'live';
   try {
     const pq = await shopFetchProxy('/api/shop/admin/priority-queue');
     if (pq.status >= 200 && pq.status < 300 && pq.body && Array.isArray(pq.body.entries)) {
@@ -3114,15 +3140,35 @@ async function buildAdminsSnapshot() {
         const g = typeof e?.guid === 'string' ? e.guid.toLowerCase() : '';
         if (g) pqGuids.add(g);
       }
+      await savePqGuidCache([...pqGuids]);
+    } else {
+      throw new Error(`pq_http_${pq.status}`);
     }
   } catch (e) {
-    console.warn('[adminmgr] priority-queue fetch failed (showing unfiltered list):', e.message);
+    const cached = await loadPqGuidCache();
+    if (cached.length) {
+      pqGuids = new Set(cached);
+      pqSource = 'cached';
+      console.warn(`[adminmgr] priority-queue fetch failed; reusing ${cached.length} cached PQ guids:`, e.message);
+    } else {
+      pqSource = 'none';
+      console.warn('[adminmgr] priority-queue fetch failed with no cache; hiding unclassified config entries:', e.message);
+    }
   }
+
+  const isRegisteredGm = (guid) => (state.admins[guid] && state.admins[guid].source === 'manual');
+  const hideAsPq = (guid) => {
+    if (isRegisteredGm(guid)) return false;
+    if (pqGuids.has(String(guid).toLowerCase())) return true;
+    // No PQ data available at all: fail closed so PQ buyers can't masquerade as GMs.
+    if (pqSource === 'none') return true;
+    return false;
+  };
 
   const guidMap = new Map();
   for (const r of reads) {
     for (const guid of r.admins) {
-      if (pqGuids.has(String(guid).toLowerCase())) continue;
+      if (hideAsPq(guid)) continue;
       let entry = guidMap.get(guid);
       if (!entry) {
         const cached = state.admins[guid] || {};
@@ -3138,7 +3184,7 @@ async function buildAdminsSnapshot() {
     }
   }
   for (const [guid, c] of Object.entries(state.admins || {})) {
-    if (pqGuids.has(String(guid).toLowerCase())) continue;
+    if (hideAsPq(guid)) continue;
     if (!guidMap.has(guid)) {
       guidMap.set(guid, {
         guid,
@@ -3169,6 +3215,7 @@ async function buildAdminsSnapshot() {
     servers: enriched,
     admins,
     errors,
+    pqFilter: { source: pqSource, count: pqGuids.size },
     lastBackfillAt: state.lastBackfillAt,
     lastSyncAt: state.lastSyncAt,
     dryRun: adminMgrIsDryRun(),
