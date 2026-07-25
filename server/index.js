@@ -2819,16 +2819,6 @@ function adminMgrRegionFor(name, node) {
   return 'unknown';
 }
 
-// Column labels for the GM grid. The raw tag comes from the [...] block of the
-// Pterodactyl name; these overrides let a server read differently in the UI
-// without renaming it in the panel. EU3 is the EU dev box, [DEV] the NA one.
-const ADMIN_MGR_TAG_LABELS = { EU3: 'EU Dev', DEV: 'NA Dev' };
-
-function adminMgrDisplayTag(name) {
-  const raw = adminMgrShortTag(name);
-  return ADMIN_MGR_TAG_LABELS[raw.toUpperCase()] || raw;
-}
-
 function adminMgrShortTag(name) {
   const m = String(name || '').match(/\[([^\]]+)\]/);
   return m ? m[1] : '';
@@ -2856,7 +2846,7 @@ async function listReforgerServers() {
         pteroId: a.identifier,
         volumeUuid: a.uuid,
         name: a.name,
-        tag: adminMgrDisplayTag(a.name),
+        tag: adminMgrShortTag(a.name),
         node: a.node,
         region,
         ip,
