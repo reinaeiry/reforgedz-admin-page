@@ -91,14 +91,11 @@ function SlotTotal({ tag, capacity }: { tag: string; capacity?: Record<string, S
   );
 }
 
-// One bar, identical on both tabs: every server's slot usage plus the fewest
-// slots free anywhere, which is the number that actually limits granting.
+// One bar, identical on both tabs: every server's slot usage against the limit.
 function SlotChips({ capacity }: { capacity?: Record<string, ServerCapacity | null> }) {
   const all = Object.values(capacity || {}).filter(Boolean) as ServerCapacity[];
   if (!all.length) return null;
   const servers = [...all].sort((a, b) => a.tag.localeCompare(b.tag));
-  const free = Math.min(...servers.map((c) => c.remaining));
-  const freeColor = free <= 0 ? 'var(--danger, #e66)' : free <= 5 ? '#e6a23c' : undefined;
 
   return (
     <div className="pq-stats">
@@ -115,9 +112,6 @@ function SlotChips({ capacity }: { capacity?: Record<string, ServerCapacity | nu
           </span>
         );
       })}
-      <span className="pq-stat total" title="Fewest slots free on any one server">
-        Free <b style={freeColor ? { color: freeColor } : undefined}>{free}</b>
-      </span>
     </div>
   );
 }
