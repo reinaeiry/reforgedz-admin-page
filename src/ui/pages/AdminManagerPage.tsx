@@ -65,57 +65,29 @@ function fmtPqPurchased(e: { purchasedAt?: number | null; grantedAt?: number | n
   return { text, title: `${kind} ${new Date(ts * 1000).toLocaleString()}` };
 }
 
-// Slots used per server. GMs and priority-queue holders draw on the same
-// game.admins allowance, so this counts both together against the limit.
-function SlotUsageBar({
-  items,
-  capacity,
-}: {
-  items: { key: string; tag: string }[];
-  capacity?: Record<string, ServerCapacity | null>;
-}) {
+// Total slots used per server, against the game.admins limit. GMs and queue
+// holders share the allowance, so this is the combined figure.
+function slotTotalFor(
+  tag: string,
+  capacity?: Record<string, ServerCapacity | null>,
+): ServerCapacity | null {
   if (!capacity) return null;
   // Matched on tag so both tabs can use this — the GM tab keys servers by
   // Pterodactyl id while the priority-queue tab keys them by shop id.
-  const byTag = new Map<string, ServerCapacity>();
-  for (const c of Object.values(capacity)) if (c) byTag.set(c.tag.toUpperCase(), c);
+  const want = tag.toUpperCase();
+  for (const c of Object.values(capacity)) if (c && c.tag.toUpperCase() === want) return c;
+  return null;
+}
 
-  const known = items.map((s) => byTag.get(s.tag.toUpperCase())).filter(Boolean) as ServerCapacity[];
-  if (!known.length) return null;
-  const tightest = Math.min(...known.map((c) => c.remaining));
-
+function SlotTotal({ tag, capacity }: { tag: string; capacity?: Record<string, ServerCapacity | null> }) {
+  const c = slotTotalFor(tag, capacity);
+  if (!c) return null;
+  const pct = c.limit > 0 ? c.total / c.limit : 0;
+  const color = pct >= 1 ? 'var(--danger, #e66)' : pct >= 0.9 ? '#e6a23c' : undefined;
   return (
-    <div className="pq-stats pq-stats--slots" style={{ marginTop: 6, width: '100%' }}>
-      <span className="pq-stat" style={{ opacity: 0.75 }}>Slots used (GM + queue)</span>
-      {items.map((s) => {
-        const c = byTag.get(s.tag.toUpperCase());
-        if (!c) {
-          return (
-            <span key={s.key} className="pq-stat" title={`${s.tag}: config could not be read`}>
-              {s.tag} <b>—</b>
-            </span>
-          );
-        }
-        const pct = c.limit > 0 ? c.total / c.limit : 0;
-        const color = pct >= 1 ? 'var(--danger, #e66)' : pct >= 0.9 ? '#e6a23c' : undefined;
-        return (
-          <span
-            key={s.key}
-            className="pq-stat"
-            style={color ? { color } : undefined}
-            title={`${s.tag}: ${c.gms} GM + ${c.pq} priority queue = ${c.total} of ${c.limit} slots · ${c.remaining} free`}
-          >
-            {s.tag} <b>{c.total}/{c.limit}</b>
-            <span style={{ opacity: 0.7 }}> · {c.remaining} left</span>
-          </span>
-        );
-      })}
-      {tightest != null ? (
-        <span className="pq-stat total" title="Fewest free slots on any server">
-          Tightest <b>{tightest} left</b>
-        </span>
-      ) : null}
-    </div>
+    <b style={{ marginLeft: 6, fontWeight: 600, ...(color ? { color } : {}) }} title={`${c.total} of ${c.limit} slots used · ${c.remaining} free`}>
+      {c.total}/{c.limit}
+    </b>
   );
 }
 
@@ -422,15 +394,14 @@ function GmsTab() {
               className={`pq-stat ${s.region.toLowerCase()}`}
               title={`${s.tag}: ${gmServerCounts[s.pteroId] ?? 0} GMs`}
             >
-              {s.tag} <b>{gmServerCounts[s.pteroId] ?? 0}</b>
+              {s.tag}
+              {slotTotalFor(s.tag, snapshot?.capacity)
+                ? <SlotTotal tag={s.tag} capacity={snapshot?.capacity} />
+                : <b> {gmServerCounts[s.pteroId] ?? 0}</b>}
             </span>
           ))}
           <span className="pq-stat total" title="Total GMs">Total <b>{snapshot?.admins.length ?? 0}</b></span>
         </div>
-        <SlotUsageBar
-          items={orderedServers.map((s) => ({ key: s.pteroId, tag: s.tag }))}
-          capacity={snapshot?.capacity}
-        />
         {snapshot?.dryRun ? <span className="gm-dryrun">Dry run</span> : null}
         <span className="spacer" />
         <button className="button" onClick={() => setShowAdd((v) => !v)}>
@@ -742,21 +713,28 @@ function PriorityQueueTab() {
   }
 
   function onDelete(entry: PriorityQueueEntry): void {
-    const manualCount = Object.values(entry.sources).filter((s) => s === 'manual' || s === 'both').length;
-    if (manualCount === 0) {
+    const sources = Object.values(entry.sources);
+    const manualCount = sources.filter((s) => s === 'manual' || s === 'both').length;
+    // Only refuse when the entry is genuinely purchase-only. A holder with no
+    // server selected has no sources at all, yet still has rows worth clearing —
+    // refusing there left them undeletable.
+    if (manualCount === 0 && sources.some((s) => s === 'purchase')) {
       setError("This entry only exists from purchases. Revoke the order in the shop's admin panel.");
       return;
     }
+    const what = manualCount > 0
+      ? `all ${manualCount} manual priority queue grant${manualCount === 1 ? '' : 's'}`
+      : 'the leftover priority queue rows';
     const ok = window.confirm(
-      `Remove all ${manualCount} manual priority queue grant${manualCount === 1 ? '' : 's'} for ${entry.displayName || entry.guid}? Any purchase-driven slots will remain.`,
+      `Remove ${what} for ${entry.displayName || entry.guid}? Any purchase-driven slots will remain.`,
     );
     if (!ok) return;
     setError(null);
     void (async () => {
       try {
-        await deletePriorityQueue(entry.guid);
+        const r = await deletePriorityQueue(entry.guid);
         await revalidate();
-        setInfo('Manual grants removed.');
+        setInfo(r.removed > 0 ? `Removed ${r.removed} row${r.removed === 1 ? '' : 's'}.` : 'Nothing left to remove.');
       } catch (e) {
         setError(e instanceof Error ? e.message : 'Failed to delete');
         await revalidate();
@@ -796,17 +774,16 @@ function PriorityQueueTab() {
               className={`pq-stat ${pqRegion(s.id).toLowerCase()}`}
               title={`${s.label}: ${serverCounts[s.id] ?? 0} on priority queue`}
             >
-              {shortServer(s.label)} <b>{serverCounts[s.id] ?? 0}</b>
+              {shortServer(s.label)}
+              {slotTotalFor(shortServer(s.label), capacity)
+                ? <SlotTotal tag={shortServer(s.label)} capacity={capacity} />
+                : <b> {serverCounts[s.id] ?? 0}</b>}
             </span>
           ))}
           <span className="pq-stat total" title="Total people on priority queue">
             Total <b>{snapshot?.entries.length ?? 0}</b>
           </span>
         </div>
-        <SlotUsageBar
-          items={servers.map((s) => ({ key: s.id, tag: shortServer(s.label) }))}
-          capacity={capacity}
-        />
         <span className="spacer" />
         <button className="button" onClick={() => setShowAdd((v) => !v)}>
           {showAdd ? 'Cancel' : '+ Grant priority queue'}
