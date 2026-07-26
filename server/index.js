@@ -31,6 +31,63 @@ app.disable('x-powered-by');
 app.set('trust proxy', true);
 app.use(compression());
 
+// ---- Security headers ----
+// Hand-rolled (no new dependency) so it can't crash on a missing module and
+// applies to every response including the built SPA. script-src/style-src keep
+// 'unsafe-inline' (Vite's bootstrap + inline styles); the known external hosts
+// the SPA actually uses (Google Fonts, Discord/BattleMetrics/medal avatars,
+// YouTube/medal embeds) are allowlisted. Everything else is 'self'.
+const IS_PROD = process.env.NODE_ENV === 'production';
+const CONTENT_SECURITY_POLICY = [
+  "default-src 'self'",
+  "script-src 'self' 'unsafe-inline'",
+  "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+  "img-src 'self' data: https:",
+  "font-src 'self' https://fonts.gstatic.com",
+  "connect-src 'self' https://auth.reforgedz.net",
+  "media-src 'self' https:",
+  "frame-src https://www.youtube.com https://www.youtube-nocookie.com https://medal.tv",
+  "frame-ancestors 'none'",
+  "base-uri 'self'",
+  "object-src 'none'",
+].join('; ');
+app.use((req, res, next) => {
+  res.setHeader('Content-Security-Policy', CONTENT_SECURITY_POLICY);
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  res.setHeader('Permissions-Policy', 'geolocation=(), microphone=(), camera=()');
+  if (IS_PROD) res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+  next();
+});
+
+// ---- Minimal in-memory rate limiter (dependency-free) ----
+// Guards the unauthenticated key/signature endpoints (ingest, BM webhook,
+// internal) against volumetric brute-forcing — the constant-time compares stop
+// timing attacks but not sheer guessing volume. Fixed-window per IP+path.
+function rateLimiter({ windowMs, max }) {
+  const hits = new Map();
+  setInterval(() => {
+    const now = Date.now();
+    for (const [k, v] of hits) if (v.resetAt <= now) hits.delete(k);
+  }, windowMs).unref?.();
+  return (req, res, next) => {
+    const key = `${req.ip}|${req.baseUrl || req.path}`;
+    const now = Date.now();
+    let e = hits.get(key);
+    if (!e || e.resetAt <= now) { e = { count: 0, resetAt: now + windowMs }; hits.set(key, e); }
+    e.count++;
+    if (e.count > max) {
+      res.setHeader('Retry-After', Math.ceil((e.resetAt - now) / 1000));
+      return res.status(429).json({ error: 'rate_limited' });
+    }
+    next();
+  };
+}
+app.use('/api/replay/ingest', rateLimiter({ windowMs: 60_000, max: 240 }));
+app.use('/api/bm/webhook', rateLimiter({ windowMs: 60_000, max: 240 }));
+app.use('/api/internal', rateLimiter({ windowMs: 60_000, max: 120 }));
+
 // BM webhook needs the raw request body so HMAC verifies against the exact
 // bytes BM signed — mount it BEFORE express.json() consumes the stream.
 app.use('/api/bm/webhook', express.raw({ type: '*/*', limit: '256kb' }), bmWebhookRouter);
@@ -52,7 +109,12 @@ const rzAuth = createRzAuth({
   publicKeyUrl: AUTH_PUBLIC_KEY_PEM ? undefined : AUTH_PUBLIC_KEY_URL,
   authBase: AUTH_BASE,
   loginUrl: `${AUTH_BASE.replace(/\/+$/, '')}/login`,
-  cookieName: process.env.COOKIE_NAME || 'rz_session'
+  cookieName: process.env.COOKIE_NAME || 'rz_session',
+  // Opt-in hardening (default off so a stray SSO config can't lock admins out).
+  // Enable once the SSO issuer is confirmed to set `exp`: AUTH_REQUIRE_EXP=1,
+  // AUTH_REVOCATION_FAIL_CLOSED=1.
+  requireExp: process.env.AUTH_REQUIRE_EXP === '1',
+  revocationFailClosed: process.env.AUTH_REVOCATION_FAIL_CLOSED === '1'
 });
 await rzAuth.ready();
 app.use(rzAuth.attachSession);
@@ -2745,7 +2807,7 @@ function adminMgrWrapForRegion(region, command) {
     const naUser = process.env.GAME_SERVER_NA_USER || 'root';
     if (!naHost) throw new Error('na_host_not_configured');
     const innerEscaped = String(command).replace(/'/g, `'\\''`);
-    return `ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 -p ${naPort} ${naUser}@${naHost} '${innerEscaped}'`;
+    return `ssh -o StrictHostKeyChecking=${ADMIN_MGR_SSH_STRICT} -o ConnectTimeout=10 -p ${naPort} ${naUser}@${naHost} '${innerEscaped}'`;
   }
   return command;
 }
@@ -2771,7 +2833,7 @@ function adminMgrConnAndWrap(server) {
       conn,
       wrap: (inner) => {
         const innerEscaped = String(inner).replace(/'/g, `'\\''`);
-        return `ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 -p ${eu2Port} ${eu2User}@${eu2Host} '${innerEscaped}'`;
+        return `ssh -o StrictHostKeyChecking=${ADMIN_MGR_SSH_STRICT} -o ConnectTimeout=10 -p ${eu2Port} ${eu2User}@${eu2Host} '${innerEscaped}'`;
       },
     };
   }
@@ -2904,6 +2966,30 @@ function adminMgrGetPrivateKey() {
   catch { return null; }
 }
 
+// SSH host-key pinning. When GAME_SERVER_HOST_FINGERPRINTS is set (comma-separated
+// base64 SHA-256 fingerprints), a host key must match one or the connection is
+// refused (blocks MITM on these root sessions). Unset → log the fingerprint and
+// accept (trust-on-first-use), so pinning rolls out without breaking anything.
+const ADMIN_MGR_PINNED_FPS = (process.env.GAME_SERVER_HOST_FINGERPRINTS || '')
+  .split(',').map((s) => s.trim()).filter(Boolean);
+
+function adminMgrVerifyHostKey(keyBuf) {
+  const fp = crypto.createHash('sha256').update(keyBuf).digest('base64').replace(/=+$/, '');
+  if (ADMIN_MGR_PINNED_FPS.length === 0) {
+    console.warn(`[adminmgr] SSH host key SHA256:${fp} accepted (no GAME_SERVER_HOST_FINGERPRINTS set — set it to pin).`);
+    return true;
+  }
+  const ok = ADMIN_MGR_PINNED_FPS.includes(fp);
+  if (!ok) console.error(`[adminmgr] SSH host key SHA256:${fp} REJECTED — not in GAME_SERVER_HOST_FINGERPRINTS.`);
+  return ok;
+}
+
+// For the shelled-out nested hops (NA-via-EU, EU2): accept-new (TOFU, records the
+// key on first use then pins) instead of the old blanket StrictHostKeyChecking=no.
+// Set GAME_SERVER_STRICT_HOSTKEYS=1 once a known_hosts is provisioned to require
+// an already-trusted key.
+const ADMIN_MGR_SSH_STRICT = process.env.GAME_SERVER_STRICT_HOSTKEYS === '1' ? 'yes' : 'accept-new';
+
 function adminMgrGetAtPath(obj, dotPath) {
   if (!obj || !dotPath) return undefined;
   return String(dotPath).split('.').reduce((o, k) => (o == null ? o : o[k]), obj);
@@ -2955,7 +3041,7 @@ function sshExecCapture(host, port, user, command) {
       username: user,
       privateKey: key,
       readyTimeout: 10000,
-      hostVerifier: () => true,
+      hostVerifier: adminMgrVerifyHostKey,
     });
   });
 }
@@ -3166,8 +3252,12 @@ async function buildAdminsSnapshot() {
   const hideAsPq = (guid) => {
     if (isRegisteredGm(guid)) return false;
     if (pqGuids.has(String(guid).toLowerCase())) return true;
-    // No PQ data available at all: fail closed so PQ buyers can't masquerade as GMs.
-    if (pqSource === 'none') return true;
+    // No PQ data at all (shop unreachable AND no cached set — rare once the cache
+    // has ever populated). Previously this hid EVERY unclassified entry, which
+    // blanked the whole roster of legacy/non-manual GMs during a shop outage.
+    // Show them instead: real GMs vanishing is worse than a PQ buyer briefly
+    // appearing until the shop is reachable again. Registered GMs (source
+    // 'manual') are always shown regardless via the short-circuit above.
     return false;
   };
 
@@ -3486,8 +3576,27 @@ app.post('/api/adminmgr/toggle', requireAuth, requireTool('gmManagement'), async
     throw e;
   }
 
-  if (result.changed) {
-    const cur = await readAdminMgrState();
+  // Granting a GM on a server registers them as a real GM ('manual'), so the
+  // roster's PQ filter never hides them and the shop's periodic sync can't make
+  // them look like a lapsed priority-queue entry. Removing from one server does
+  // NOT unregister them — they stay a GM (just off that server). Deleting a GM
+  // entirely is the delete route's job.
+  const cur = await readAdminMgrState();
+  let stateChanged = false;
+  if (present) {
+    const existing = cur.admins[guid] || {};
+    if (existing.source !== 'manual' || !existing.displayName) {
+      cur.admins[guid] = {
+        ...existing,
+        displayName: existing.displayName || '?',
+        source: 'manual',
+        updatedAt: Date.now(),
+      };
+      stateChanged = true;
+      applyCacheUpsertAdmin(guid, { source: 'manual', displayName: cur.admins[guid].displayName });
+    }
+  }
+  if (result.changed || stateChanged) {
     cur.lastSyncAt = Date.now();
     await writeAdminMgrState(cur);
   }
@@ -4441,9 +4550,10 @@ app.post('/api/dev/discordWebhook', requireAuth, requireTool('dev'), asyncRoute(
     return;
   }
 
-  // Basic sanity checks; real validation is Discord returning 2xx.
-  if (!/^https:\/\//i.test(trimmed) || trimmed.length < 20) {
-    res.status(400).send('Invalid webhookUrl');
+  // Must be a real Discord webhook URL — not just any https:// URL. The server
+  // POSTs to this on export, so an arbitrary URL would be an authenticated SSRF.
+  if (!/^https:\/\/(?:ptb\.|canary\.)?(?:discord|discordapp)\.com\/api\/(?:v\d+\/)?webhooks\/\d+\/[\w-]+/i.test(trimmed)) {
+    res.status(400).send('Invalid webhookUrl (must be a Discord webhook URL)');
     return;
   }
 

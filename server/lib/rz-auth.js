@@ -20,7 +20,13 @@ export function createRzAuth({
   cookieName = 'rz_session',
   loginUrl,
   revocationCacheMs = 60000,
-  revocationCheck = true
+  revocationCheck = true,
+  // Hardening, opt-in so they can't lock admins out before the SSO issuer is
+  // confirmed to set `exp`. requireExp: reject tokens with no numeric exp.
+  // revocationFailClosed: treat a failed/unreachable revocation check as
+  // "revoked" instead of "valid".
+  requireExp = false,
+  revocationFailClosed = false
 } = {}) {
   let publicKey = null;
   let pubPem = publicKeyPem || null;
@@ -53,7 +59,11 @@ export function createRzAuth({
     try { sig = Buffer.from(s, 'base64url'); } catch { return null; }
     const ok = crypto.verify(null, Buffer.from(h + '.' + p), publicKey, sig);
     if (!ok) return null;
-    if (typeof payload.exp === 'number' && payload.exp < Math.floor(Date.now() / 1000)) return null;
+    if (typeof payload.exp === 'number') {
+      if (payload.exp < Math.floor(Date.now() / 1000)) return null;
+    } else if (requireExp) {
+      return null; // no expiry claim and we've been told to require one
+    }
     return payload;
   }
 
@@ -67,12 +77,12 @@ export function createRzAuth({
     try {
       const url = `${authBase.replace(/\/+$/, '')}/api/auth/sessions/check?sub=${encodeURIComponent(payload.sub)}&rev=${encodeURIComponent(payload.rev)}`;
       const res = await fetch(url);
-      if (!res.ok) return true;
+      if (!res.ok) return !revocationFailClosed;
       const data = await res.json();
       revCache.set(key, { valid: !!data.valid, expiresAt: now + revocationCacheMs });
       return !!data.valid;
     } catch {
-      return true;
+      return !revocationFailClosed;
     }
   }
 
