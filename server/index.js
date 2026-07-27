@@ -4458,7 +4458,11 @@ function mountIngameBansMutes(app, { requireAuth, requireBmPerm: _bm, asyncRoute
       for (const server of targets) {
         try {
           await withIngestLock(`ingame:${server.pteroId}:${kind}`, async () => {
-            const json = await readIngameJson(server, kind);
+            // skipCache: a mutation must never be computed from the 60s-cached
+            // copy. The game server writes these ban/mute files too (in-game and
+            // auto bans), so writing back a stale list silently wipes anything
+            // added since the cache was filled.
+            const json = await readIngameJson(server, kind, { skipCache: true });
             const list = json[meta.listKey];
             const idx = list.findIndex((r) => String(r[meta.fields.uid] || '').toLowerCase() === recordApi.uid);
             const newRec = ingameFromApi(recordApi, meta);
@@ -4495,7 +4499,11 @@ function mountIngameBansMutes(app, { requireAuth, requireBmPerm: _bm, asyncRoute
       for (const server of targets) {
         try {
           await withIngestLock(`ingame:${server.pteroId}:${kind}`, async () => {
-            const json = await readIngameJson(server, kind);
+            // skipCache: a mutation must never be computed from the 60s-cached
+            // copy. The game server writes these ban/mute files too (in-game and
+            // auto bans), so writing back a stale list silently wipes anything
+            // added since the cache was filled.
+            const json = await readIngameJson(server, kind, { skipCache: true });
             const list = json[meta.listKey];
             const idx = list.findIndex((r) => String(r[meta.fields.uid] || '').toLowerCase() === uid);
             if (idx < 0) {
@@ -4536,7 +4544,11 @@ function mountIngameBansMutes(app, { requireAuth, requireBmPerm: _bm, asyncRoute
       for (const server of targets) {
         try {
           await withIngestLock(`ingame:${server.pteroId}:${kind}`, async () => {
-            const json = await readIngameJson(server, kind);
+            // skipCache: a mutation must never be computed from the 60s-cached
+            // copy. The game server writes these ban/mute files too (in-game and
+            // auto bans), so writing back a stale list silently wipes anything
+            // added since the cache was filled.
+            const json = await readIngameJson(server, kind, { skipCache: true });
             const list = json[meta.listKey];
             const before = list.length;
             json[meta.listKey] = list.filter((r) => String(r[meta.fields.uid] || '').toLowerCase() !== uid);
