@@ -3086,6 +3086,72 @@ async function sshWriteFile(server, remotePath, jsonObj) {
   await sshExecCapture(conn.host, conn.port, conn.user, cmd);
 }
 
+// Read config.json AND its on-disk SHA-256 in one shot, so a later write can
+// verify the file hasn't changed since (compare-and-swap). Returns {config,hash}.
+async function sshReadFileWithHash(server, remotePath) {
+  const { conn, wrap } = adminMgrConnAndWrap(server);
+  if (!conn?.host) throw new Error('ssh_host_not_configured');
+  const p = adminMgrShellEscape(remotePath);
+  const inner = `if [ -f ${p} ]; then sha256sum ${p} | cut -d' ' -f1; base64 ${p}; fi`;
+  const stdout = await sshExecCapture(conn.host, conn.port, conn.user, wrap(inner));
+  if (!stdout || !stdout.trim()) return null;
+  const nl = stdout.indexOf('\n');
+  if (nl < 0) throw new Error('config_read_malformed');
+  const hash = stdout.slice(0, nl).trim();
+  if (!/^[0-9a-f]{64}$/i.test(hash)) throw new Error('config_hash_malformed');
+  let text;
+  try { text = Buffer.from(stdout.slice(nl + 1), 'base64').toString('utf8'); }
+  catch { throw new Error('config_b64_decode_failed'); }
+  let config;
+  try { config = JSON.parse(text); }
+  catch { throw new Error('config_parse_failed'); }
+  return { config, hash };
+}
+
+// Atomic read-modify-write of config.json, immune to the cross-process race with
+// the shop's game.admins sync. Each attempt: read the file + its hash, run
+// mutateFn on the PARSED object, then write back under an flock on
+// <config>.lock ONLY IF the on-disk hash still matches what we read (CAS). A
+// concurrent write (from the shop or another admin action) is detected and the
+// whole cycle retries against the fresh file, so no change is ever clobbered.
+// tmp+mv keeps config.json whole; any failure aborts without a partial write.
+// mutateFn(config) mutates in place and returns an outcome object with a
+// `changed` boolean; when changed is false we skip the write entirely.
+async function atomicMutateConfig(server, remotePath, mutateFn, attempts = 5) {
+  const { conn, wrap } = adminMgrConnAndWrap(server);
+  if (!conn?.host) throw new Error('ssh_host_not_configured');
+  let lastErr = null;
+  for (let i = 0; i < attempts; i++) {
+    const read = await sshReadFileWithHash(server, remotePath);
+    if (!read) throw new Error('config_not_found');
+    const outcome = mutateFn(read.config) || { changed: false };
+    if (!outcome.changed) return outcome;
+
+    const jsonText = JSON.stringify(read.config, null, 2);
+    if (adminMgrIsDryRun()) {
+      console.log(`[adminmgr DRY RUN] ${server?.tag || server?.region}: would CAS-write ${remotePath} (${jsonText.length} bytes)`);
+      return outcome;
+    }
+    const b64 = Buffer.from(jsonText, 'utf8').toString('base64');
+    const tmp = `${remotePath}.tmp.adminmgr`;
+    const lock = `${remotePath}.lock`;
+    const inner = [
+      `exec 9>${adminMgrShellEscape(lock)} || exit 20`,
+      `flock -w 15 9 || exit 21`,
+      `CUR=$(sha256sum ${adminMgrShellEscape(remotePath)} 2>/dev/null | cut -d' ' -f1)`,
+      `if [ "$CUR" != ${adminMgrShellEscape(read.hash)} ]; then echo STALE; exit 0; fi`,
+      `printf %s ${adminMgrShellEscape(b64)} | base64 -d > ${adminMgrShellEscape(tmp)} || exit 24`,
+      `mv ${adminMgrShellEscape(tmp)} ${adminMgrShellEscape(remotePath)} || exit 25`,
+      `echo OK`,
+    ].join('\n');
+    const out = (await sshExecCapture(conn.host, conn.port, conn.user, wrap(inner))).trim();
+    if (/(^|\n)OK$/.test(out) || out === 'OK') return outcome;
+    if (out.includes('STALE')) { lastErr = new Error('config_changed_concurrently'); continue; }
+    throw new Error(`cas_write_unexpected: ${out.slice(0, 80)}`);
+  }
+  throw lastErr || new Error('cas_write_conflict');
+}
+
 function adminMgrIsValidGuid(s) {
   return typeof s === 'string' && /^[0-9a-fA-F-]{36}$/.test(s);
 }
@@ -3552,23 +3618,22 @@ app.post('/api/adminmgr/toggle', requireAuth, requireTool('gmManagement'), async
   let result = { changed: false, present, count: 0 };
   try {
     await withIngestLock(`adminmgr:${pteroId}`, async () => {
-      const cfg = await sshReadFile(server, remotePath);
-      if (!cfg) throw new Error('config_not_found');
-      const current = adminMgrGetAtPath(cfg, ADMIN_MGR_CONFIG_FIELD);
-      const list = Array.isArray(current) ? current.filter((g) => typeof g === 'string') : [];
-      const has = list.includes(guid);
+      result = await atomicMutateConfig(server, remotePath, (cfg) => {
+        const current = adminMgrGetAtPath(cfg, ADMIN_MGR_CONFIG_FIELD);
+        const list = Array.isArray(current) ? current.filter((g) => typeof g === 'string') : [];
+        const has = list.includes(guid);
 
-      let nextList = list;
-      let changed = false;
-      if (present && !has) { nextList = [...list, guid]; changed = true; }
-      else if (!present && has) { nextList = list.filter((g) => g !== guid); changed = true; }
+        let nextList = list;
+        let changed = false;
+        if (present && !has) { nextList = [...list, guid]; changed = true; }
+        else if (!present && has) { nextList = list.filter((g) => g !== guid); changed = true; }
 
-      if (changed) {
-        adminMgrSetAtPath(cfg, ADMIN_MGR_CONFIG_FIELD, nextList);
-        await sshWriteFile(server, remotePath, cfg);
+        if (changed) adminMgrSetAtPath(cfg, ADMIN_MGR_CONFIG_FIELD, nextList);
+        return { changed, present, count: nextList.length };
+      });
+      if (result.changed) {
         console.log(`[adminmgr] ${present ? 'added' : 'removed'} ${guid} on ${server.tag || server.pteroId}`);
       }
-      result = { changed, present, count: nextList.length };
     });
   } catch (e) {
     // Roll the cache back so the client's next revalidation matches reality.
@@ -3659,14 +3724,13 @@ app.delete('/api/adminmgr/admin/:guid', requireAuth, requireTool('gmManagement')
     try {
       let removed = false;
       await withIngestLock(`adminmgr:${server.pteroId}`, async () => {
-        const cfg = await sshReadFile(server, remotePath);
-        if (!cfg) return;
-        const list = adminMgrGetAtPath(cfg, ADMIN_MGR_CONFIG_FIELD);
-        if (!Array.isArray(list) || !list.includes(guid)) return;
-        const next = list.filter((g) => g !== guid);
-        adminMgrSetAtPath(cfg, ADMIN_MGR_CONFIG_FIELD, next);
-        await sshWriteFile(server, remotePath, cfg);
-        removed = true;
+        const r = await atomicMutateConfig(server, remotePath, (cfg) => {
+          const list = adminMgrGetAtPath(cfg, ADMIN_MGR_CONFIG_FIELD);
+          if (!Array.isArray(list) || !list.includes(guid)) return { changed: false };
+          adminMgrSetAtPath(cfg, ADMIN_MGR_CONFIG_FIELD, list.filter((g) => g !== guid));
+          return { changed: true };
+        });
+        removed = r.changed;
       });
       return { server, removed };
     } catch (e) {
