@@ -2812,16 +2812,21 @@ function adminMgrWrapForRegion(region, command) {
   return command;
 }
 
-// Resolve the SSH connect target + command wrapper for a server. EU servers don't all
-// live on the same box: the EU2 box is a separate Pterodactyl node (GAME_SERVER_EU2_NODE,
-// e.g. "GER2-Official"). We reach it via a nested SSH hop from the main EU box, which
-// already holds a key to it — exactly like NA-via-EU. Returns { conn, wrap }.
+// Resolve the SSH connect target + command wrapper for a server.
+// Post-OVH-migration ALL EU instances (EU1, EU2, EU Dev) live on the one EU box
+// (162.19.127.130), so EU2 is reached directly like EU1. The old "EU2 on a
+// separate GER2 node via a nested SSH hop" path is kept for the day the boxes are
+// split again, but it is now OPT-IN via ADMIN_MANAGER_EU2_VIA_HOP=1 — otherwise a
+// leftover GAME_SERVER_EU2_HOST in .env would silently misroute EU2's config.json
+// writes to the wrong/dead box (which reads as "GM changes on EU2 do nothing").
+// Returns { conn, wrap }.
 function adminMgrConnAndWrap(server) {
   const region = server?.region;
   const node = server?.node || '';
+  const eu2ViaHop = process.env.ADMIN_MANAGER_EU2_VIA_HOP === '1';
   const eu2Host = process.env.GAME_SERVER_EU2_HOST || '';
   const eu2Node = process.env.GAME_SERVER_EU2_NODE || '';
-  if (region === 'EU' && eu2Host && eu2Node && node === eu2Node) {
+  if (eu2ViaHop && region === 'EU' && eu2Host && eu2Node && node === eu2Node) {
     const conn = {
       host: process.env.GAME_SERVER_EU_HOST || '',
       port: parseInt(process.env.GAME_SERVER_EU_PORT || '22', 10),
