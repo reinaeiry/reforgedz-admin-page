@@ -669,12 +669,16 @@ function PriorityQueueTab() {
     setSnapshot((prev) => {
       if (!prev) return { servers, entries: [entry] };
       const idx = prev.entries.findIndex((x) => x.guid === entry.guid);
-      const stillPresent = Object.values(entry.presence).some(Boolean);
+      // Keep zero-presence holders visible when they still have an entitlement —
+      // the server list includes them (so admins can pick their server), and
+      // splicing them out here made a holder vanish mid-edit whenever a toggle
+      // response came back without presence.
+      const stillListed = Object.values(entry.presence).some(Boolean) || entry.hasEntitlement === true;
       let next = prev.entries.slice();
       if (idx >= 0) {
-        if (!stillPresent) next.splice(idx, 1);
+        if (!stillListed) next.splice(idx, 1);
         else next[idx] = entry;
-      } else if (stillPresent) {
+      } else if (stillListed) {
         next.unshift(entry);
       }
       const updated = { ...prev, entries: next };
