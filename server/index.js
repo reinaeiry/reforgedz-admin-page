@@ -3805,6 +3805,16 @@ app.post('/api/priority-queue/toggle', requireAuth, requireTool('gmManagement'),
   res.status(status).json(body);
 }));
 
+// Atomic server move (deny old + grant new in one shop-side transaction) — the
+// supported path for "bought priority queue on X, switch me to Y".
+app.post('/api/priority-queue/switch', requireAuth, requireTool('gmManagement'), asyncRoute(async (req, res) => {
+  const { status, body } = await shopFetchProxy('/api/shop/admin/priority-queue/switch', {
+    method: 'POST',
+    body: JSON.stringify(req.body || {})
+  });
+  res.status(status).json(body);
+}));
+
 app.delete('/api/priority-queue/:guid', requireAuth, requireTool('gmManagement'), asyncRoute(async (req, res) => {
   const guid = encodeURIComponent(req.params.guid);
   const { status, body } = await shopFetchProxy(`/api/shop/admin/priority-queue/${guid}`, {

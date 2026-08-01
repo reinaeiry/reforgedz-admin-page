@@ -16,6 +16,7 @@ import {
   getPriorityQueue,
   renameAdmin,
   setPriorityQueueExpiry,
+  switchPriorityQueueServer,
   toggleAdminOnServer,
   togglePriorityQueueServer,
 } from '../../util/api';
@@ -775,6 +776,37 @@ function PriorityQueueTab() {
     })();
   }
 
+  // Server-move state: which holder is being moved, and the chosen from/to.
+  // A move is ONE atomic backend call (grant new + deny old in a transaction),
+  // built for "bought priority queue on X, please switch me to Y" tickets —
+  // unlike two dot-toggles, it can't half-apply, and the new server inherits
+  // the holder's real entitlement expiry so renewals keep it alive.
+  const [move, setMove] = useState<{ guid: string; from: string; to: string } | null>(null);
+
+  function onStartMove(entry: PriorityQueueEntry): void {
+    const present = servers.filter((s) => !!entry.presence[s.id]).map((s) => s.id);
+    setError(null);
+    setMove({ guid: entry.guid, from: present[0] || '', to: '' });
+  }
+
+  function onApplyMove(entry: PriorityQueueEntry): void {
+    if (!move || !move.to) return;
+    const label = entry.displayName || entry.guid;
+    const fromLabel = move.from ? move.from.toUpperCase() : 'no server';
+    setMove(null);
+    setInfo(`Moving ${label} from ${fromLabel} to ${move.to.toUpperCase()}…`);
+    void (async () => {
+      try {
+        const r = await switchPriorityQueueServer(entry.guid, move.to, move.from || null, entry.displayName || undefined);
+        applyEntry(r.entry);
+        setInfo(`Moved ${label} to ${move.to.toUpperCase()}. Restart the affected servers for it to take effect in-game.`);
+      } catch (e) {
+        setError(e instanceof Error ? e.message : 'Failed to switch server');
+        await revalidate();
+      }
+    })();
+  }
+
   const expiryRefs = useRef<Record<string, HTMLInputElement | null>>({});
 
   function onSetExpiry(entry: PriorityQueueEntry, ymd: string): void {
@@ -865,6 +897,54 @@ function PriorityQueueTab() {
           </div>
         </div>
       ) : null}
+
+      {(() => {
+        if (!move) return null;
+        const entry = snapshot?.entries.find((x) => x.guid === move.guid);
+        if (!entry) return null;
+        const presentIds = servers.filter((s) => !!entry.presence[s.id]).map((s) => s.id);
+        return (
+          <div className="card">
+            <div className="stack" style={{ gap: 10 }}>
+              <div style={{ fontWeight: 700, color: 'var(--text-bright)' }}>
+                Switch server — {entry.displayName || entry.guid}
+              </div>
+              <div className="row" style={{ gap: 10 }}>
+                <div style={{ minWidth: 140 }}>
+                  <div className="label">From</div>
+                  <select className="input" value={move.from} onChange={(e) => setMove({ ...move, from: e.target.value })}>
+                    <option value="">None (grant only)</option>
+                    {servers.filter((s) => presentIds.includes(s.id)).map((s) => (
+                      <option key={s.id} value={s.id}>{s.label}</option>
+                    ))}
+                  </select>
+                </div>
+                <div style={{ minWidth: 140 }}>
+                  <div className="label">To</div>
+                  <select className="input" value={move.to} onChange={(e) => setMove({ ...move, to: e.target.value })}>
+                    <option value="">Pick…</option>
+                    {servers.filter((s) => s.id !== move.from).map((s) => (
+                      <option key={s.id} value={s.id}>{s.label}</option>
+                    ))}
+                  </select>
+                </div>
+                <div style={{ alignSelf: 'end' }}>
+                  <button className="buttonPrimary button" onClick={() => onApplyMove(entry)} disabled={!move.to || move.to === move.from}>
+                    Switch
+                  </button>
+                </div>
+                <div style={{ alignSelf: 'end' }}>
+                  <button className="button" onClick={() => setMove(null)}>Cancel</button>
+                </div>
+              </div>
+              <div style={{ fontSize: 11, color: 'var(--text-dim)' }}>
+                One atomic move: the new server is granted with this holder's current expiry and the old one is hidden.
+                Works for purchases and subscriptions — their order is never touched, and renewals keep the new server active.
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       <div className="gm-toolbar">
         <input className="input gm-search" placeholder="Search by name or GUID" value={search} onChange={(e) => setSearch(e.target.value)} />
@@ -970,6 +1050,13 @@ function PriorityQueueTab() {
                   </td>
                   <td>
                     <div className="gm-actions">
+                      <button
+                        className="gm-icon-btn"
+                        onClick={() => onStartMove(e)}
+                        title="Switch this holder to a different server (atomic move — safe for subscriptions)"
+                      >
+                        move
+                      </button>
                       <button
                         className="gm-icon-btn danger"
                         onClick={() => onDelete(e)}

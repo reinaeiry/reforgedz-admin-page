@@ -371,6 +371,29 @@ export async function togglePriorityQueueServer(
   return jsonOk<{ ok: true; entry: PriorityQueueEntry }>(res, 'Failed to toggle priority queue');
 }
 
+// Move a holder from one server to another in a single atomic call. The shop
+// grants `to` (seeded with the holder's real entitlement expiry) and denies
+// `from` in one transaction, so a mid-move failure can never strip them of the
+// old server without the new one. `from` may be null for a holder with no live
+// presence. Subscription renewals keep the moved grant alive on the shop side.
+export async function switchPriorityQueueServer(
+  guid: string,
+  to: string,
+  from?: string | null,
+  displayName?: string,
+): Promise<{ ok: true; from: string | null; to: string; entry: PriorityQueueEntry }> {
+  const res = await fetch(`${requireApiBaseUrl()}/api/priority-queue/switch`, {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ guid, to, from: from || undefined, displayName }),
+  });
+  return jsonOk<{ ok: true; from: string | null; to: string; entry: PriorityQueueEntry }>(
+    res,
+    'Failed to switch server',
+  );
+}
+
 export async function extendPriorityQueue(
   guid: string,
   days: number,
