@@ -1606,6 +1606,18 @@ async function maybeCompactServerEvents(serverDir, idx, nowTsMs) {
 
   if (RETENTION_MS <= 0) return idx;
 
+  // Give the boot-time overview resume a head start. Compaction rewrites
+  // events.ndjson, and doing that before ensureOverview has re-anchored the
+  // sidecar's srcSize invalidates the saved offset and forces an unnecessary
+  // full rebuild on every restart. Retention can comfortably wait a few
+  // minutes; if the overview never comes up, compaction proceeds regardless.
+  {
+    const ost = overviewState.get(path.basename(serverDir));
+    if ((!ost || !ost.ready) && Date.now() - PROCESS_STARTED_AT < 10 * 60_000) {
+      return idx;
+    }
+  }
+
   // Retention is based on wall-clock time (receivedAt), not the exporter timeline.
   const cutoff = Date.now() - RETENTION_MS;
 
@@ -2255,6 +2267,7 @@ async function scanSlimSlice(filePath, startByte, sampleIntervalMs, lastSnapshot
 // so serving it is a plain small-file read: no scan, no timeout, restart-proof.
 // The one full scan left is the very first build per server (background, boot).
 const overviewState = new Map(); // safeId -> { ready, building, srcSize, lastSnapshotTsMs, lastReceivedAt, metaSavedAt }
+const PROCESS_STARTED_AT = Date.now();
 
 function overviewFilePath(serverDir) { return path.join(serverDir, 'overview.ndjson'); }
 function overviewMetaPath(serverDir) { return path.join(serverDir, 'overview.meta.json'); }
