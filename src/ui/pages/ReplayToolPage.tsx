@@ -840,20 +840,19 @@ export function ReplayToolPage() {
         const r = await getReplayRange(serverIdValue);
         if (cancelled) return;
 
-        // If history was cleared server-side, range will jump backwards.
-        // Reset client cursors so we don't keep requesting from a future tsMs.
+        // If history was cleared server-side, range jumps backwards. This used
+        // to fire on a mere 1s regression and respond by REPLACING the entire
+        // timeline with a single synthetic restart record — so any transient
+        // lag between /range and /events emptied the map mid-session. The
+        // tolerance is now large enough that only a genuine history reset
+        // qualifies, and recovery just resets the fetch cursor: loaded data is
+        // never thrown away, because re-fetching it is exactly what the poll
+        // below does anyway.
         const prevFetched = lastFetchedTsMsRef.current;
-        if (typeof prevFetched === 'number' && typeof r.maxTsMs === 'number' && r.maxTsMs + 1000 < prevFetched) {
+        const HISTORY_RESET_TOLERANCE_MS = 120_000;
+        if (typeof prevFetched === 'number' && typeof r.maxTsMs === 'number' && r.maxTsMs + HISTORY_RESET_TOLERANCE_MS < prevFetched) {
           lastFetchedTsMsRef.current = null;
           lastToastReceivedAtRef.current = Date.now();
-          setEvents([{
-            receivedAt: Date.now(),
-            payload: {
-              type: 'restart',
-              tsMs: r.maxTsMs,
-              event: { reason: 'server_restart_or_history_cleared' },
-            },
-          } as any]);
           setToasts([]);
           setIsPlaying(false);
 
@@ -973,7 +972,11 @@ export function ReplayToolPage() {
             // While live, keep `events` small so each poll's re-derivation stays cheap
             // and updates land at the snapshot rate; this also sheds any 24h overview
             // that was merged during a pause once the user returns to live.
-            const cap = live ? 12000 : 250000;
+            // 12000 was far too generous: records average ~28KB (a snapshot carries
+            // every player's inventory), so the old cap meant holding ~330MB of JSON
+            // and rebuilding every derived series over it twice a second — the
+            // "flashy/laggy" live view. 3000 is still ~35 minutes of live history.
+            const cap = live ? 3000 : 250000;
             return trimEventsToCap(next, cap, currentTsMsRef.current);
           });
         }

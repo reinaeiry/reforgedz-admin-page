@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import readline from 'node:readline';
-import { createReadStream } from 'node:fs';
+import { createReadStream, createWriteStream } from 'node:fs';
 
 import dotenv from 'dotenv';
 import express from 'express';
@@ -1599,10 +1599,153 @@ async function compactNdjsonToRetention(filePath, cutoffReceivedAt) {
   return { kept, dropped, minTsMs, minReceivedAt, maxReceivedAt };
 }
 
+// ─── Retention compaction ──────────────────────────────────────────────────
+// events.ndjson is append-only in receivedAt order, so retention is always
+// "drop a prefix". The original implementation rewrote the ENTIRE file
+// line-by-line (JSON.parse per record) every 60s and only afterwards checked
+// whether anything had actually been dropped — so each busy server re-parsed
+// and re-wrote multi-GB logs every minute to discard ~200 records. That pegged
+// a CPU core, stalled ingest behind the per-server lock (the freeze admins
+// reported), and left multi-GB .tmp files behind on every restart mid-rewrite
+// (19GB of them had accumulated). Now: measure the reclaimable prefix cheaply,
+// bail out unless it is worth reclaiming, and drop it with a byte copy that
+// never parses a record.
+const COMPACT_MIN_INTERVAL_MS = 30 * 60_000;
+const COMPACT_MIN_DROP_BYTES = 256 * 1024 * 1024;
+const COMPACT_MIN_DROP_FRACTION = 0.15;
+const COMPACT_TMP_MAX_AGE_MS = 60 * 60_000;
+
+// Byte offset of the first record with receivedAt >= cutoff — i.e. how many
+// leading bytes retention can reclaim. 0 = nothing to drop.
+async function findRetentionStart(filePath, cutoffReceivedAt) {
+  let fh;
+  try { fh = await fs.open(filePath, 'r'); } catch { return 0; }
+  try {
+    const st = await fh.stat();
+    const size = st.size;
+    if (!size) return 0;
+    const CHUNK = 1 << 18; // > any single record
+    const buf = Buffer.allocUnsafe(CHUNK);
+
+    // receivedAt of the first complete line at/after `off`.
+    async function receivedAtAfter(off) {
+      let lineStart = off;
+      if (off > 0) {
+        const r = await fh.read(buf, 0, CHUNK, off);
+        if (!r.bytesRead) return null;
+        const nl = buf.indexOf(0x0a, 0);
+        if (nl === -1) return null;
+        lineStart = off + nl + 1;
+      }
+      if (lineStart >= size) return null;
+      const r = await fh.read(buf, 0, CHUNK, lineStart);
+      if (!r.bytesRead) return null;
+      let nl = buf.indexOf(0x0a, 0);
+      if (nl === -1) nl = r.bytesRead;
+      try {
+        const o = JSON.parse(buf.toString('utf8', 0, nl));
+        return (o && typeof o.receivedAt === 'number') ? o.receivedAt : null;
+      } catch { return null; }
+    }
+
+    let lo = 0;
+    let hi = size;
+    while (lo < hi) {
+      const mid = Math.floor((lo + hi) / 2); // not >>1: offsets exceed 2^31
+      const ra = await receivedAtAfter(mid);
+      if (ra === null) { hi = mid; continue; }
+      if (ra < cutoffReceivedAt) lo = mid + 1; else hi = mid;
+    }
+
+    // The search lands near the boundary but not necessarily on a line start.
+    // Rewind a margin and walk forward to the exact first line to keep.
+    const from = Math.max(0, lo - (8 << 20));
+    let offset = from;
+    let skipPartial = from > 0;
+    const stream = createReadStream(filePath, { start: from });
+    const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
+    try {
+      for await (const line of rl) {
+        const bytes = Buffer.byteLength(line) + 1; // records are written with \n
+        if (skipPartial) { skipPartial = false; offset += bytes; continue; }
+        let o = null;
+        try { o = JSON.parse(line); } catch { /* keep unparseable lines */ }
+        const ra = o && typeof o.receivedAt === 'number' ? o.receivedAt : null;
+        if (ra === null || ra >= cutoffReceivedAt) return offset;
+        offset += bytes;
+      }
+    } finally {
+      try { rl.close(); } catch { /* ignore */ }
+      try { stream.destroy(); } catch { /* ignore */ }
+    }
+    return size; // every record is older than the cutoff
+  } finally {
+    try { await fh.close(); } catch { /* ignore */ }
+  }
+}
+
+// Remove abandoned compaction temp files (a restart mid-rewrite leaves one
+// behind, and they are the size of the whole log).
+async function cleanStaleTempFiles(serverDir) {
+  let names = [];
+  try { names = await fs.readdir(serverDir); } catch { return 0; }
+  const now = Date.now();
+  let removed = 0;
+  for (const name of names) {
+    if (!name.includes('.tmp-')) continue;
+    const p = path.join(serverDir, name);
+    try {
+      const st = await fs.stat(p);
+      if (now - st.mtimeMs < COMPACT_TMP_MAX_AGE_MS) continue;
+      await fs.unlink(p);
+      removed++;
+    } catch { /* ignore */ }
+  }
+  return removed;
+}
+
+// Drop everything before `startByte` by copying the remainder — no parsing, so
+// the cost is pure IO instead of JSON.parse over the whole log.
+async function dropEventsPrefix(filePath, startByte) {
+  const tmp = `${filePath}.tmp-${crypto.randomBytes(6).toString('hex')}`;
+  let kept = 0;
+  let firstLine = '';
+  let sawFirst = false;
+  try {
+    await new Promise((resolve, reject) => {
+      const src = createReadStream(filePath, { start: startByte });
+      const dst = createWriteStream(tmp);
+      src.on('error', reject);
+      dst.on('error', reject);
+      src.on('data', (chunk) => {
+        for (let i = 0; i < chunk.length; i++) if (chunk[i] === 0x0a) kept++;
+        if (!sawFirst) {
+          sawFirst = true;
+          const nl = chunk.indexOf(0x0a);
+          firstLine = chunk.toString('utf8', 0, nl === -1 ? Math.min(chunk.length, 1 << 16) : nl);
+        }
+      });
+      dst.on('finish', resolve);
+      src.pipe(dst);
+    });
+  } catch (e) {
+    try { await fs.unlink(tmp); } catch { /* ignore */ }
+    throw e;
+  }
+  await fs.rename(tmp, filePath);
+  let minTsMs = null;
+  let minReceivedAt = null;
+  try {
+    const o = JSON.parse(firstLine);
+    minTsMs = o && o.payload && typeof o.payload.tsMs === 'number' ? o.payload.tsMs : null;
+    minReceivedAt = o && typeof o.receivedAt === 'number' ? o.receivedAt : null;
+  } catch { /* leave nulls; the next ingest refreshes them */ }
+  return { kept, minTsMs, minReceivedAt };
+}
+
 async function maybeCompactServerEvents(serverDir, idx, nowTsMs) {
-  // Compact at most every 60s per server.
   const last = idx && typeof idx.lastCompactionAt === 'number' ? idx.lastCompactionAt : 0;
-  if (Date.now() - last < 60_000) return idx;
+  if (Date.now() - last < COMPACT_MIN_INTERVAL_MS) return idx;
 
   if (RETENTION_MS <= 0) return idx;
 
@@ -1622,10 +1765,38 @@ async function maybeCompactServerEvents(serverDir, idx, nowTsMs) {
   const cutoff = Date.now() - RETENTION_MS;
 
   const eventsPath = path.join(serverDir, 'events.ndjson');
-  const { kept, dropped, minTsMs, minReceivedAt, maxReceivedAt } = await compactNdjsonToRetention(eventsPath, cutoff);
-  if (dropped <= 0) {
+  const safeIdForLog = path.basename(serverDir);
+
+  // Sweep abandoned temp files from earlier interrupted runs whether or not we
+  // compact this pass — they are log-sized and pure waste.
+  const sweptTemps = await cleanStaleTempFiles(serverDir);
+  if (sweptTemps > 0) console.log(`[compact] ${safeIdForLog}: removed ${sweptTemps} stale temp file(s)`);
+
+  // Measure before doing any work: rewriting gigabytes to reclaim a few hundred
+  // records is what made this pathological.
+  let size = 0;
+  try { size = (await fs.stat(eventsPath)).size; } catch { return { ...idx, lastCompactionAt: Date.now() }; }
+  const dropBytes = await findRetentionStart(eventsPath, cutoff);
+  const worthIt = dropBytes >= COMPACT_MIN_DROP_BYTES
+    || (size > 0 && (dropBytes / size) >= COMPACT_MIN_DROP_FRACTION);
+  if (dropBytes <= 0 || !worthIt) {
     return { ...idx, lastCompactionAt: Date.now() };
   }
+
+  const t0 = Date.now();
+  const prevStored = typeof idx.storedEvents === 'number' ? idx.storedEvents : null;
+  let kept;
+  let minTsMs;
+  let minReceivedAt;
+  try {
+    ({ kept, minTsMs, minReceivedAt } = await dropEventsPrefix(eventsPath, dropBytes));
+  } catch (e) {
+    console.error(`[compact] ${safeIdForLog}: prefix drop failed:`, e && e.message);
+    return { ...idx, lastCompactionAt: Date.now() };
+  }
+  const dropped = prevStored !== null ? Math.max(0, prevStored - kept) : 0;
+  const maxReceivedAt = typeof idx.lastReceivedAt === 'number' ? idx.lastReceivedAt : undefined;
+  console.log(`[compact] ${safeIdForLog}: reclaimed ${(dropBytes / 1048576).toFixed(0)}MB (${dropped} records, ${kept} kept) in ${Date.now() - t0}ms`);
 
   // Mirror retention onto the sidecars so they can't grow unbounded, and
   // re-anchor the overview's srcSize to the rewritten log (we run under the
@@ -4453,9 +4624,6 @@ app.post('/api/replay/ingest', async (req, res) => {
         }
       }
 
-      // Enforce 24h rolling buffer.
-      next = await maybeCompactServerEvents(serverDir, next, tsMs);
-
       // If a dev/user queued commands, pass them to the exporter via the ingest response.
       // Clear them once returned so the request is one-shot.
       const pending = (next.pendingCommands && typeof next.pendingCommands === 'object' && !Array.isArray(next.pendingCommands))
@@ -4466,7 +4634,22 @@ app.post('/api/replay/ingest', async (req, res) => {
         next = { ...next, pendingCommands: {} };
       }
 
+      // Publish the new min/max BEFORE any (slow) retention work. /events serves
+      // this record from the in-memory tail the moment it is appended, so if
+      // index.json — which /api/replay/range reads — lags behind, the client
+      // sees range.maxTsMs < what it has already fetched and concludes history
+      // was cleared. It then wiped its whole timeline: "everyone on the map
+      // disappeared". Ordering the writes this way makes that state
+      // unreachable.
       await writeJsonAtomic(idxPath, next);
+
+      // Enforce the rolling retention buffer (no-op unless there is enough to
+      // reclaim; see maybeCompactServerEvents).
+      const compacted = await maybeCompactServerEvents(serverDir, next, tsMs);
+      if (compacted !== next) {
+        next = compacted;
+        await writeJsonAtomic(idxPath, next);
+      }
 
       if (normalizedPayload && normalizedPayload.type === 'snapshot' && Array.isArray(normalizedPayload.players)) {
         const latestSnapPath = path.join(serverDir, 'latestSnapshot.json');
