@@ -664,7 +664,6 @@ function PriorityQueueTab() {
   }, [snapshot, servers]);
 
   const newGuidValid = GUID_RE.test(newGuid.trim());
-  const totalPresence = (e: PriorityQueueEntry) => Object.values(e.presence).filter(Boolean).length;
 
   function applyEntry(entry: PriorityQueueEntry): void {
     setSnapshot((prev) => {
@@ -984,7 +983,6 @@ function PriorityQueueTab() {
               </tr>
             ) : null}
             {filtered.map((e) => {
-              const total = totalPresence(e);
               return (
                 <tr key={e.guid}>
                   <td className="gm-sticky">
@@ -1060,7 +1058,6 @@ function PriorityQueueTab() {
                       <button
                         className="gm-icon-btn danger"
                         onClick={() => onDelete(e)}
-                        disabled={total === 0}
                       >
                         delete
                       </button>
