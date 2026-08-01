@@ -89,6 +89,44 @@ export async function getReplayEvents(params: {
   return jsonOk<IngestRecord[]>(res, 'Failed to get replay events');
 }
 
+// Like getReplayEvents, but also surfaces the server's data-quality headers so
+// the replay page can TELL the admin when data is incomplete instead of
+// silently rendering an empty world:
+//   overviewStatus — 'building' while the persistent 24h overview sidecar is
+//                    still being indexed (first boot after deploy / rebuild);
+//   truncated      — the window hit the server's record limit and is partial.
+export async function getReplayEventsEx(params: Parameters<typeof getReplayEvents>[0]): Promise<{
+  records: IngestRecord[];
+  overviewStatus: 'ready' | 'building' | null;
+  truncated: boolean;
+}> {
+  const qs = new URLSearchParams();
+  qs.set('serverId', params.serverId);
+  if (typeof params.sinceTsMs === 'number') qs.set('sinceTsMs', String(params.sinceTsMs));
+  if (typeof params.untilTsMs === 'number') qs.set('untilTsMs', String(params.untilTsMs));
+  if (typeof params.limit === 'number') qs.set('limit', String(params.limit));
+  if (params.tail) qs.set('tail', '1');
+  if (params.types) qs.set('types', params.types);
+  if (typeof params.sampleIntervalMs === 'number' && params.sampleIntervalMs > 0) qs.set('sampleIntervalMs', String(params.sampleIntervalMs));
+  if (params.slim) qs.set('slim', '1');
+  const res = await fetch(`${requireApiBaseUrl()}/api/replay/events?${qs.toString()}`, { credentials: 'include' });
+  const overviewHeader = res.headers.get('X-Replay-Overview');
+  const overviewStatus = overviewHeader === 'ready' || overviewHeader === 'building' ? overviewHeader : null;
+  const truncated = res.headers.get('X-Replay-Truncated') === '1';
+  const records = await jsonOk<IngestRecord[]>(res, 'Failed to get replay events');
+  return { records, overviewStatus, truncated };
+}
+
+// GM pings live in their own sidecar (they carry historical timestamps, which
+// would break the event log's time-ordering); the replay page merges them into
+// its timeline itself.
+export async function getReplayPings(serverId: string): Promise<IngestRecord[]> {
+  const qs = new URLSearchParams();
+  qs.set('serverId', serverId);
+  const res = await fetch(`${requireApiBaseUrl()}/api/replay/pings?${qs.toString()}`, { credentials: 'include' });
+  return jsonOk<IngestRecord[]>(res, 'Failed to get replay pings');
+}
+
 export interface VehicleIndexEntry {
   entityId: string;
   name: string;
