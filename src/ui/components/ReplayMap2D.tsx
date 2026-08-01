@@ -6,7 +6,7 @@ import type {
   TownLabel,
   Trail,
   VehicleMarker,
-} from './ReplayMap3D';
+} from './replayMapTypes';
 
 export type { NameTagOptions, PlayerMarker, TerrainGrid, TownLabel, Trail, VehicleMarker };
 

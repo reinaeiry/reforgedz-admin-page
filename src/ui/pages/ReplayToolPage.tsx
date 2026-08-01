@@ -32,7 +32,7 @@ import {
   type VehicleDetail,
 } from '../../util/api';
 import { listGameLogs, type GameLogRow } from '../../util/bmApi';
-import { type NameTagOptions, type PlayerMarker, type TerrainGrid, type TownLabel, type Trail, type VehicleMarker } from '../components/ReplayMap3D';
+import { type NameTagOptions, type PlayerMarker, type TerrainGrid, type TownLabel, type Trail, type VehicleMarker } from '../components/replayMapTypes';
 import { ReplayMap2D, type WorldBounds } from '../components/ReplayMap2D';
 import { ItemSpawnControl } from '../components/ItemSpawnControl';
 import { resolveMapId, getMapDef } from '../../util/maps';
