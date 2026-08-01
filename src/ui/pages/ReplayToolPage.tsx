@@ -2198,7 +2198,16 @@ export function ReplayToolPage() {
       const deadUntil = deadUntilByPlayerId.get(playerId) || 0;
       const isDead = typeof snapTsMs === 'number' ? deadUntil > snapTsMs : false;
 
-      let label = nameAt(playerId) || p.name || String(playerId);
+      // The rendered sample's own recorded name is ground truth for this
+      // instant: it was captured together with the position, and the position
+      // scan is entity-anchored, so it cannot belong to a different occupant
+      // of a recycled player ID. The join/disconnect series is only a
+      // fallback (its bounding events may sit outside the loaded window), and
+      // the knownPlayers name last — that one is "whoever held this ID most
+      // recently in the loaded data", which is exactly how a rewound
+      // character used to wear the wrong player's name.
+      const sampleName = typeof (pj as any).name === 'string' ? (pj as any).name.trim() : '';
+      let label = sampleName || nameAt(playerId) || p.name || String(playerId);
       if (showVehicleInTags && inVehicle && vehicleName) label = `${label} (${vehicleName})`;
 
       out.push({
