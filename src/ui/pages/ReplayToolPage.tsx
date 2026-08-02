@@ -2,8 +2,6 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom';
 import {
   getReplayEvents,
-  getReplayEventsEx,
-  getReplayPings,
   getReplayMapTerrain,
   getReplayMapDescriptors,
   getReplayRange,
@@ -32,7 +30,7 @@ import {
   type VehicleDetail,
 } from '../../util/api';
 import { listGameLogs, type GameLogRow } from '../../util/bmApi';
-import { type NameTagOptions, type PlayerMarker, type TerrainGrid, type TownLabel, type Trail, type VehicleMarker } from '../components/replayMapTypes';
+import { type NameTagOptions, type PlayerMarker, type TerrainGrid, type TownLabel, type Trail, type VehicleMarker } from '../components/ReplayMap3D';
 import { ReplayMap2D, type WorldBounds } from '../components/ReplayMap2D';
 import { ItemSpawnControl } from '../components/ItemSpawnControl';
 import { resolveMapId, getMapDef } from '../../util/maps';
@@ -271,14 +269,6 @@ export function ReplayToolPage() {
   const [serverStatusesError, setServerStatusesError] = useState<string | null>(null);
 
   const [error, setError] = useState<string | null>(null);
-  // Data-quality notice for the timeline: the tool must never silently render
-  // an empty world when the truth is "history hasn't loaded / was cut off".
-  // kind 'overview' = the 24h index is missing/building; 'window' = the
-  // full-res detail window came back partial.
-  const [historyNotice, setHistoryNotice] = useState<{ kind: 'overview' | 'window'; text: string } | null>(null);
-  // Bumped by a timer to re-attempt the overview load while the server is
-  // still building its persistent index (first boot after a deploy).
-  const [overviewRetryTick, setOverviewRetryTick] = useState(0);
   const [busy, setBusy] = useState(false);
 
   const [live, setLive] = useState(true);
@@ -481,7 +471,6 @@ export function ReplayToolPage() {
     async function loadBootstrap() {
       setBusy(true);
       setError(null);
-      setHistoryNotice(null);
       try {
         const [r, p, t, tw] = await Promise.all([
           getReplayRange(serverIdValue),
@@ -573,22 +562,9 @@ export function ReplayToolPage() {
     slimHistoryLoadedRef.current = serverId;
     const serverIdValue = serverId;
     let cancelled = false;
-    let retryTimer: number | null = null;
-    getReplayEventsEx({ serverId: serverIdValue, limit: 200000, tail: true, sampleIntervalMs: 15000, slim: true })
-      .then(({ records: allHistory, overviewStatus }) => {
-        if (cancelled) return;
-        if (overviewStatus === 'building') {
-          // Server is still indexing its persistent overview (first boot after
-          // a deploy). Say so — an empty response here used to be indistinguishable
-          // from "there is no history", and worse, it was marked as loaded and
-          // never retried until live was toggled. Retry automatically.
-          slimHistoryLoadedRef.current = null;
-          setHistoryNotice({ kind: 'overview', text: 'The server is still indexing this replay history — older playback will appear automatically in a few minutes.' });
-          retryTimer = window.setTimeout(() => setOverviewRetryTick((t) => t + 1), 20_000);
-          return;
-        }
-        setHistoryNotice((n) => (n && n.kind === 'overview' ? null : n));
-        if (allHistory.length === 0) return;
+    getReplayEvents({ serverId: serverIdValue, limit: 200000, tail: true, sampleIntervalMs: 15000, slim: true })
+      .then((allHistory) => {
+        if (cancelled || allHistory.length === 0) return;
         setEvents((prev) => {
           const seen = new Set<string>();
           for (const e of prev) seen.add(getRecordKey(e));
@@ -603,14 +579,9 @@ export function ReplayToolPage() {
           return trimEventsToCap(merged, 250000, currentTsMsRef.current);
         });
       })
-      .catch((err) => {
-        if (cancelled) return;
-        // Allow a retry on the next pause and be honest about the failure.
-        slimHistoryLoadedRef.current = null;
-        setHistoryNotice({ kind: 'overview', text: `Failed to load the 24h history: ${err instanceof Error ? err.message : 'request failed'} — rewinding may show gaps. Pause again to retry.` });
-      });
-    return () => { cancelled = true; if (retryTimer !== null) window.clearTimeout(retryTimer); };
-  }, [live, serverId, overviewRetryTick]);
+      .catch(() => { /* ignore */ });
+    return () => { cancelled = true; };
+  }, [live, serverId]);
 
   // On-demand full-resolution window around the scrub point (paused only). Replaces
   // the coarse overview in that span with every snapshot, so playback is as smooth as
@@ -628,82 +599,25 @@ export function ReplayToolPage() {
     const until = cur + 60_000;               // 1 min forward
     let cancelled = false;
     const t = window.setTimeout(() => {
-      getReplayEventsEx({ serverId: serverIdValue, sinceTsMs: since, untilTsMs: until, limit: 20000 })
-        .then(({ records: windowItems, truncated }) => {
+      getReplayEvents({ serverId: serverIdValue, sinceTsMs: since, untilTsMs: until, limit: 20000 })
+        .then((windowItems) => {
           if (cancelled || windowItems.length === 0) return;
-          // If the server cut the window off at its record limit, only replace
-          // the span the data actually covers — the old code replaced the FULL
-          // requested span with a partial result, deleting good coarse records
-          // past the cut-off ("the players I was watching disappeared").
-          let repUntil = until;
-          if (truncated) {
-            let maxTs: number | null = null;
-            for (const e of windowItems) {
-              const ts = getRecordTsMs(e);
-              if (ts !== null && (maxTs === null || ts > maxTs)) maxTs = ts;
-            }
-            if (maxTs !== null && maxTs < repUntil) repUntil = maxTs;
-            setHistoryNotice({ kind: 'window', text: 'This part of the timeline is very dense — detail was partially loaded. Scrub in smaller steps for full resolution.' });
-          } else {
-            setHistoryNotice((n) => (n && n.kind === 'window' ? null : n));
-          }
-          fullResWindowRef.current = { serverId: serverIdValue, min: since, max: repUntil };
+          fullResWindowRef.current = { serverId: serverIdValue, min: since, max: until };
           setEvents((prev) => {
-            // Drop existing records inside the covered span and replace them with full-res.
+            // Drop existing records inside the window and replace them with full-res.
             const filtered = prev.filter((e) => {
               const ts = getRecordTsMs(e);
-              return ts === null || ts < since || ts > repUntil;
+              return ts === null || ts < since || ts > until;
             });
-            const merged = filtered.concat(truncated ? windowItems.filter((e) => { const ts = getRecordTsMs(e); return ts === null || ts <= repUntil; }) : windowItems);
+            const merged = filtered.concat(windowItems);
             merged.sort((a, b) => (getRecordTsMs(a) ?? 0) - (getRecordTsMs(b) ?? 0));
             return trimEventsToCap(merged, 250000, currentTsMsRef.current);
           });
         })
-        .catch((err) => {
-          if (cancelled) return;
-          setHistoryNotice({ kind: 'window', text: `Failed to load detail for this part of the timeline: ${err instanceof Error ? err.message : 'request failed'}` });
-        });
+        .catch(() => { /* ignore */ });
     }, 180);
     return () => { cancelled = true; window.clearTimeout(t); };
   }, [live, serverId, currentTsMs]);
-
-  // GM pings now live in their own sidecar (they carry historical timestamps,
-  // which broke the event log's time-ordering — see the server's gmPing route).
-  // Poll them and merge into the timeline; they're rare, so this is cheap.
-  const pingsSeenRef = useRef<Set<string>>(new Set());
-  useEffect(() => {
-    if (!serverId) return;
-    const sid = serverId;
-    pingsSeenRef.current = new Set();
-    let cancelled = false;
-    let timer: number | null = null;
-    async function poll() {
-      try {
-        const pings = await getReplayPings(sid);
-        if (cancelled) return;
-        const fresh = pings.filter((p) => {
-          const k = getRecordKey(p);
-          if (pingsSeenRef.current.has(k)) return false;
-          pingsSeenRef.current.add(k);
-          return true;
-        });
-        if (fresh.length) {
-          setEvents((prev) => {
-            const seen = new Set<string>();
-            for (const e of prev) seen.add(getRecordKey(e));
-            const add = fresh.filter((p) => !seen.has(getRecordKey(p)));
-            if (!add.length) return prev;
-            const merged = prev.concat(add);
-            merged.sort((a, b) => (getRecordTsMs(a) ?? 0) - (getRecordTsMs(b) ?? 0));
-            return merged;
-          });
-        }
-      } catch { /* pings are best-effort */ }
-      if (!cancelled) timer = window.setTimeout(poll, 15_000);
-    }
-    poll();
-    return () => { cancelled = true; if (timer !== null) window.clearTimeout(timer); };
-  }, [serverId]);
 
   useEffect(() => {
     if (!serverId) return;
@@ -840,19 +754,20 @@ export function ReplayToolPage() {
         const r = await getReplayRange(serverIdValue);
         if (cancelled) return;
 
-        // If history was cleared server-side, range jumps backwards. This used
-        // to fire on a mere 1s regression and respond by REPLACING the entire
-        // timeline with a single synthetic restart record — so any transient
-        // lag between /range and /events emptied the map mid-session. The
-        // tolerance is now large enough that only a genuine history reset
-        // qualifies, and recovery just resets the fetch cursor: loaded data is
-        // never thrown away, because re-fetching it is exactly what the poll
-        // below does anyway.
+        // If history was cleared server-side, range will jump backwards.
+        // Reset client cursors so we don't keep requesting from a future tsMs.
         const prevFetched = lastFetchedTsMsRef.current;
-        const HISTORY_RESET_TOLERANCE_MS = 120_000;
-        if (typeof prevFetched === 'number' && typeof r.maxTsMs === 'number' && r.maxTsMs + HISTORY_RESET_TOLERANCE_MS < prevFetched) {
+        if (typeof prevFetched === 'number' && typeof r.maxTsMs === 'number' && r.maxTsMs + 1000 < prevFetched) {
           lastFetchedTsMsRef.current = null;
           lastToastReceivedAtRef.current = Date.now();
+          setEvents([{
+            receivedAt: Date.now(),
+            payload: {
+              type: 'restart',
+              tsMs: r.maxTsMs,
+              event: { reason: 'server_restart_or_history_cleared' },
+            },
+          } as any]);
           setToasts([]);
           setIsPlaying(false);
 
@@ -972,11 +887,7 @@ export function ReplayToolPage() {
             // While live, keep `events` small so each poll's re-derivation stays cheap
             // and updates land at the snapshot rate; this also sheds any 24h overview
             // that was merged during a pause once the user returns to live.
-            // 12000 was far too generous: records average ~28KB (a snapshot carries
-            // every player's inventory), so the old cap meant holding ~330MB of JSON
-            // and rebuilding every derived series over it twice a second — the
-            // "flashy/laggy" live view. 3000 is still ~35 minutes of live history.
-            const cap = live ? 3000 : 250000;
+            const cap = live ? 12000 : 250000;
             return trimEventsToCap(next, cap, currentTsMsRef.current);
           });
         }
@@ -1598,13 +1509,10 @@ export function ReplayToolPage() {
       const ORIGIN_BOUND = 30;
       const MAX_SCAN_POINTS = 25;
       const MAX_SCAN_BACK_MS = 60_000;
-      // The 24h overview is ~1 snapshot / 15s; interpolate across gaps up to two
-      // sample intervals-and-change. The old 17s bound left only 2s of slack over
-      // the sampling interval, so ONE stuttered/dropped snapshot (fights are
-      // exactly when the game server lags) pushed the gap past the bound and the
-      // player vanished from the map mid-playback. Real dropouts (longer gaps)
-      // still break rather than drawing a false straight line.
-      const MAX_INTERP_GAP_MS = 35_000;
+      // The 24h overview is ~1 snapshot / 15s; interpolate across gaps up to a bit
+      // beyond that so old-data movement glides instead of stepping, while real
+      // dropouts (longer gaps) still break rather than drawing a false straight line.
+      const MAX_INTERP_GAP_MS = 17_000;
       const MAX_ANCHOR_WINDOW_MS = 5000;
       const MAX_ANCHOR_POINTS = 80;
 
@@ -2201,16 +2109,7 @@ export function ReplayToolPage() {
       const deadUntil = deadUntilByPlayerId.get(playerId) || 0;
       const isDead = typeof snapTsMs === 'number' ? deadUntil > snapTsMs : false;
 
-      // The rendered sample's own recorded name is ground truth for this
-      // instant: it was captured together with the position, and the position
-      // scan is entity-anchored, so it cannot belong to a different occupant
-      // of a recycled player ID. The join/disconnect series is only a
-      // fallback (its bounding events may sit outside the loaded window), and
-      // the knownPlayers name last — that one is "whoever held this ID most
-      // recently in the loaded data", which is exactly how a rewound
-      // character used to wear the wrong player's name.
-      const sampleName = typeof (pj as any).name === 'string' ? (pj as any).name.trim() : '';
-      let label = sampleName || nameAt(playerId) || p.name || String(playerId);
+      let label = nameAt(playerId) || p.name || String(playerId);
       if (showVehicleInTags && inVehicle && vehicleName) label = `${label} (${vehicleName})`;
 
       out.push({
@@ -3120,14 +3019,8 @@ export function ReplayToolPage() {
     setFetchingHistory(true);
     if (live) setLive(false);
     slimHistoryLoadedRef.current = sid;
-    getReplayEventsEx({ serverId: sid, limit: 200000, tail: true, sampleIntervalMs: 15000, slim: true })
-      .then(({ records: all, overviewStatus }) => {
-        if (overviewStatus === 'building') {
-          slimHistoryLoadedRef.current = null;
-          setHistoryNotice({ kind: 'overview', text: 'The server is still indexing this replay history — try again in a few minutes.' });
-          return;
-        }
-        setHistoryNotice((n) => (n && n.kind === 'overview' ? null : n));
+    getReplayEvents({ serverId: sid, limit: 200000, tail: true, sampleIntervalMs: 15000, slim: true })
+      .then((all) => {
         if (all.length === 0) return;
         setEvents((prev) => {
           const seen = new Set<string>();
@@ -3143,10 +3036,7 @@ export function ReplayToolPage() {
           return trimEventsToCap(merged, 250000, currentTsMsRef.current);
         });
       })
-      .catch((err) => {
-        slimHistoryLoadedRef.current = null;
-        setHistoryNotice({ kind: 'overview', text: `Failed to load the 24h history: ${err instanceof Error ? err.message : 'request failed'}` });
-      })
+      .catch(() => { /* ignore */ })
       .finally(() => setFetchingHistory(false));
   }, [serverId, fetchingHistory, live]);
 
@@ -3217,11 +3107,6 @@ export function ReplayToolPage() {
 
         {busy ? <div className="muted" style={{ fontSize: 12 }}>Loading…</div> : null}
         {error ? <div className="error" style={{ flex: 1 }}>{error}</div> : null}
-        {historyNotice ? (
-          <div style={{ flex: 1, padding: '6px 10px', borderRadius: 6, background: 'rgba(249,188,89,0.12)', border: '1px solid rgba(249,188,89,0.45)', color: '#f9bc59', fontSize: 12 }}>
-            {historyNotice.text}
-          </div>
-        ) : null}
       </div>
 
       {serverId ? (

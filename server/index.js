@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import readline from 'node:readline';
-import { createReadStream, createWriteStream } from 'node:fs';
+import { createReadStream } from 'node:fs';
 
 import dotenv from 'dotenv';
 import express from 'express';
@@ -1599,221 +1599,20 @@ async function compactNdjsonToRetention(filePath, cutoffReceivedAt) {
   return { kept, dropped, minTsMs, minReceivedAt, maxReceivedAt };
 }
 
-// ─── Retention compaction ──────────────────────────────────────────────────
-// events.ndjson is append-only in receivedAt order, so retention is always
-// "drop a prefix". The original implementation rewrote the ENTIRE file
-// line-by-line (JSON.parse per record) every 60s and only afterwards checked
-// whether anything had actually been dropped — so each busy server re-parsed
-// and re-wrote multi-GB logs every minute to discard ~200 records. That pegged
-// a CPU core, stalled ingest behind the per-server lock (the freeze admins
-// reported), and left multi-GB .tmp files behind on every restart mid-rewrite
-// (19GB of them had accumulated). Now: measure the reclaimable prefix cheaply,
-// bail out unless it is worth reclaiming, and drop it with a byte copy that
-// never parses a record.
-const COMPACT_MIN_INTERVAL_MS = 30 * 60_000;
-const COMPACT_MIN_DROP_BYTES = 256 * 1024 * 1024;
-const COMPACT_MIN_DROP_FRACTION = 0.15;
-const COMPACT_TMP_MAX_AGE_MS = 60 * 60_000;
-
-// Byte offset of the first record with receivedAt >= cutoff — i.e. how many
-// leading bytes retention can reclaim. 0 = nothing to drop.
-async function findRetentionStart(filePath, cutoffReceivedAt) {
-  let fh;
-  try { fh = await fs.open(filePath, 'r'); } catch { return 0; }
-  try {
-    const st = await fh.stat();
-    const size = st.size;
-    if (!size) return 0;
-    const CHUNK = 1 << 18; // > any single record
-    const buf = Buffer.allocUnsafe(CHUNK);
-
-    // receivedAt of the first complete line at/after `off`.
-    async function receivedAtAfter(off) {
-      let lineStart = off;
-      if (off > 0) {
-        const r = await fh.read(buf, 0, CHUNK, off);
-        if (!r.bytesRead) return null;
-        const nl = buf.indexOf(0x0a, 0);
-        if (nl === -1) return null;
-        lineStart = off + nl + 1;
-      }
-      if (lineStart >= size) return null;
-      const r = await fh.read(buf, 0, CHUNK, lineStart);
-      if (!r.bytesRead) return null;
-      let nl = buf.indexOf(0x0a, 0);
-      if (nl === -1) nl = r.bytesRead;
-      try {
-        const o = JSON.parse(buf.toString('utf8', 0, nl));
-        return (o && typeof o.receivedAt === 'number') ? o.receivedAt : null;
-      } catch { return null; }
-    }
-
-    let lo = 0;
-    let hi = size;
-    while (lo < hi) {
-      const mid = Math.floor((lo + hi) / 2); // not >>1: offsets exceed 2^31
-      const ra = await receivedAtAfter(mid);
-      if (ra === null) { hi = mid; continue; }
-      if (ra < cutoffReceivedAt) lo = mid + 1; else hi = mid;
-    }
-
-    // The search lands near the boundary but not necessarily on a line start.
-    // Rewind a margin and walk forward to the exact first line to keep.
-    const from = Math.max(0, lo - (8 << 20));
-    let offset = from;
-    let skipPartial = from > 0;
-    const stream = createReadStream(filePath, { start: from });
-    const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
-    try {
-      for await (const line of rl) {
-        const bytes = Buffer.byteLength(line) + 1; // records are written with \n
-        if (skipPartial) { skipPartial = false; offset += bytes; continue; }
-        let o = null;
-        try { o = JSON.parse(line); } catch { /* keep unparseable lines */ }
-        const ra = o && typeof o.receivedAt === 'number' ? o.receivedAt : null;
-        if (ra === null || ra >= cutoffReceivedAt) return offset;
-        offset += bytes;
-      }
-    } finally {
-      try { rl.close(); } catch { /* ignore */ }
-      try { stream.destroy(); } catch { /* ignore */ }
-    }
-    return size; // every record is older than the cutoff
-  } finally {
-    try { await fh.close(); } catch { /* ignore */ }
-  }
-}
-
-// Remove abandoned compaction temp files (a restart mid-rewrite leaves one
-// behind, and they are the size of the whole log).
-async function cleanStaleTempFiles(serverDir) {
-  let names = [];
-  try { names = await fs.readdir(serverDir); } catch { return 0; }
-  const now = Date.now();
-  let removed = 0;
-  for (const name of names) {
-    if (!name.includes('.tmp-')) continue;
-    const p = path.join(serverDir, name);
-    try {
-      const st = await fs.stat(p);
-      if (now - st.mtimeMs < COMPACT_TMP_MAX_AGE_MS) continue;
-      await fs.unlink(p);
-      removed++;
-    } catch { /* ignore */ }
-  }
-  return removed;
-}
-
-// Drop everything before `startByte` by copying the remainder — no parsing, so
-// the cost is pure IO instead of JSON.parse over the whole log.
-async function dropEventsPrefix(filePath, startByte) {
-  const tmp = `${filePath}.tmp-${crypto.randomBytes(6).toString('hex')}`;
-  let kept = 0;
-  let firstLine = '';
-  let sawFirst = false;
-  try {
-    await new Promise((resolve, reject) => {
-      const src = createReadStream(filePath, { start: startByte });
-      const dst = createWriteStream(tmp);
-      src.on('error', reject);
-      dst.on('error', reject);
-      src.on('data', (chunk) => {
-        for (let i = 0; i < chunk.length; i++) if (chunk[i] === 0x0a) kept++;
-        if (!sawFirst) {
-          sawFirst = true;
-          const nl = chunk.indexOf(0x0a);
-          firstLine = chunk.toString('utf8', 0, nl === -1 ? Math.min(chunk.length, 1 << 16) : nl);
-        }
-      });
-      dst.on('finish', resolve);
-      src.pipe(dst);
-    });
-  } catch (e) {
-    try { await fs.unlink(tmp); } catch { /* ignore */ }
-    throw e;
-  }
-  await fs.rename(tmp, filePath);
-  let minTsMs = null;
-  let minReceivedAt = null;
-  try {
-    const o = JSON.parse(firstLine);
-    minTsMs = o && o.payload && typeof o.payload.tsMs === 'number' ? o.payload.tsMs : null;
-    minReceivedAt = o && typeof o.receivedAt === 'number' ? o.receivedAt : null;
-  } catch { /* leave nulls; the next ingest refreshes them */ }
-  return { kept, minTsMs, minReceivedAt };
-}
-
 async function maybeCompactServerEvents(serverDir, idx, nowTsMs) {
+  // Compact at most every 60s per server.
   const last = idx && typeof idx.lastCompactionAt === 'number' ? idx.lastCompactionAt : 0;
-  if (Date.now() - last < COMPACT_MIN_INTERVAL_MS) return idx;
+  if (Date.now() - last < 60_000) return idx;
 
   if (RETENTION_MS <= 0) return idx;
-
-  // Give the boot-time overview resume a head start. Compaction rewrites
-  // events.ndjson, and doing that before ensureOverview has re-anchored the
-  // sidecar's srcSize invalidates the saved offset and forces an unnecessary
-  // full rebuild on every restart. Retention can comfortably wait a few
-  // minutes; if the overview never comes up, compaction proceeds regardless.
-  {
-    const ost = overviewState.get(path.basename(serverDir));
-    if ((!ost || !ost.ready) && Date.now() - PROCESS_STARTED_AT < 10 * 60_000) {
-      return idx;
-    }
-  }
 
   // Retention is based on wall-clock time (receivedAt), not the exporter timeline.
   const cutoff = Date.now() - RETENTION_MS;
 
   const eventsPath = path.join(serverDir, 'events.ndjson');
-  const safeIdForLog = path.basename(serverDir);
-
-  // Sweep abandoned temp files from earlier interrupted runs whether or not we
-  // compact this pass — they are log-sized and pure waste.
-  const sweptTemps = await cleanStaleTempFiles(serverDir);
-  if (sweptTemps > 0) console.log(`[compact] ${safeIdForLog}: removed ${sweptTemps} stale temp file(s)`);
-
-  // Measure before doing any work: rewriting gigabytes to reclaim a few hundred
-  // records is what made this pathological.
-  let size = 0;
-  try { size = (await fs.stat(eventsPath)).size; } catch { return { ...idx, lastCompactionAt: Date.now() }; }
-  const dropBytes = await findRetentionStart(eventsPath, cutoff);
-  const worthIt = dropBytes >= COMPACT_MIN_DROP_BYTES
-    || (size > 0 && (dropBytes / size) >= COMPACT_MIN_DROP_FRACTION);
-  if (dropBytes <= 0 || !worthIt) {
+  const { kept, dropped, minTsMs, minReceivedAt, maxReceivedAt } = await compactNdjsonToRetention(eventsPath, cutoff);
+  if (dropped <= 0) {
     return { ...idx, lastCompactionAt: Date.now() };
-  }
-
-  const t0 = Date.now();
-  const prevStored = typeof idx.storedEvents === 'number' ? idx.storedEvents : null;
-  let kept;
-  let minTsMs;
-  let minReceivedAt;
-  try {
-    ({ kept, minTsMs, minReceivedAt } = await dropEventsPrefix(eventsPath, dropBytes));
-  } catch (e) {
-    console.error(`[compact] ${safeIdForLog}: prefix drop failed:`, e && e.message);
-    return { ...idx, lastCompactionAt: Date.now() };
-  }
-  const dropped = prevStored !== null ? Math.max(0, prevStored - kept) : 0;
-  const maxReceivedAt = typeof idx.lastReceivedAt === 'number' ? idx.lastReceivedAt : undefined;
-  console.log(`[compact] ${safeIdForLog}: reclaimed ${(dropBytes / 1048576).toFixed(0)}MB (${dropped} records, ${kept} kept) in ${Date.now() - t0}ms`);
-
-  // Mirror retention onto the sidecars so they can't grow unbounded, and
-  // re-anchor the overview's srcSize to the rewritten log (we run under the
-  // ingest lock, so no append can slip between the rewrite and the stat).
-  const safeId = path.basename(serverDir);
-  try { await compactNdjsonToRetention(path.join(serverDir, 'pings.ndjson'), cutoff); } catch { /* no pings yet */ }
-  const ost = overviewState.get(safeId);
-  if (ost && ost.ready) {
-    try {
-      await compactNdjsonToRetention(overviewFilePath(serverDir), cutoff);
-      let size = 0;
-      try { size = (await fs.stat(eventsPath)).size; } catch { /* ignore */ }
-      ost.srcSize = size;
-      await saveOverviewMeta(serverDir, ost, true);
-    } catch (e) {
-      console.error(`[overview] compaction mirror failed for ${safeId}:`, e && e.message);
-    }
   }
 
   const next = {
@@ -2376,6 +2175,7 @@ const SLIM_HISTORY_DROP_TYPES = new Set(['vehicleIndex', 'serverHealth', 'itemCa
 // light (live re-derives over it every poll); fine detail comes from on-demand
 // full-resolution window reads when paused/scrubbing.
 const SLIM_HISTORY_INTERVAL_MS = 15000;
+const slimHistoryCache = new Map(); // safeId -> { intervalMs, size, records, lastSnapshotTsMs }
 
 async function scanSlimSlice(filePath, startByte, sampleIntervalMs, lastSnapshotTsMs) {
   const records = [];
@@ -2426,155 +2226,33 @@ async function scanSlimSlice(filePath, startByte, sampleIntervalMs, lastSnapshot
   return { records, lastSnapshotTsMs: lastSnap };
 }
 
-// ─── Persistent 24h overview (overview.ndjson sidecar) ─────────────────────
-// The coarse timeline used to be rebuilt by scanning the whole multi-GB
-// events.ndjson on first request after every restart — long enough on the big
-// servers to blow through the proxy timeout, which surfaced to admins as
-// "rewinding just doesn't work" with a silently empty map. It is now a sidecar
-// file per server (overview.ndjson + overview.meta.json) that is:
-//   • appended incrementally at ingest time (≈1 slim snapshot / 15s + sparse events),
-//   • re-anchored on boot by scanning only the bytes appended while we were down,
-//   • compacted alongside the event log's retention pass,
-// so serving it is a plain small-file read: no scan, no timeout, restart-proof.
-// The one full scan left is the very first build per server (background, boot).
-const overviewState = new Map(); // safeId -> { ready, building, srcSize, lastSnapshotTsMs, lastReceivedAt, metaSavedAt }
-const PROCESS_STARTED_AT = Date.now();
+async function getSlimHistory(safeId, filePath, sampleIntervalMs, limit) {
+  let stat;
+  try { stat = await fs.stat(filePath); } catch { return []; }
+  if (!stat || stat.size <= 0) return [];
 
-function overviewFilePath(serverDir) { return path.join(serverDir, 'overview.ndjson'); }
-function overviewMetaPath(serverDir) { return path.join(serverDir, 'overview.meta.json'); }
-
-async function saveOverviewMeta(serverDir, st, force) {
-  const now = Date.now();
-  if (!force && now - (st.metaSavedAt || 0) < 30_000) return;
-  st.metaSavedAt = now;
-  await writeJsonAtomic(overviewMetaPath(serverDir), {
-    intervalMs: SLIM_HISTORY_INTERVAL_MS,
-    srcSize: st.srcSize,
-    lastSnapshotTsMs: Number.isFinite(st.lastSnapshotTsMs) ? st.lastSnapshotTsMs : null,
-    lastReceivedAt: st.lastReceivedAt || 0,
-    updatedAt: now,
-  });
-}
-
-// Slim one record for the overview, honouring the sample interval. Returns the
-// slim record or null. Mirrors scanSlimSlice's per-line logic.
-function slimOverviewRecord(obj, st) {
-  const p = obj && obj.payload;
-  if (!p) return null;
-  const type = typeof p.type === 'string' ? p.type : '';
-  if (SLIM_HISTORY_DROP_TYPES.has(type)) return null;
-  if (type !== 'snapshot') return obj;
-  const tsMs = typeof p.tsMs === 'number' ? p.tsMs : null;
-  if (tsMs === null) return null;
-  if (tsMs - st.lastSnapshotTsMs < SLIM_HISTORY_INTERVAL_MS) return null;
-  st.lastSnapshotTsMs = tsMs;
-  const players = Array.isArray(p.players) ? p.players : [];
-  const sp = new Array(players.length);
-  for (let i = 0; i < players.length; i++) {
-    const pl = players[i] || {};
-    sp[i] = { playerId: pl.playerId, name: pl.name, entityId: pl.entityId, pos: pl.pos, aimDir: pl.aimDir, inVehicle: pl.inVehicle };
-  }
-  return { receivedAt: obj.receivedAt, payload: { type: 'snapshot', tsMs, players: sp } };
-}
-
-// Ingest-time hook (called under the per-server ingest lock). Always advances
-// srcSize by the exact bytes appended to events.ndjson — even for records the
-// overview drops — so the boot delta-scan never re-reads covered bytes.
-async function overviewIngest(safeId, serverDir, rec, lineBytes) {
-  const st = overviewState.get(safeId);
-  if (!st || !st.ready) return;
-  st.srcSize += lineBytes;
-  const slim = slimOverviewRecord(rec, st);
-  if (slim) {
-    await fs.appendFile(overviewFilePath(serverDir), `${JSON.stringify(slim)}\n`, 'utf8');
-    if (typeof slim.receivedAt === 'number' && slim.receivedAt > (st.lastReceivedAt || 0)) st.lastReceivedAt = slim.receivedAt;
-  }
-  await saveOverviewMeta(serverDir, st, false);
-}
-
-// Append a delta-scan's records to the overview file, deduped against what the
-// file already holds via receivedAt (monotonic per server; an equal-millisecond
-// collision could drop one coarse sample — harmless for a 15s overview).
-async function appendOverviewDelta(serverDir, st, records) {
-  const fresh = records.filter((r) => typeof r.receivedAt === 'number' && r.receivedAt > (st.lastReceivedAt || 0));
-  if (!fresh.length) return;
-  await fs.appendFile(overviewFilePath(serverDir), fresh.map((r) => JSON.stringify(r)).join('\n') + '\n', 'utf8');
-  st.lastReceivedAt = fresh[fresh.length - 1].receivedAt;
-}
-
-// Build or resume the overview for a server. Single-flight; safe to fire and
-// forget. Ends by flipping `ready` under the ingest lock so the incremental
-// ingest hook takes over with no gap or double-write.
-async function ensureOverview(safeId) {
-  const existing = overviewState.get(safeId);
-  if (existing && (existing.ready || existing.building)) return existing;
-  const st = { ready: false, building: true, srcSize: 0, lastSnapshotTsMs: -Infinity, lastReceivedAt: 0, metaSavedAt: 0 };
-  overviewState.set(safeId, st);
-  const serverDir = path.join(DATA_DIR, 'servers', safeId);
-  const eventsPath = path.join(serverDir, 'events.ndjson');
-  try {
-    const meta = await readJsonOrNull(overviewMetaPath(serverDir));
-    let evSize = 0;
-    try { evSize = (await fs.stat(eventsPath)).size; } catch { /* no log yet */ }
-
-    if (meta && meta.intervalMs === SLIM_HISTORY_INTERVAL_MS && typeof meta.srcSize === 'number' && evSize >= meta.srcSize) {
-      // Resume: trust the sidecar, scan only what was appended while we were down.
-      st.srcSize = meta.srcSize;
-      st.lastSnapshotTsMs = typeof meta.lastSnapshotTsMs === 'number' ? meta.lastSnapshotTsMs : -Infinity;
-      st.lastReceivedAt = meta.lastReceivedAt || 0;
-      if (evSize > st.srcSize) {
-        const slice = await scanSlimSlice(eventsPath, st.srcSize, SLIM_HISTORY_INTERVAL_MS, st.lastSnapshotTsMs);
-        await appendOverviewDelta(serverDir, st, slice.records);
-        st.lastSnapshotTsMs = slice.lastSnapshotTsMs;
-        st.srcSize = evSize;
-      }
-    } else {
-      // First build, or the log shrank under us (compaction/reset while down):
-      // full background scan, then an atomic sidecar rewrite.
-      const t0 = Date.now();
-      const full = await scanSlimSlice(eventsPath, 0, SLIM_HISTORY_INTERVAL_MS, -Infinity);
-      const tmp = `${overviewFilePath(serverDir)}.tmp-${crypto.randomBytes(6).toString('hex')}`;
-      await ensureDir(serverDir);
-      await fs.writeFile(tmp, full.records.length ? full.records.map((r) => JSON.stringify(r)).join('\n') + '\n' : '', 'utf8');
-      await fs.rename(tmp, overviewFilePath(serverDir));
-      st.lastSnapshotTsMs = full.lastSnapshotTsMs;
-      st.lastReceivedAt = full.records.length ? (full.records[full.records.length - 1].receivedAt || 0) : 0;
-      st.srcSize = evSize;
-      console.log(`[overview] built ${safeId}: ${full.records.length} records from ${(evSize / 1048576).toFixed(0)}MB in ${Date.now() - t0}ms`);
+  let c = slimHistoryCache.get(safeId);
+  if (c && c.intervalMs === sampleIntervalMs && stat.size >= c.size) {
+    if (stat.size > c.size) {
+      const slice = await scanSlimSlice(filePath, c.size, sampleIntervalMs, c.lastSnapshotTsMs);
+      if (slice.records.length) c.records = c.records.concat(slice.records);
+      c.lastSnapshotTsMs = slice.lastSnapshotTsMs;
+      c.size = stat.size;
     }
-    await saveOverviewMeta(serverDir, st, true);
-
-    // Close the gap: catch up on anything ingested during the scan, then flip
-    // ready inside the lock so no record falls between scan and hook.
-    await withIngestLock(safeId, async () => {
-      let size = 0;
-      try { size = (await fs.stat(eventsPath)).size; } catch { /* ignore */ }
-      if (size > st.srcSize) {
-        const slice = await scanSlimSlice(eventsPath, st.srcSize, SLIM_HISTORY_INTERVAL_MS, st.lastSnapshotTsMs);
-        await appendOverviewDelta(serverDir, st, slice.records);
-        st.lastSnapshotTsMs = slice.lastSnapshotTsMs;
-        st.srcSize = size;
-      }
-      st.ready = true;
-      st.building = false;
-      await saveOverviewMeta(serverDir, st, true);
-    });
-  } catch (e) {
-    console.error(`[overview] build failed for ${safeId}:`, e && e.message);
-    overviewState.delete(safeId); // allow a retry on the next request/boot pass
+  } else {
+    const full = await scanSlimSlice(filePath, 0, sampleIntervalMs, -Infinity);
+    c = { intervalMs: sampleIntervalMs, size: stat.size, records: full.records, lastSnapshotTsMs: full.lastSnapshotTsMs };
+    slimHistoryCache.set(safeId, c);
   }
-  return st;
+
+  return c.records.length > limit ? c.records.slice(c.records.length - limit) : c.records;
 }
 
 // Fast windowed read for the large, time-ordered (monotonic tsMs) append-only log:
 // binary-search the byte offset of sinceTsMs, then stream forward collecting the
 // window. The [since,until] filter guarantees correctness regardless of where the
 // search lands; the search just keeps it fast. Mid-based search cannot infinite-loop.
-// `searchFromTsMs` (optional) anchors the binary search earlier than the
-// filter window — used as a fallback when out-of-order records (legacy gmPing
-// lines) may have misled the search; the [since,until] filter below still
-// bounds what is returned, so an earlier anchor only costs sequential IO.
-async function readNdjsonByteWindow(filePath, sinceTsMs, untilTsMs, limit, types, searchFromTsMs) {
+async function readNdjsonByteWindow(filePath, sinceTsMs, untilTsMs, limit, types) {
   let fh;
   try { fh = await fs.open(filePath, 'r'); } catch { return []; }
   try {
@@ -2606,8 +2284,7 @@ async function readNdjsonByteWindow(filePath, sinceTsMs, untilTsMs, limit, types
     }
 
     let lo = 0;
-    const searchTarget = (typeof searchFromTsMs === 'number') ? searchFromTsMs : sinceTsMs;
-    if (typeof searchTarget === 'number') {
+    if (typeof sinceTsMs === 'number') {
       let hi = size;
       while (lo < hi) {
         // Math.floor, not >>1: byte offsets exceed 2^31 in multi-GB files and the
@@ -2615,7 +2292,7 @@ async function readNdjsonByteWindow(filePath, sinceTsMs, untilTsMs, limit, types
         const mid = Math.floor((lo + hi) / 2);
         const ts = await tsAtOffset(mid);
         if (ts === null) { hi = mid; continue; }
-        if (ts < searchTarget) lo = mid + 1; else hi = mid;
+        if (ts < sinceTsMs) lo = mid + 1; else hi = mid;
       }
     }
     const startByte = Math.max(0, lo - (4 << 20)); // 4MB margin back for safety
@@ -2681,27 +2358,12 @@ app.get('/api/replay/events', requireAuth, requireTool('replay'), requireServerA
     slim,
   };
 
-  // Slim full-history (the playback bootstrap): served straight from the
-  // persistent overview sidecar — a small-file read, never a log scan. While
-  // the sidecar is still being built (first boot after this feature shipped,
-  // or a rebuild after the log shrank) we return an empty set with an explicit
-  // "building" header so the client can say so instead of showing an empty
-  // world — the old behaviour was a multi-minute scan that timed out at the
-  // proxy and looked like "rewind is broken".
-  if (slim && opts.sampleIntervalMs === SLIM_HISTORY_INTERVAL_MS && tail && opts.sinceTsMs === null && opts.untilTsMs === null && !types) {
-    const st = overviewState.get(safeId);
-    if (st && st.ready) {
-      let text = '';
-      try { text = await fs.readFile(overviewFilePath(path.join(DATA_DIR, 'servers', safeId)), 'utf8'); } catch { /* empty */ }
-      const lines = text ? text.split('\n').filter(Boolean) : [];
-      const capped = lines.length > opts.limit ? lines.slice(lines.length - opts.limit) : lines;
-      res.set('X-Replay-Overview', 'ready');
-      res.type('application/json').send(`[${capped.join(',')}]`);
-    } else {
-      void ensureOverview(safeId);
-      res.set('X-Replay-Overview', 'building');
-      res.json([]);
-    }
+  // Slim full-history (the playback bootstrap): served from an incremental cache
+  // so repeat loads don't re-scan the whole (multi-GB) event log.
+  if (slim && opts.sampleIntervalMs > 0 && tail && opts.sinceTsMs === null && opts.untilTsMs === null && !types) {
+    const histPath = path.join(DATA_DIR, 'servers', safeId, 'events.ndjson');
+    const records = await getSlimHistory(safeId, histPath, opts.sampleIntervalMs, opts.limit);
+    res.json(records);
     return;
   }
 
@@ -2719,27 +2381,7 @@ app.get('/api/replay/events', requireAuth, requireTool('replay'), requireServerA
   // Full-resolution time window (e.g. the on-demand window the client loads around
   // the scrub point): serve via a byte-range read so it doesn't scan the whole log.
   if (!opts.slim && !opts.sampleIntervalMs && opts.sinceTsMs !== null) {
-    let items = await readNdjsonByteWindow(eventsPath, opts.sinceTsMs, opts.untilTsMs, opts.limit, opts.types);
-    // Defensive retry: the byte search assumes tsMs is file-ordered. Legacy
-    // gmPing records (appended at the file end carrying a historical tsMs)
-    // violated that and could land the search PAST the requested window,
-    // returning nothing for a region the index says exists — admins saw the
-    // players they were watching vanish on rewind. Re-run the search anchored
-    // an hour earlier (streaming forward filters by the real window, so this
-    // costs IO, not memory) before giving up.
-    if (items.length === 0) {
-      const idx = await readJsonOrNull(path.join(DATA_DIR, 'servers', safeId, 'index.json'));
-      const overlaps = idx && typeof idx.minTsMs === 'number' && typeof idx.maxTsMs === 'number'
-        && (opts.untilTsMs === null || idx.minTsMs <= opts.untilTsMs)
-        && idx.maxTsMs >= opts.sinceTsMs;
-      if (overlaps) {
-        items = await readNdjsonByteWindow(eventsPath, opts.sinceTsMs, opts.untilTsMs, opts.limit, opts.types, opts.sinceTsMs - 3_600_000);
-        if (items.length > 0) console.warn(`[replay] window search fallback hit for ${safeId} @${opts.sinceTsMs} (out-of-order log records)`);
-      }
-    }
-    // Tell the client when the window was cut off by the limit, so it can warn
-    // instead of silently replacing good coarse data with a partial window.
-    if (items.length >= opts.limit) res.set('X-Replay-Truncated', '1');
+    const items = await readNdjsonByteWindow(eventsPath, opts.sinceTsMs, opts.untilTsMs, opts.limit, opts.types);
     res.json(items);
     return;
   }
@@ -2983,36 +2625,15 @@ app.post('/api/replay/gmPing', requireAuth, requireTool('replay'), requireServer
       },
     };
 
-    // Pings go to their own sidecar, NOT events.ndjson: a ping carries the
-    // *pinged moment's* tsMs but is appended at the end of the log, which broke
-    // the file's time-ordering — and the byte-window binary search relies on
-    // that ordering, so a GM pinging an event could corrupt the very rewind
-    // they were about to do. The client fetches pings via /api/replay/pings
-    // and merges them into its timeline.
-    const pingsPath = path.join(serverDir, 'pings.ndjson');
-    await fs.appendFile(pingsPath, `${JSON.stringify(record)}\n`, 'utf8');
+    const eventsPath = path.join(serverDir, 'events.ndjson');
+    await fs.appendFile(eventsPath, `${JSON.stringify(record)}\n`, 'utf8');
+
+    // Also keep it in the in-memory tail for fast live polling.
+    pushReplayRecent(safeId, record);
   });
 
   auditReplay(req, 'replay.gmping', { serverId: safeId, pos: { x: Math.round(x), y: Math.round(y), z: Math.round(z) }, title: cleanTitle || undefined, reporterPlayerId: reporterId });
   res.json({ ok: true });
-}));
-
-// GM pings for a server (see the sidecar note in the gmPing route). Small file;
-// capped to the most recent 500. Legacy pings recorded inline in events.ndjson
-// age out with 24h retention; the client dedupes by record key, so the overlap
-// window is harmless.
-app.get('/api/replay/pings', requireAuth, requireTool('replay'), requireServerAccess, asyncRoute(async (req, res) => {
-  const serverId = String(req.query.serverId || '');
-  if (!serverId) { res.status(400).send('Missing serverId'); return; }
-  const safeId = sanitizeServerId(serverId);
-  let text = '';
-  try { text = await fs.readFile(path.join(DATA_DIR, 'servers', safeId, 'pings.ndjson'), 'utf8'); } catch { /* none yet */ }
-  const out = [];
-  for (const line of text.split('\n')) {
-    if (!line) continue;
-    try { const o = JSON.parse(line); if (o && o.payload) out.push(o); } catch { /* skip */ }
-  }
-  res.json(out.length > 500 ? out.slice(out.length - 500) : out);
 }));
 
 app.post('/api/replay/exportDiscord', requireAuth, requireTool('replay'), requireServerAccess, asyncRoute(async (req, res) => {
@@ -4320,19 +3941,14 @@ app.post('/api/replay/ingest', async (req, res) => {
             event: { reason: 'session_start' },
           },
         };
-        const restartLine = `${JSON.stringify(restartRecord)}\n`;
-        await fs.appendFile(eventsPath, restartLine, 'utf8');
+        await fs.appendFile(eventsPath, `${JSON.stringify(restartRecord)}\n`, 'utf8');
 
         pushReplayRecent(safeId, restartRecord);
-        // Keep the persistent overview in lockstep (we hold the ingest lock).
-        await overviewIngest(safeId, serverDir, restartRecord, Buffer.byteLength(restartLine));
       }
 
-      const recordLine = `${JSON.stringify(record)}\n`;
-      await fs.appendFile(eventsPath, recordLine, 'utf8');
+      await fs.appendFile(eventsPath, `${JSON.stringify(record)}\n`, 'utf8');
 
       pushReplayRecent(safeId, record);
-      await overviewIngest(safeId, serverDir, record, Buffer.byteLength(recordLine));
 
       let minTsMs = (typeof prev.minTsMs === 'number') ? prev.minTsMs : null;
       let maxTsMs = (typeof prev.maxTsMs === 'number') ? prev.maxTsMs : null;
@@ -4624,6 +4240,9 @@ app.post('/api/replay/ingest', async (req, res) => {
         }
       }
 
+      // Enforce 24h rolling buffer.
+      next = await maybeCompactServerEvents(serverDir, next, tsMs);
+
       // If a dev/user queued commands, pass them to the exporter via the ingest response.
       // Clear them once returned so the request is one-shot.
       const pending = (next.pendingCommands && typeof next.pendingCommands === 'object' && !Array.isArray(next.pendingCommands))
@@ -4634,22 +4253,7 @@ app.post('/api/replay/ingest', async (req, res) => {
         next = { ...next, pendingCommands: {} };
       }
 
-      // Publish the new min/max BEFORE any (slow) retention work. /events serves
-      // this record from the in-memory tail the moment it is appended, so if
-      // index.json — which /api/replay/range reads — lags behind, the client
-      // sees range.maxTsMs < what it has already fetched and concludes history
-      // was cleared. It then wiped its whole timeline: "everyone on the map
-      // disappeared". Ordering the writes this way makes that state
-      // unreachable.
       await writeJsonAtomic(idxPath, next);
-
-      // Enforce the rolling retention buffer (no-op unless there is enough to
-      // reclaim; see maybeCompactServerEvents).
-      const compacted = await maybeCompactServerEvents(serverDir, next, tsMs);
-      if (compacted !== next) {
-        next = compacted;
-        await writeJsonAtomic(idxPath, next);
-      }
 
       if (normalizedPayload && normalizedPayload.type === 'snapshot' && Array.isArray(normalizedPayload.players)) {
         const latestSnapPath = path.join(serverDir, 'latestSnapshot.json');
@@ -5247,15 +4851,14 @@ const server = app.listen(PORT, () => {
         await sleep(300);
       }
 
-      // Slow pass: bring each server's persistent overview online. After the
-      // first-ever build this is just a meta read + a delta scan of whatever
-      // was appended while the server was down — near-instant.
+      // Slow pass: the 24h overview (cooperative scan, gentle gaps).
       for (const d of dirs) {
         const safeId = sanitizeServerId(d.name);
+        const histPath = path.join(DATA_DIR, 'servers', safeId, 'events.ndjson');
         try {
           const t0 = Date.now();
-          const st = await ensureOverview(safeId);
-          console.log(`[overview] ${safeId}: ${st && st.ready ? 'ready' : 'unavailable'} in ${Date.now() - t0}ms`);
+          const recs = await getSlimHistory(safeId, histPath, SLIM_HISTORY_INTERVAL_MS, 200000);
+          console.log(`[slimHistory] warmed ${safeId}: ${recs.length} records in ${Date.now() - t0}ms`);
         } catch { /* ignore one server */ }
         await sleep(3000);
       }
