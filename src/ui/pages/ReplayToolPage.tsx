@@ -1407,18 +1407,53 @@ export function ReplayToolPage() {
     })();
   }, [serverId]);
 
+  // `events` only ever grows at the tail while live (each poll appends the newest
+  // records), yet every index below was rebuilt from scratch on each new array —
+  // 30k records x ~33 players, twice a second. That full rebuild, not the network,
+  // is what made live stutter and scrubbing feel like it hung.
+  //
+  // These two refs let the heavy derivations fold in ONLY the appended suffix when
+  // the new array extends the previous one. Identity checks on the first and last
+  // previously-seen element make that test O(1); any other change (trimming from
+  // the front, a scrub window replacing the middle, switching server) fails the
+  // test and falls back to a correct full rebuild.
+  // `gen` increments whenever the snapshot array is rebuilt or re-sorted. The
+  // player-series fold resumes from an index, which is only valid while the array
+  // is append-only — so it refuses to resume across a generation change.
+  const snapshotsFoldRef = useRef<{ src: IngestRecord[]; count: number; out: Array<{ tsMs: number; players: any[] }>; gen: number } | null>(null);
+  const seriesFoldRef = useRef<{ src: IngestRecord[]; count: number; map: Map<number, Array<{ tsMs: number; player: any }>>; foldedSnapshots: number; gen: number } | null>(null);
+
+  function extendsPrevious(prev: { src: IngestRecord[]; count: number } | null, next: IngestRecord[]): boolean {
+    if (!prev || prev.count === 0) return false;
+    if (next.length < prev.count) return false;
+    return next[0] === prev.src[0] && next[prev.count - 1] === prev.src[prev.count - 1];
+  }
+
   const snapshots = useMemo(() => {
-    const out: Array<{ tsMs: number; players: any[] }> = [];
-    for (const e of events) {
-      const p: any = e.payload;
+    const prev = snapshotsFoldRef.current;
+    const reuse = extendsPrevious(prev, events);
+    const out = reuse ? prev!.out : [];
+    const start = reuse ? prev!.count : 0;
+    let appendedOutOfOrder = false;
+    for (let i = start; i < events.length; i++) {
+      const p: any = events[i].payload;
       if (!p || typeof p !== 'object') continue;
       if (p.type !== 'snapshot') continue;
       if (typeof p.tsMs !== 'number') continue;
       if (!Array.isArray(p.players)) continue;
+      if (out.length > 0 && p.tsMs < out[out.length - 1].tsMs) appendedOutOfOrder = true;
       out.push({ tsMs: p.tsMs, players: p.players });
     }
-    out.sort((a, b) => a.tsMs - b.tsMs);
-    return out;
+    // Records arrive time-ordered, so the array is normally already sorted; only
+    // pay for a sort when something actually landed out of order.
+    const reordered = !reuse || appendedOutOfOrder;
+    if (reordered) out.sort((a, b) => a.tsMs - b.tsMs);
+    const gen = reordered ? ((prev?.gen ?? 0) + 1) : (prev?.gen ?? 0);
+    snapshotsFoldRef.current = { src: events, count: events.length, out, gen };
+    // Return a fresh array (a pointer copy, microseconds) rather than the mutated
+    // accumulator: memos downstream key off identity, and handing back the same
+    // object would let them serve stale results after new data folded in.
+    return out.slice();
   }, [events]);
 
   const knownPlayers = useMemo((): ReplayPlayer[] => {
@@ -1463,9 +1498,21 @@ export function ReplayToolPage() {
 
   const playerSeriesById = useMemo(() => {
     // Some snapshots are partial (often only one player). Build a per-player series
-    // so we can reconstruct state at time t.
-    const map = new Map<number, Array<{ tsMs: number; player: any }>>();
-    for (const s of snapshots) {
+    // so we can reconstruct state at time t. This is the single most expensive
+    // derivation (snapshots x players), so it folds in only appended records when
+    // `events` merely grew — see the note on snapshotsFoldRef.
+    const prev = seriesFoldRef.current;
+    const snapGen = snapshotsFoldRef.current?.gen ?? 0;
+    // Resume only if `events` merely grew AND the snapshot array wasn't rebuilt or
+    // re-sorted underneath us (otherwise the resume index points at the wrong rows).
+    const reuse = extendsPrevious(prev, events) && prev!.gen === snapGen;
+    const map = reuse ? prev!.map : new Map<number, Array<{ tsMs: number; player: any }>>();
+    // Fold from the snapshot array, which mirrors `events` order; when reusing we
+    // resume at the snapshot count we had already folded.
+    const startSnapshot = reuse ? (prev!.foldedSnapshots || 0) : 0;
+    if (!reuse) map.clear();
+    for (let i = startSnapshot; i < snapshots.length; i++) {
+      const s = snapshots[i];
       const ts = s.tsMs;
       for (const pj of s.players) {
         if (!pj || typeof pj !== 'object') continue;
@@ -1479,8 +1526,12 @@ export function ReplayToolPage() {
         arr.push({ tsMs: ts, player: pj });
       }
     }
-    return map;
-  }, [snapshots]);
+    seriesFoldRef.current = { src: events, count: events.length, map, foldedSnapshots: snapshots.length, gen: snapGen };
+    // Same reasoning as `snapshots`: hand back a new Map (one entry per player, so
+    // trivial) so identity changes when the data does. The per-player arrays inside
+    // are shared and appended to, which is what makes this cheap.
+    return new Map(map);
+  }, [snapshots, events]);
 
   const findBestPlayerPosAt = useMemo(() => {
     // Some snapshots report 0,*,0 briefly (especially join/respawn). Those points cause markers
@@ -1996,6 +2047,21 @@ export function ReplayToolPage() {
     return map;
   }, [events]);
 
+  // kill/death events indexed by "tsMs|type", built once per events change so the
+  // per-frame highlight lookup below is O(1) instead of a scan over every record.
+  const killDeathEventByKey = useMemo(() => {
+    const m = new Map<string, any>();
+    for (const rec of events) {
+      const p: any = rec && (rec as any).payload;
+      if (!p || typeof p !== 'object') continue;
+      if (p.type !== 'kill' && p.type !== 'death') continue;
+      if (typeof p.tsMs !== 'number') continue;
+      const k = `${p.tsMs}|${p.type}`;
+      if (!m.has(k)) m.set(k, (p as any).event);
+    }
+    return m;
+  }, [events]);
+
   const selectedEventHighlightsByPlayerId = useMemo(() => {
     const map = new Map<number, 'killer' | 'victim'>();
     if (!selectedEventKey) return map;
@@ -2017,16 +2083,9 @@ export function ReplayToolPage() {
     const windowAfterMs = 5000;
     if (t < tsMs - windowBeforeMs || t > tsMs + windowAfterMs) return map;
 
-    let ev: any = null;
-    for (const rec of events) {
-      const p: any = rec && (rec as any).payload;
-      if (!p || typeof p !== 'object') continue;
-      if (p.type !== type) continue;
-      if (typeof p.tsMs !== 'number') continue;
-      if (p.tsMs !== tsMs) continue;
-      ev = (p as any).event;
-      break;
-    }
+    // Look the event up in a prebuilt index instead of scanning every record on
+    // each playhead move (this memo also re-runs per frame while an event is selected).
+    const ev: any = killDeathEventByKey.get(`${tsMs}|${type}`);
     if (!ev || typeof ev !== 'object') return map;
 
     if (type === 'kill') {
@@ -2041,7 +2100,7 @@ export function ReplayToolPage() {
     const victimId = typeof ev.victimPlayerId === 'number' ? ev.victimPlayerId : null;
     if (victimId !== null) map.set(victimId, 'victim');
     return map;
-  }, [currentTsMs, events, live, selectedEventKey]);
+  }, [currentTsMs, killDeathEventByKey, live, selectedEventKey]);
 
   const nameTagOptions: NameTagOptions = useMemo(() => ({
     enabled: nameTagsEnabled,
@@ -2419,16 +2478,22 @@ export function ReplayToolPage() {
     // in the same session, not the global knownPlayers list.
     const nameAtTime = new Map<number, string>();
     {
-      // 1. Names from join/disconnect events: find the last join/disconnect for each ID at-or-before t.
-      for (const e of events) {
-        const p: any = e.payload;
-        if (!p || typeof p !== 'object') continue;
-        if (p.type !== 'join' && p.type !== 'disconnect') continue;
-        if (typeof p.tsMs !== 'number' || p.tsMs > t) continue;
-        const ev: any = (p as any).event;
-        const id = ev && typeof ev.playerId === 'number' ? ev.playerId : null;
-        const nm = ev && typeof ev.name === 'string' ? ev.name.trim() : '';
-        if (id !== null && nm) nameAtTime.set(id, nm);
+      // 1. Names from join/disconnect: binary-search the PRECOMPUTED per-player
+      // name series rather than rescanning every event. This memo re-runs on every
+      // playhead move — 60x/second during playback — and the old full scan made
+      // that O(all events) per frame, which is what froze the tab.
+      for (const p of knownPlayers) {
+        const arr = nameSeriesById.get(p.playerId);
+        if (!arr || arr.length === 0) continue;
+        let lo = 0;
+        let hi = arr.length - 1;
+        let idx = -1;
+        while (lo <= hi) {
+          const mid = (lo + hi) >> 1;
+          if (arr[mid].tsMs <= t) { idx = mid; lo = mid + 1; }
+          else { hi = mid - 1; }
+        }
+        if (idx >= 0) nameAtTime.set(p.playerId, arr[idx].name);
       }
       // 2. Names from snapshots near t (override with more accurate data).
       let lo = 0;
@@ -2474,7 +2539,7 @@ export function ReplayToolPage() {
 
     out.sort((a, b) => a.name.localeCompare(b.name) || a.playerId - b.playerId);
     return out;
-  }, [currentTsMs, findPlayerStateAt, isConnectedAt, knownPlayers, snapshots]);
+  }, [currentTsMs, findPlayerStateAt, isConnectedAt, knownPlayers, nameSeriesById, snapshots]);
 
   function jumpToEventTs(tsMs: number) {
     const offsetMs = Math.max(0, Math.floor(eventClickOffsetSeconds * 1000));
@@ -2781,7 +2846,18 @@ export function ReplayToolPage() {
           lo = mid + 1;
         }
       }
-      source = source.slice(0, cutoff);
+      // Walk backwards from the cutoff collecting only what the feed shows (200).
+      // The previous code sliced the ENTIRE prefix (tens of thousands of entries)
+      // and then filtered it, on every playhead move.
+      const picked: typeof source = [];
+      const scanFloor = Math.max(0, cutoff - 50000); // bound the walk when filtering
+      for (let i = cutoff - 1; i >= scanFloor && picked.length < 200; i--) {
+        const x = source[i];
+        if (typeof filterId === 'number' && !x.playerIds.includes(filterId)) continue;
+        picked.push(x);
+      }
+      picked.reverse();
+      return picked;
     }
 
     if (typeof filterId === 'number') {
