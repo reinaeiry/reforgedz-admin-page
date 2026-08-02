@@ -84,7 +84,17 @@ function rateLimiter({ windowMs, max }) {
     next();
   };
 }
-app.use('/api/replay/ingest', rateLimiter({ windowMs: 60_000, max: 240 }));
+// Ingest carries machine telemetry, not user traffic: each game server posts a
+// world snapshot every ~127ms, and every server behind one public IP shares this
+// bucket (both EU servers sit on one box, both NA on another). At 240/min that was
+// ~4 req/s for ALL servers on an IP combined against ~16 req/s attempted, so the
+// exporters spent most of every minute being refused. Measured: only 19-21% (EU) /
+// 34-49% (NA) of snapshots were ever recorded, in a burst-then-stall cycle with
+// 60s holes — the game's own log says it plainly ("Error Code:429"). That is
+// missing data, which no amount of client-side work can render.
+// The ceiling stays as a volumetric guard on the serverKey compare, just set above
+// real demand instead of ~30x below it.
+app.use('/api/replay/ingest', rateLimiter({ windowMs: 60_000, max: 6000 }));
 app.use('/api/bm/webhook', rateLimiter({ windowMs: 60_000, max: 240 }));
 app.use('/api/internal', rateLimiter({ windowMs: 60_000, max: 120 }));
 

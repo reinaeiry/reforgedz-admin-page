@@ -35,6 +35,26 @@ import { ReplayMap2D, type WorldBounds } from '../components/ReplayMap2D';
 import { ItemSpawnControl } from '../components/ItemSpawnControl';
 import { resolveMapId, getMapDef } from '../../util/maps';
 
+// ─── Payload budget ─────────────────────────────────────────────────────────
+// How much the browser downloads dominates how long a replay takes to open, and
+// both of these were set far larger than the screen can use:
+//
+//  • the 24h overview was sampled every 15s — ~6,800 records, 27MB of JSON, for a
+//    timeline you navigate with rather than study frame by frame. At 60s it is a
+//    quarter of that, and as soon as you stop scrubbing the full-detail window
+//    below fills in real precision exactly where you are looking.
+//  • the full-detail window spanned 4 minutes (10.7MB measured) and was refetched
+//    whenever you scrubbed out of it. 90s covers the same working area for a
+//    fraction of the bytes.
+//
+// MAX_INTERP_GAP_MS is derived from the sample interval deliberately: markers are
+// hidden when consecutive samples sit farther apart than that bound, so a bound
+// below the sampling rate would make players blink out on the coarse layer.
+const OVERVIEW_SAMPLE_MS = 60_000;
+const FULLRES_BACK_MS = 60_000;
+const FULLRES_FWD_MS = 30_000;
+const FULLRES_REFETCH_MARGIN_MS = 10_000;
+
 function coerceVec3(v: any): { x: number; y: number; z: number } | null {
   if (!v) return null;
 
@@ -562,7 +582,7 @@ export function ReplayToolPage() {
     slimHistoryLoadedRef.current = serverId;
     const serverIdValue = serverId;
     let cancelled = false;
-    getReplayEvents({ serverId: serverIdValue, limit: 200000, tail: true, sampleIntervalMs: 15000, slim: true })
+    getReplayEvents({ serverId: serverIdValue, limit: 200000, tail: true, sampleIntervalMs: OVERVIEW_SAMPLE_MS, slim: true })
       .then((allHistory) => {
         if (cancelled || allHistory.length === 0) return;
         setEvents((prev) => {
@@ -592,11 +612,11 @@ export function ReplayToolPage() {
     if (typeof currentTsMs !== 'number') return;
     const cur = currentTsMs;
     const loaded = fullResWindowRef.current;
-    if (loaded && loaded.serverId === serverId && cur >= loaded.min + 45_000 && cur <= loaded.max - 20_000) return;
+    if (loaded && loaded.serverId === serverId && cur >= loaded.min + FULLRES_REFETCH_MARGIN_MS && cur <= loaded.max - FULLRES_REFETCH_MARGIN_MS) return;
 
     const serverIdValue = serverId;
-    const since = Math.max(0, cur - 180_000); // 3 min back
-    const until = cur + 60_000;               // 1 min forward
+    const since = Math.max(0, cur - FULLRES_BACK_MS);
+    const until = cur + FULLRES_FWD_MS;
     let cancelled = false;
     const t = window.setTimeout(() => {
       getReplayEvents({ serverId: serverIdValue, sinceTsMs: since, untilTsMs: until, limit: 20000 })
@@ -1563,7 +1583,7 @@ export function ReplayToolPage() {
       // The 24h overview is ~1 snapshot / 15s; interpolate across gaps up to a bit
       // beyond that so old-data movement glides instead of stepping, while real
       // dropouts (longer gaps) still break rather than drawing a false straight line.
-      const MAX_INTERP_GAP_MS = 17_000;
+      const MAX_INTERP_GAP_MS = OVERVIEW_SAMPLE_MS + 10_000;
       const MAX_ANCHOR_WINDOW_MS = 5000;
       const MAX_ANCHOR_POINTS = 80;
 
@@ -3095,7 +3115,7 @@ export function ReplayToolPage() {
     setFetchingHistory(true);
     if (live) setLive(false);
     slimHistoryLoadedRef.current = sid;
-    getReplayEvents({ serverId: sid, limit: 200000, tail: true, sampleIntervalMs: 15000, slim: true })
+    getReplayEvents({ serverId: sid, limit: 200000, tail: true, sampleIntervalMs: OVERVIEW_SAMPLE_MS, slim: true })
       .then((all) => {
         if (all.length === 0) return;
         setEvents((prev) => {
