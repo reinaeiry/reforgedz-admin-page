@@ -84,7 +84,19 @@ function rateLimiter({ windowMs, max }) {
     next();
   };
 }
-app.use('/api/replay/ingest', rateLimiter({ windowMs: 60_000, max: 240 }));
+// Ingest carries machine telemetry, not user traffic: each game server posts a
+// world snapshot several times a second, and every server behind one public IP
+// shares this bucket (both EU servers sit on one box, both NA on another). The
+// old 240/min ceiling was ~4 req/s for ALL servers on an IP combined, while two
+// servers alone attempt ~950/min — so the exporters spent most of every minute
+// being 429'd. Measured: only 19% (EU) / 34-49% (NA) of the game's snapshots
+// were ever recorded, in a burst-then-stall cycle that made the live view
+// useless and left minute-long holes in investigations. The game's own log
+// showed the cause plainly: "Error Code:429 ... consecutiveErrors".
+// The ceiling stays (volumetric guard on the serverKey compare) but is now set
+// above real demand: 100 req/s per IP is several times current peak for a whole
+// box, while still bounding blind key-guessing.
+app.use('/api/replay/ingest', rateLimiter({ windowMs: 60_000, max: 6000 }));
 app.use('/api/bm/webhook', rateLimiter({ windowMs: 60_000, max: 240 }));
 app.use('/api/internal', rateLimiter({ windowMs: 60_000, max: 120 }));
 
