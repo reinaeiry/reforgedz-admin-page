@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "dev:api": "node --watch server/index.js",
+    "test:retention": "node scripts/test-retention.mjs",
     "build": "tsc -b && vite build",
     "postinstall": "node -e \"const fs=require('fs'),p=require('path'),d='node_modules/.bin';if(fs.existsSync(d))for(const f of fs.readdirSync(d)){try{fs.chmodSync(p.join(d,f),0o755)}catch{}}\" && npm run build",
     "start": "node server/index.js",

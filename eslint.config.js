@@ -8,13 +8,20 @@ export default tseslint.config(
   js.configs.recommended,
   ...tseslint.configs.recommended,
   {
-    files: ['server/**/*.js'],
+    files: ['server/**/*.js', 'scripts/**/*.{js,mjs,cjs}'],
     languageOptions: {
       globals: {
         process: 'readonly',
         Buffer: 'readonly',
         console: 'readonly',
         setTimeout: 'readonly',
+        clearTimeout: 'readonly',
+        setInterval: 'readonly',
+        clearInterval: 'readonly',
+        setImmediate: 'readonly',
+        URL: 'readonly',
+        fetch: 'readonly',
+        Blob: 'readonly',
       },
     },
   },

@@ -11,6 +11,7 @@ import cookieParser from 'cookie-parser';
 import { Client as SshClient } from 'ssh2';
 
 import { createRzAuth } from './lib/rz-auth.js';
+import { createRetention, DEFAULT_RETENTION_MS } from './lib/retention.js';
 import * as bmClient from './lib/battlemetrics.js';
 import { buildBmRouter } from './routes/bm.js';
 import bmWebhookRouter from './routes/bm-webhook.js';
@@ -134,10 +135,9 @@ const INGEST_KEYS = process.env.INGEST_KEYS || '';
 
 const DATA_DIR = process.env.DATA_DIR || 'data';
 
-// Rolling retention for events.ndjson.
-// - Set RETENTION_MS=0 to disable compaction entirely.
-// - Default is 24 hours.
-const DEFAULT_RETENTION_MS = 24 * 60 * 60 * 1000;
+// Rolling retention for events.ndjson (see server/lib/retention.js).
+// - Set RETENTION_MS=0 to keep everything (the log then grows without bound).
+// - Default is 7 days.
 const RETENTION_MS = (() => {
   const raw = process.env.RETENTION_MS;
   if (raw === undefined || raw === null || String(raw).trim() === '') return DEFAULT_RETENTION_MS;
@@ -1510,137 +1510,19 @@ async function ensureIndexHasFirstReceivedAt(serverDir, idxPath, idx) {
   return { idx: nextIdx, firstReceivedAt: inferred };
 }
 
-async function compactNdjsonToRetention(filePath, cutoffReceivedAt) {
-  let stat;
-  try {
-    stat = await fs.stat(filePath);
-  } catch {
-    return { kept: 0, dropped: 0, minTsMs: null };
-  }
-  if (!stat || stat.size <= 0) return { kept: 0, dropped: 0, minTsMs: null };
-
-  const dir = path.dirname(filePath);
-  await ensureDir(dir);
-  const tmp = `${filePath}.tmp-${crypto.randomBytes(6).toString('hex')}`;
-
-  const replaceFileWithRetries = async (tmpPath, destPath) => {
-    const maxAttempts = 10;
-    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-      try {
-        await fs.rename(tmpPath, destPath);
-        return;
-      } catch (err) {
-        const code = err && typeof err === 'object' ? err.code : null;
-        if ((code === 'EPERM' || code === 'EACCES') && attempt < maxAttempts) {
-          await sleep(30 * attempt);
-          continue;
-        }
-
-        try {
-          await fs.copyFile(tmpPath, destPath);
-          await fs.unlink(tmpPath);
-          return;
-        } catch {
-          const text = await fs.readFile(tmpPath, 'utf8');
-          await fs.writeFile(destPath, text, 'utf8');
-          try { await fs.unlink(tmpPath); } catch { /* ignore */ }
-          return;
-        }
-      }
-    }
-  };
-
-  const input = createReadStream(filePath, { encoding: 'utf8' });
-  const rl = readline.createInterface({
-    input,
-    crlfDelay: Infinity,
-  });
-
-  const outHandle = await fs.open(tmp, 'w');
-  let kept = 0;
-  let dropped = 0;
-  let minTsMs = null;
-  let minReceivedAt = null;
-  let maxReceivedAt = null;
-
-  try {
-    for await (const line of rl) {
-      if (!line) continue;
-      let obj;
-      try {
-        obj = JSON.parse(line);
-      } catch {
-        continue;
-      }
-
-      const receivedAt = obj && typeof obj.receivedAt === 'number' ? obj.receivedAt : null;
-      if (typeof cutoffReceivedAt === 'number' && receivedAt !== null && receivedAt < cutoffReceivedAt) {
-        dropped++;
-        continue;
-      }
-
-      if (receivedAt !== null) {
-        if (minReceivedAt === null || receivedAt < minReceivedAt) minReceivedAt = receivedAt;
-        if (maxReceivedAt === null || receivedAt > maxReceivedAt) maxReceivedAt = receivedAt;
-      }
-
-      const payload = obj && obj.payload;
-      const tsMs = payload && typeof payload.tsMs === 'number' ? payload.tsMs : null;
-      if (tsMs === null) continue;
-
-      if (minTsMs === null || tsMs < minTsMs) minTsMs = tsMs;
-      kept++;
-      await outHandle.write(`${JSON.stringify(obj)}\n`);
-    }
-  } finally {
-    try { rl.close(); } catch { /* ignore */ }
-    try { input.destroy(); } catch { /* ignore */ }
-    // Best-effort wait for the file handle to be released (Windows rename needs it).
-    await new Promise((resolve) => {
-      if (input.destroyed || input.closed) return resolve();
-      const done = () => resolve();
-      input.once('close', done);
-      input.once('error', done);
-    });
-    await outHandle.close();
-  }
-
-  await replaceFileWithRetries(tmp, filePath);
-  return { kept, dropped, minTsMs, minReceivedAt, maxReceivedAt };
-}
-
-async function maybeCompactServerEvents(serverDir, idx, nowTsMs) {
-  // Compact at most every 60s per server.
-  const last = idx && typeof idx.lastCompactionAt === 'number' ? idx.lastCompactionAt : 0;
-  if (Date.now() - last < 60_000) return idx;
-
-  if (RETENTION_MS <= 0) return idx;
-
-  // Retention is based on wall-clock time (receivedAt), not the exporter timeline.
-  const cutoff = Date.now() - RETENTION_MS;
-
-  const eventsPath = path.join(serverDir, 'events.ndjson');
-  const { kept, dropped, minTsMs, minReceivedAt, maxReceivedAt } = await compactNdjsonToRetention(eventsPath, cutoff);
-  if (dropped <= 0) {
-    return { ...idx, lastCompactionAt: Date.now() };
-  }
-
-  const next = {
-    ...idx,
-    minTsMs: minTsMs,
-    storedEvents: kept,
-    firstReceivedAt: (typeof minReceivedAt === 'number') ? minReceivedAt : (typeof idx.firstReceivedAt === 'number' ? idx.firstReceivedAt : undefined),
-    lastReceivedAt: (typeof maxReceivedAt === 'number') ? maxReceivedAt : (typeof idx.lastReceivedAt === 'number' ? idx.lastReceivedAt : undefined),
-    lastCompactionAt: Date.now(),
-    lastCompactionDropped: dropped,
-    lastCompactionKept: kept,
-    retentionMs: RETENTION_MS,
-  };
-  return next;
-}
-
 await ensureDir(DATA_DIR);
 await loadDynamicIngestKeys();
+
+// Trimming the event logs is a background sweep, never part of ingest: the
+// copy it does must not stall the game servers posting telemetry.
+const replayRetention = createRetention({
+  dataDir: DATA_DIR,
+  retentionMs: RETENTION_MS,
+  withIngestLock,
+  readJsonOrNull,
+  writeJsonAtomic,
+});
+replayRetention.start();
 
 // Replay events are stored as NDJSON on disk. Reading a time window by scanning the file
 // can get expensive as the file grows. Keep a small in-memory tail for fast live polling.
@@ -4250,8 +4132,8 @@ app.post('/api/replay/ingest', async (req, res) => {
         }
       }
 
-      // Enforce 24h rolling buffer.
-      next = await maybeCompactServerEvents(serverDir, next, tsMs);
+      // Retention is NOT done here: trimming the log is a background sweep
+      // (see retentionSweep) so it never stalls ingest behind a large copy.
 
       // If a dev/user queued commands, pass them to the exporter via the ingest response.
       // Clear them once returned so the request is one-shot.
