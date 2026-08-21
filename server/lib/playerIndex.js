@@ -25,6 +25,12 @@ export function initPlayerIndex(dataDir) {
   const dbPath = path.join(dataDir, 'players.db');
   db = new Database(dbPath);
   db.pragma('journal_mode = WAL');
+  // Without this, two processes writing at once (e.g. the live app + a
+  // backfill script running concurrently) throw SQLITE_BUSY immediately on
+  // any lock collision instead of retrying - killed a real backfill run
+  // partway through. 5s covers realistic WAL write-lock hold times for a
+  // single transaction's worth of work.
+  db.pragma('busy_timeout = 5000');
   db.exec(`
     CREATE TABLE IF NOT EXISTS players (
       identity_id TEXT PRIMARY KEY,

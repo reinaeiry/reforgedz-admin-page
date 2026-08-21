@@ -128,7 +128,11 @@ async function main() {
   }
 
   for (const t of targets) {
-    await backfillOne(t.serverId, t.filePath, t.size);
+    try {
+      await backfillOne(t.serverId, t.filePath, t.size);
+    } catch (e) {
+      console.error(`[backfill-inv] ${t.serverId}: failed, continuing with the rest -`, e.message);
+    }
   }
   console.log('[backfill-inv] all done');
 }
