@@ -45,8 +45,18 @@ const CONFIG = {
   // Hit/damage integrity
   godModeMinDamageDeltaM: 15, // damage report vs actual health drop must differ by at least this much
   // Movement (m/s). Arma Reforger's real sprint/vehicle caps are NOT reflected here - placeholder.
-  maxPlausibleSpeedOnFootMps: 12,
-  maxPlausibleSpeedInVehicleMps: 45,
+  //
+  // These were never actually exercised against real data until the
+  // 'snapshot' payload-shape bug (see the 'snapshot' branch below) was
+  // fixed - the very first real scan produced 981,464 speedhack incidents
+  // on one server alone, meaning 12 m/s on foot and 45 m/s in a vehicle are
+  // both far too tight for real Arma Reforger movement (a fast ground
+  // vehicle alone can exceed 45 m/s; the on-foot cap doesn't account for
+  // sprint bursts or GPS-style position-delta noise between snapshots).
+  // Widened to conservative values chosen to stop the false-positive flood,
+  // NOT validated against real ReforgedZ numbers - still needs real tuning.
+  maxPlausibleSpeedOnFootMps: 20,
+  maxPlausibleSpeedInVehicleMps: 150,
   // Interaction range (m) per actionType emitted by EmitInteract in the exporter.
   interactRangeM: { inventory: 3, heal: 3, default: 4 },
   // Ammo/reload - realWeaponReloadMs is intentionally empty; without it, instantReload
@@ -62,8 +72,18 @@ const CONFIG = {
   fallImmunityWindowMs: 2000,
   // Noclip - margin below the interpolated terrain surface before flagging, to
   // absorb legitimate basements/underground structures and interpolation slop
-  // near steep terrain. This is a guess; tune against real basement depths.
-  noclipMarginM: 3,
+  // near steep terrain. Same story as the speed caps above: 3m was never
+  // exercised against real data until the snapshot-shape bug was fixed, and
+  // the first real scan produced 6.4 MILLION noclip incidents on one server
+  // (the dominant source of the false-positive flood) - a coarse, one-time
+  // terrain heightmap fundamentally can't represent building interiors,
+  // basements, or bridges, so this check is inherently noisy at tight
+  // margins. Widened substantially as an emergency measure; likely still
+  // needs either a much larger margin or a smarter check (e.g. requiring
+  // several consecutive below-terrain snapshots, not one) before it's
+  // trustworthy - flag this to the team rather than trusting noclip results
+  // as-is even at this margin.
+  noclipMarginM: 25,
 };
 
 function distance3(a, b) {
@@ -190,8 +210,31 @@ export function checkInteractForIncident(evt) {
 // of rolling maps keyed by playerId - NOT identityId, since events carry the
 // numeric session playerId; identityId is resolved via the same per-player
 // snapshot payloads and attached to incidents at emit time).
+// Hard ceiling on how many incidents a single scan will hold in memory.
+// Discovered the hard way: once the snapshot-payload-shape bug (see the
+// 'snapshot' branch below) was fixed and this code ran for the first time
+// against real data, an untuned threshold (noclipMarginM) produced 6.4
+// MILLION incidents on one real server in one scan and crashed the Node
+// process - this same scan runs live whenever an admin opens the Flagged
+// tab, so an unbounded threshold misfire is a real production-crash risk,
+// not just a bad ranking. This cap is a blunt, unconditional safety net
+// independent of any one category's tuning - it stops the count, not the
+// scan (the rest of the file still gets read, for correct rolling state).
+const MAX_INCIDENTS_PER_SCAN = 20000;
+
 export async function scanServerForIncidents(serverId, filePath) {
   const incidents = [];
+  let incidentCapHit = false;
+  function addIncident(inc) {
+    if (incidents.length >= MAX_INCIDENTS_PER_SCAN) {
+      if (!incidentCapHit) {
+        incidentCapHit = true;
+        console.warn(`[anticheat] ${serverId}: hit the ${MAX_INCIDENTS_PER_SCAN}-incident cap mid-scan - a category is almost certainly misfiring (check thresholds), remaining incidents this scan are dropped, not just untracked.`);
+      }
+      return;
+    }
+    incidents.push(inc);
+  }
 
   // Rolling per-playerId state, reset naturally as players join/leave sessions.
   const lastSnapshot = new Map(); // playerId -> { pos, tsMs, aimDir, identityId, inVehicle }
@@ -299,7 +342,7 @@ export async function scanServerForIncidents(serverId, filePath) {
             const speedMps = dist / (dtMs / 1000);
             const cap = pl.inVehicle ? CONFIG.maxPlausibleSpeedInVehicleMps : CONFIG.maxPlausibleSpeedOnFootMps;
             if (speedMps > cap) {
-              incidents.push(makeIncident(
+              addIncident(makeIncident(
                 'speedhack', serverId, pl.identityId || identityByPlayer.get(pl.playerId) || '', tsMs,
                 clampConfidence(((speedMps - cap) / cap) * 100),
                 `Moved ${dist.toFixed(1)}m in ${dtMs}ms (${speedMps.toFixed(1)} m/s, cap ${cap} m/s${pl.inVehicle ? ', in vehicle' : ''})`,
@@ -311,7 +354,7 @@ export async function scanServerForIncidents(serverId, filePath) {
             if (!pl.inVehicle && dropM > CONFIG.fallImmunityMinDropM && dtMs < CONFIG.fallImmunityWindowMs) {
               const lastCombat = recentCombat.get(pl.playerId) || 0;
               if (tsMs - lastCombat > CONFIG.fallImmunityWindowMs) {
-                incidents.push(makeIncident(
+                addIncident(makeIncident(
                   'fallImmunity', serverId, pl.identityId || identityByPlayer.get(pl.playerId) || '', tsMs,
                   50,
                   `Dropped ${dropM.toFixed(1)}m in ${dtMs}ms with no recorded damage`,
@@ -324,7 +367,7 @@ export async function scanServerForIncidents(serverId, filePath) {
         if (terrain && Array.isArray(pl.pos) && !pl.inVehicle) {
           const surfaceY = surfaceHeightAt(terrain, pl.pos[0], pl.pos[2]);
           if (surfaceY !== null && pl.pos[1] < surfaceY - CONFIG.noclipMarginM) {
-            incidents.push(makeIncident(
+            addIncident(makeIncident(
               'noclip', serverId, pl.identityId || identityByPlayer.get(pl.playerId) || '', tsMs,
               clampConfidence(((surfaceY - pl.pos[1] - CONFIG.noclipMarginM) / CONFIG.noclipMarginM) * 50),
               `Position ${(surfaceY - pl.pos[1]).toFixed(1)}m below the terrain surface`,
@@ -347,7 +390,7 @@ export async function scanServerForIncidents(serverId, filePath) {
             const refReload = CONFIG.realWeaponReloadMsByName[pl.weapon.name]
               ?? CONFIG.minPlausibleReloadMsFallback;
             if (refReload && pl.weapon.ammoCount > prevAmmo.ammoCount && dtMs > 0 && dtMs < refReload) {
-              incidents.push(makeIncident(
+              addIncident(makeIncident(
                 'instantReload', serverId, pl.identityId || identityByPlayer.get(pl.playerId) || '', tsMs,
                 clampConfidence(((refReload - dtMs) / refReload) * 100),
                 `Magazine refilled in ${dtMs}ms (expected >= ${refReload}ms for ${pl.weapon.name || 'weapon'})`,
@@ -362,7 +405,7 @@ export async function scanServerForIncidents(serverId, filePath) {
             const confirmedShotAt = shotConfirmed.get(key);
             if (confirmedShotAt && confirmedShotAt > prevAmmo.tsMs && confirmedShotAt <= tsMs
               && pl.weapon.ammoCount >= prevAmmo.ammoCount) {
-              incidents.push(makeIncident(
+              addIncident(makeIncident(
                 'infiniteAmmo', serverId, pl.identityId || identityByPlayer.get(pl.playerId) || '', tsMs,
                 55,
                 `A confirmed hit was fired from ${pl.weapon.name || 'this weapon'} between two ammo readings, but ammo count did not drop (${prevAmmo.ammoCount} -> ${pl.weapon.ammoCount})`,
@@ -376,7 +419,7 @@ export async function scanServerForIncidents(serverId, filePath) {
         if (Array.isArray(pl.inventory)) {
           for (const item of pl.inventory) {
             if (item && item.prefab && CONFIG.restrictedItemPrefabs.has(item.prefab)) {
-              incidents.push(makeIncident(
+              addIncident(makeIncident(
                 'restrictedItem', serverId, pl.identityId || identityByPlayer.get(pl.playerId) || '', tsMs,
                 75,
                 `Inventory contains restricted item: ${item.name || item.prefab}`,
@@ -400,7 +443,7 @@ export async function scanServerForIncidents(serverId, filePath) {
         // shot through cover); godMode to the victim (their damage handling is
         // what's wrong) - matches the identityId each category's evidence implies.
         const owner = check.category === 'wallbang' ? evt.shooterIdentityId : evt.victimIdentityId;
-        incidents.push(makeIncident(check.category, serverId, owner || '', tsMs, check.confidence, check.summary, check.evidence));
+        addIncident(makeIncident(check.category, serverId, owner || '', tsMs, check.confidence, check.summary, check.evidence));
       }
     }
 
@@ -417,7 +460,7 @@ export async function scanServerForIncidents(serverId, filePath) {
         if (prev && Array.isArray(prev.aimDir) && tsMs - prev.tsMs < 1000) {
           const angle = angleBetweenDeg(evt.killerAimDir, prev.aimDir);
           if (angle > 45) {
-            incidents.push(makeIncident(
+            addIncident(makeIncident(
               'aimSnap', serverId, evt.killerIdentityId || '', tsMs,
               clampConfidence(((angle - 45) / 135) * 100),
               `Aim snapped ${angle.toFixed(0)} degrees in the ${tsMs - prev.tsMs}ms before this kill`,
@@ -430,7 +473,7 @@ export async function scanServerForIncidents(serverId, filePath) {
 
     if (type === 'interact' && evt) {
       const check = checkInteractForIncident(evt);
-      if (check) incidents.push(makeIncident(check.category, serverId, evt.playerIdentityId || '', tsMs, check.confidence, check.summary, check.evidence));
+      if (check) addIncident(makeIncident(check.category, serverId, evt.playerIdentityId || '', tsMs, check.confidence, check.summary, check.evidence));
     }
 
     if (type === 'disconnect' && evt && typeof evt.playerId === 'number') {
@@ -444,7 +487,7 @@ export async function scanServerForIncidents(serverId, filePath) {
         // it (same assumption playerIndex.js's own disconnect handling
         // already relies on). The map is only a fallback for older log
         // formats that might not have carried identityId on disconnect.
-        incidents.push(makeIncident(
+        addIncident(makeIncident(
           'combatLog', serverId, evt.identityId || identityByPlayer.get(evt.playerId) || '', tsMs,
           70,
           `Disconnected ${tsMs - lastCombat}ms after last combat activity`,
