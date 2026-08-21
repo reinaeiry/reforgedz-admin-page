@@ -110,26 +110,16 @@ function FlaggedPlayersView() {
     return () => { alive = false; };
   }, []);
 
-  // Progress bar for the unavoidable first-ever scan of a server. Only shows
-  // anything once a scan is actually in flight server-side (getScanProgress
-  // returns null the instant a cached result exists), so this stays silent
-  // on every load after the first.
-  useEffect(() => {
-    if (!selectedServerId || !loading) { setScanPercent(null); return; }
-    const es = new EventSource(
-      `${requireApiBaseUrl()}/api/players/scan-progress?serverId=${encodeURIComponent(selectedServerId)}`,
-      { withCredentials: true } as EventSourceInit
-    );
-    es.addEventListener('progress', (ev) => {
-      try {
-        const data = JSON.parse((ev as MessageEvent).data);
-        setScanPercent(typeof data.percent === 'number' ? data.percent : null);
-      } catch { /* ignore */ }
-    });
-    es.addEventListener('done', () => setScanPercent(null));
-    es.onerror = () => { /* connection drop is fine, the main fetch is the source of truth */ };
-    return () => es.close();
-  }, [selectedServerId, loading]);
+  // The backend never blocks an HTTP request on a cold scan (that produced
+  // real Cloudflare 524 timeouts in production - a full scan can take up to
+  // ~180s on the largest real server logs, well past a reverse proxy's origin
+  // timeout). A cold request returns near-instantly with scanning:true and an
+  // empty result; the actual scan runs server-side in the background. This
+  // effect fetches once, and if told scanning:true, re-fetches when the SSE
+  // progress stream below reports the scan is done - same request, just
+  // triggered again instead of the server making us wait inside the first one.
+  const [scanning, setScanning] = useState(false);
+  const [fetchNonce, setFetchNonce] = useState(0);
 
   useEffect(() => {
     if (!selectedServerId) { setPlayers(null); return; }
@@ -141,6 +131,7 @@ function FlaggedPlayersView() {
       if (!alive) return;
       setPlayers(r.players);
       setStale(r.stale);
+      setScanning(r.scanning);
       setLoading(false);
     }).catch((e: any) => {
       if (!alive) return;
@@ -148,7 +139,32 @@ function FlaggedPlayersView() {
       setLoading(false);
     });
     return () => { alive = false; };
-  }, [selectedServerId]);
+  }, [selectedServerId, fetchNonce]);
+
+  // Progress bar while a scan (cold or background-refresh) is actually in
+  // flight server-side. On the cold path specifically, "done" means "go
+  // re-fetch" rather than just "stop showing a percentage" - there's real
+  // data waiting server-side now that wasn't there on the first request.
+  useEffect(() => {
+    if (!selectedServerId || !scanning) { setScanPercent(null); return; }
+    const es = new EventSource(
+      `${requireApiBaseUrl()}/api/players/scan-progress?serverId=${encodeURIComponent(selectedServerId)}`,
+      { withCredentials: true } as EventSourceInit
+    );
+    es.addEventListener('progress', (ev) => {
+      try {
+        const data = JSON.parse((ev as MessageEvent).data);
+        setScanPercent(typeof data.percent === 'number' ? data.percent : null);
+      } catch { /* ignore */ }
+    });
+    es.addEventListener('done', () => {
+      setScanPercent(null);
+      setScanning(false);
+      setFetchNonce((n) => n + 1);
+    });
+    es.onerror = () => { /* connection drop is fine, the next SSE reconnect or manual refresh recovers */ };
+    return () => es.close();
+  }, [selectedServerId, scanning]);
 
   const maxScore = players && players.length ? players[0].riskScore : 0;
 
@@ -176,10 +192,12 @@ function FlaggedPlayersView() {
 
       {!selectedServerId ? (
         <div className="muted">Select a server to view flagged players.</div>
-      ) : loading ? (
+      ) : loading && !scanning ? (
+        <div className="muted">Loading…</div>
+      ) : scanning ? (
         <div style={{ maxWidth: 420 }}>
           <div className="muted" style={{ marginBottom: 8, fontSize: '.85rem' }}>
-            Scanning this server for the first time — every load after this one will be instant.
+            Scanning this server for the first time — running in the background, this page will update automatically. Every load after this one will be instant.
           </div>
           <div style={{ height: 8, background: 'var(--surface)', borderRadius: 4, overflow: 'hidden' }}>
             <div

@@ -424,13 +424,14 @@ export async function scanServerForIncidents(serverId, filePath) {
 // speculative background load on a box that's also running live game servers.
 const CACHE_TTL_MS = 5 * 60 * 1000;
 const scanCache = new Map(); // serverId -> { incidents, computedAt, refreshing }
+const coldScansInFlight = new Set(); // serverId - first-ever scan, no cache entry to attach a flag to yet
 
 export async function getIncidentsCached(serverId, filePath) {
   const entry = scanCache.get(serverId);
   const now = Date.now();
 
   if (entry && now - entry.computedAt < CACHE_TTL_MS) {
-    return { incidents: entry.incidents, stale: false, computedAt: entry.computedAt };
+    return { incidents: entry.incidents, stale: false, scanning: false, computedAt: entry.computedAt };
   }
 
   if (entry) {
@@ -444,14 +445,27 @@ export async function getIncidentsCached(serverId, filePath) {
         })
         .catch(() => { entry.refreshing = false; });
     }
-    return { incidents: entry.incidents, stale: true, computedAt: entry.computedAt };
+    return { incidents: entry.incidents, stale: true, scanning: false, computedAt: entry.computedAt };
   }
 
-  // Cold - nothing cached yet for this server, has to block this one time.
-  const incidents = await scanServerForIncidents(serverId, filePath);
-  const computedAt = Date.now();
-  scanCache.set(serverId, { incidents, computedAt, refreshing: false });
-  return { incidents, stale: false, computedAt };
+  // Cold - NEVER block the HTTP request on this. A full scan measured up to
+  // ~180s on the larger real server logs, well past Cloudflare's (and most
+  // reverse proxies') origin timeout (~100s) - blocking here produced real
+  // 524 Gateway Timeout errors in production, not just a slow page load.
+  // Kick off the scan in the background (deduped via coldScansInFlight so
+  // concurrent requests for the same never-scanned server don't start it
+  // twice) and return immediately; the frontend's scan-progress SSE endpoint
+  // plus a re-fetch once it reports done covers the wait.
+  if (!coldScansInFlight.has(serverId)) {
+    coldScansInFlight.add(serverId);
+    scanServerForIncidents(serverId, filePath)
+      .then((incidents) => {
+        scanCache.set(serverId, { incidents, computedAt: Date.now(), refreshing: false });
+      })
+      .catch((e) => console.warn(`[anticheat] cold scan failed for ${serverId}:`, e.message))
+      .finally(() => coldScansInFlight.delete(serverId));
+  }
+  return { incidents: [], stale: false, scanning: true, computedAt: 0 };
 }
 
 // ─── Player risk aggregation ────────────────────────────────────────────────

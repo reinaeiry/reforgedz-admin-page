@@ -66,7 +66,7 @@ export type PlayerRisk = {
 export async function getServerRiskSummary(opts: {
   serverId: string;
   limit?: number;
-}): Promise<{ serverId: string; players: PlayerRisk[]; total: number; stale: boolean; computedAt: number }> {
+}): Promise<{ serverId: string; players: PlayerRisk[]; total: number; stale: boolean; scanning: boolean; computedAt: number }> {
   const params = new URLSearchParams({ serverId: opts.serverId });
   if (opts.limit) params.set('limit', String(opts.limit));
   const res = await fetch(`${requireApiBaseUrl()}/api/players/risk-summary?${params.toString()}`, { credentials: 'include' });

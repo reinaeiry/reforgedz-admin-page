@@ -72,7 +72,7 @@ export function buildPlayersRouter({ asyncRoute, DATA_DIR, sanitizeServerId, pat
     const safeId = sanitizeServerId(serverId);
     const filePath = path.join(DATA_DIR, 'servers', safeId, 'events.ndjson');
 
-    const { incidents: all, stale, computedAt } = await getIncidentsCached(safeId, filePath);
+    const { incidents: all, stale, scanning, computedAt } = await getIncidentsCached(safeId, filePath);
     let incidents = all;
 
     const identityId = req.query.identityId ? String(req.query.identityId) : null;
@@ -89,7 +89,7 @@ export function buildPlayersRouter({ asyncRoute, DATA_DIR, sanitizeServerId, pat
     const limit = req.query.limit ? Number(req.query.limit) : 200;
     const cap = Math.min(Math.max(limit, 1), 1000);
 
-    res.json({ serverId: safeId, incidents: incidents.slice(0, cap), total: incidents.length, stale, computedAt });
+    res.json({ serverId: safeId, incidents: incidents.slice(0, cap), total: incidents.length, stale, scanning, computedAt });
   }));
 
   // Player-ranked risk view - the primary landing view (vendor-anti-cheat-panel
@@ -100,13 +100,13 @@ export function buildPlayersRouter({ asyncRoute, DATA_DIR, sanitizeServerId, pat
     const safeId = sanitizeServerId(serverId);
     const filePath = path.join(DATA_DIR, 'servers', safeId, 'events.ndjson');
 
-    const { incidents, stale, computedAt } = await getIncidentsCached(safeId, filePath);
+    const { incidents, stale, scanning, computedAt } = await getIncidentsCached(safeId, filePath);
     const players = summarizePlayerRisk(incidents);
 
     const limit = req.query.limit ? Number(req.query.limit) : 100;
     const cap = Math.min(Math.max(limit, 1), 500);
 
-    res.json({ serverId: safeId, players: players.slice(0, cap), total: players.length, stale, computedAt });
+    res.json({ serverId: safeId, players: players.slice(0, cap), total: players.length, stale, scanning, computedAt });
   }));
 
   // Progress feed for an in-flight scan, so the frontend can show a real bar
