@@ -3947,13 +3947,13 @@ app.post('/api/replay/ingest', async (req, res) => {
         // the exporter's tsMs is milliseconds since the mod started, not wall-clock
         // time, so new Date(tsMs) landed near the Unix epoch. receivedAt is what
         // the Replay tool actually displays; recordEvent needs the same.
-        try { recordEvent(safeId, restartRecord.payload.type, restartRecord.receivedAt, restartRecord.payload.event); } catch (e) { console.warn(`[playerIndex] recordEvent failed for ${safeId}/${restartRecord.payload.type}:`, e.message); }
+        try { recordEvent(safeId, restartRecord.payload.type, restartRecord.receivedAt, restartRecord.payload); } catch (e) { console.warn(`[playerIndex] recordEvent failed for ${safeId}/${restartRecord.payload.type}:`, e.message); }
       }
 
       await fs.appendFile(eventsPath, `${JSON.stringify(record)}\n`, 'utf8');
 
       pushReplayRecent(safeId, record);
-      try { recordEvent(safeId, record.payload.type, record.receivedAt, record.payload.event); } catch (e) { console.warn(`[playerIndex] recordEvent failed for ${safeId}/${record.payload.type}:`, e.message); }
+      try { recordEvent(safeId, record.payload.type, record.receivedAt, record.payload); } catch (e) { console.warn(`[playerIndex] recordEvent failed for ${safeId}/${record.payload.type}:`, e.message); }
 
       let minTsMs = (typeof prev.minTsMs === 'number') ? prev.minTsMs : null;
       let maxTsMs = (typeof prev.maxTsMs === 'number') ? prev.maxTsMs : null;

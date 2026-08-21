@@ -74,11 +74,14 @@ async function backfillOne(serverId, filePath, size) {
     try { outer = JSON.parse(lineBuf.toString('utf8')); } catch { return; }
     const p = outer && outer.payload;
     if (!p || typeof outer.receivedAt !== 'number' || p.type !== 'snapshot') return;
-    const evt = p.event;
-    if (!evt || !Array.isArray(evt.players)) return;
+    // Unlike every other event type, snapshot's data lives directly on the
+    // payload (payload.players), not wrapped in payload.event - confirmed
+    // against real ingested data (see the matching fix in anticheat.js and
+    // playerIndex.js's recordEvent).
+    if (!Array.isArray(p.players)) return;
 
     snapshots++;
-    for (const pl of evt.players) {
+    for (const pl of p.players) {
       if (!pl || !pl.identityId || !Array.isArray(pl.inventory)) continue;
       batch.push({ identityId: pl.identityId, inventory: pl.inventory, tsMs: outer.receivedAt });
     }

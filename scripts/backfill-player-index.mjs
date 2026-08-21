@@ -43,7 +43,7 @@ async function backfillOne(serverId, filePath, size) {
 
   const db = getDb();
   const runInTx = db.transaction((batch) => {
-    for (const { type, tsMs, evt } of batch) recordEvent(serverId, type, tsMs, evt);
+    for (const { type, tsMs, payload } of batch) recordEvent(serverId, type, tsMs, payload);
   });
 
   const stream = createReadStream(filePath, { encoding: 'utf8' });
@@ -61,7 +61,7 @@ async function backfillOne(serverId, filePath, size) {
     // receivedAt (the admin server's own Date.now() at ingest), not payload.tsMs -
     // tsMs is the exporter's engine-uptime clock, not wall-clock time.
     if (!p || typeof outer.receivedAt !== 'number' || !p.type) continue;
-    batch.push({ type: p.type, tsMs: outer.receivedAt, evt: p.event || {} });
+    batch.push({ type: p.type, tsMs: outer.receivedAt, payload: p });
     indexed++;
     if (batch.length >= BATCH_SIZE) {
       runInTx(batch);

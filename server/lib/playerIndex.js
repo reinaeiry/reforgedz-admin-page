@@ -189,7 +189,15 @@ const MAX_PLAUSIBLE_SESSION_MS = 24 * 60 * 60 * 1000;
 // live ingest path (index.js) and the one-time backfill script - same
 // function, same behavior, so backfilled and live-indexed history are
 // indistinguishable afterward.
-export function recordEvent(serverId, type, tsMs, evt) {
+//
+// `payload` is the full payload object (payload.type/tsMs/event/...), NOT
+// just payload.event - 'snapshot' is the one type whose data (players[])
+// lives directly on the payload rather than wrapped in payload.event
+// (confirmed against real ingested data), so callers must pass the whole
+// payload and let this function pick the right shape per type, rather than
+// each call site having to know this quirk itself.
+export function recordEvent(serverId, type, tsMs, payload) {
+  const evt = type === 'snapshot' ? payload : (payload && payload.event);
   if (!db || !evt) return;
 
   if (type === 'restart' || type === 'serverStart') {

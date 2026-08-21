@@ -278,8 +278,16 @@ export async function scanServerForIncidents(serverId, filePath) {
       terrain = { bbMin: evt.bbMin, bbMax: evt.bbMax, gridW: evt.gridW, gridH: evt.gridH, heights: evt.heights };
     }
 
-    if (type === 'snapshot' && evt && Array.isArray(evt.players)) {
-      for (const pl of evt.players) {
+    // Unlike every other event type, 'snapshot' payloads carry their data
+    // directly on the payload object (payload.players), NOT wrapped in
+    // payload.event - confirmed against real ingested data. evt (=
+    // payload.event) is genuinely undefined for this type, so this used to
+    // read evt.players and silently never match - meaning speedhack, noclip,
+    // fallImmunity, instantReload, infiniteAmmo, restrictedItem, and (via
+    // lastSnapshot, populated only here) aimSnap have never actually fired in
+    // production. Source from p.players directly instead.
+    if (type === 'snapshot' && Array.isArray(p.players)) {
+      for (const pl of p.players) {
         if (!pl || typeof pl.playerId !== 'number') continue;
         if (pl.identityId) identityByPlayer.set(pl.playerId, pl.identityId);
 
