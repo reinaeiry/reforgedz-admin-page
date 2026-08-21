@@ -223,6 +223,7 @@ function FlaggedPlayersView() {
           <thead>
             <tr>
               <th>Risk</th>
+              <th>Confidence</th>
               <th>Highest</th>
               <th>Player</th>
               <th>Incidents</th>
@@ -239,6 +240,7 @@ function FlaggedPlayersView() {
                   onClick={() => setExpanded(expanded === p.identityId ? null : p.identityId)}
                 >
                   <td><RiskBar score={p.riskScore} max={maxScore} /></td>
+                  <td title="How sure we are, weighted by how much independent evidence there is">{p.confidence}%</td>
                   <td><span className={severityBadgeClass(p.highestSeverity)}>{p.highestSeverity}</span></td>
                   <td>
                     <Link to={`/player/${p.identityId}`} className="bmGuid" onClick={(e) => e.stopPropagation()}>
@@ -252,7 +254,7 @@ function FlaggedPlayersView() {
                 </tr>
                 {expanded === p.identityId ? (
                   <tr>
-                    <td colSpan={7} style={{ background: 'var(--bg-dark, #111)' }}>
+                    <td colSpan={8} style={{ background: 'var(--bg-dark, #111)' }}>
                       <PlayerIncidentDetail serverId={selectedServerId} identityId={p.identityId} />
                     </td>
                   </tr>

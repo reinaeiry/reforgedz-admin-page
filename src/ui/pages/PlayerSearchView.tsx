@@ -109,8 +109,8 @@ function PlayerProfilePanel({ identityId, onBack }: { identityId: string; onBack
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           <h2 style={{ margin: 0 }}>{profile.displayName}</h2>
           {profile.highestSeverity ? (
-            <span className={severityBadgeClass(profile.highestSeverity)}>
-              {profile.highestSeverity} · {profile.totals.flaggedCount} flagged
+            <span className={severityBadgeClass(profile.highestSeverity)} title="Risk severity x confidence, weighted by how much independent evidence there is - see the confidence tile below">
+              {profile.highestSeverity} · {profile.totals.confidence}% confidence · {profile.totals.flaggedCount} flagged
             </span>
           ) : null}
           {profile.ban?.active ? (
@@ -141,6 +141,8 @@ function PlayerProfilePanel({ identityId, onBack }: { identityId: string; onBack
         <StatTile label="Hits" value={profile.totals.hits} />
         <StatTile label="Sessions" value={profile.totals.sessions} />
         <StatTile label="Playtime" value={fmtDuration(profile.totals.playtimeMs)} />
+        <StatTile label="Risk score" value={profile.totals.riskScore} />
+        <StatTile label="Confidence" value={`${profile.totals.confidence}%`} />
       </div>
 
       {profile.perServer.length > 1 ? (
@@ -269,7 +271,7 @@ export function PlayerSearchView({ initialIdentityId }: { initialIdentityId?: st
       ) : (
         <>
           <table className="bmTable">
-            <thead><tr><th>Risk</th><th>Player</th><th>K/D</th><th>Hits</th><th>Sessions</th><th>Playtime</th><th>Last seen</th></tr></thead>
+            <thead><tr><th>Risk</th><th>Confidence</th><th>Player</th><th>K/D</th><th>Hits</th><th>Sessions</th><th>Playtime</th><th>Last seen</th></tr></thead>
             <tbody>
               {results.map((r) => (
                 <tr key={r.identityId} style={{ cursor: 'pointer' }} onClick={() => setSelected(r.identityId)}>
@@ -278,6 +280,7 @@ export function PlayerSearchView({ initialIdentityId }: { initialIdentityId?: st
                       <span className={severityBadgeClass(r.highestSeverity)}>{r.highestSeverity} · {r.flaggedCount}</span>
                     ) : <span className="muted">—</span>}
                   </td>
+                  <td>{r.flaggedCount > 0 ? <span title="How sure we are, weighted by how much independent evidence there is">{r.confidence}%</span> : <span className="muted">—</span>}</td>
                   <td>{r.displayName}</td>
                   <td>{r.kills}/{r.deaths}</td>
                   <td>{r.hits}</td>

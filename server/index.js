@@ -17,7 +17,7 @@ import { buildBmRouter } from './routes/bm.js';
 import bmWebhookRouter from './routes/bm-webhook.js';
 import { buildTicketsRouter } from './routes/tickets.js';
 import { buildPlayersRouter } from './routes/players.js';
-import { initPlayerIndex, recordEvent } from './lib/playerIndex.js';
+import { initPlayerIndex, recordEvent, getRiskConfidenceForIdentities } from './lib/playerIndex.js';
 import * as ticketEventRelay from './lib/ticketEventRelay.js';
 import { buildBmSseRouter } from './routes/bm-sse.js';
 import { postAuditEvent, ctxFromReq } from './lib/bmAudit.js';
@@ -2058,6 +2058,21 @@ app.get('/api/replay/players', requireAuth, requireTool('replay'), requireServer
       name: typeof p.name === 'string' ? p.name : String(p.playerId),
       identityId: typeof p.identityId === 'string' ? p.identityId : '',
     });
+  }
+
+  // One batched lookup for every player currently in this list, rather than
+  // the per-player fetch the "selected player" career badge already does -
+  // this list renders everyone connected at once, so it needs everyone's
+  // risk/confidence in one shot.
+  const riskById = getRiskConfidenceForIdentities(out.map((p) => p.identityId));
+  for (const p of out) {
+    const r = riskById[p.identityId];
+    if (r) {
+      p.riskScore = r.riskScore;
+      p.confidence = r.confidence;
+      p.highestSeverity = r.highestSeverity;
+      p.flaggedCount = r.flaggedCount;
+    }
   }
 
   out.sort((a, b) => a.playerId - b.playerId);

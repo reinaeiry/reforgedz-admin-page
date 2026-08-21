@@ -482,6 +482,31 @@ export async function getIncidentsCached(serverId, filePath) {
 // still the flat log, just scoped to one identityId.
 const SEVERITY_WEIGHT = { [SEVERITY.LOW]: 1, [SEVERITY.MEDIUM]: 2, [SEVERITY.HIGH]: 4 };
 
+// riskScore answers "how bad" (severity x confidence, summed - one bad
+// incident can outweigh many mild ones). confidence answers a different
+// question: "how sure are we". A single incident, even at 85% per-incident
+// confidence, is still one data point - could be a bad terrain mesh, a lag
+// spike, a fluke. confidence is pulled toward 0 with few incidents
+// (Bayesian-style shrinkage against a prior of CONFIDENCE_PRIOR_COUNT
+// "unknown" incidents) and pushed up by two things: more incidents of the
+// same kind, and - more than that - incidents spanning multiple independent
+// categories, since a player tripping wallbang AND speedhack is much
+// stronger evidence than the same check firing repeatedly (which could just
+// mean that one check runs hot for them). Shared between the live scanner's
+// summarizePlayerRisk (below) and playerIndex.js's permanent per-player
+// aggregates, so a player's standing reads the same everywhere it's shown.
+const CONFIDENCE_PRIOR_COUNT = 3;
+const CONFIDENCE_CATEGORY_BONUS_PER_EXTRA = 0.15;
+const CONFIDENCE_CATEGORY_BONUS_MAX_EXTRA = 2;
+
+export function computeConfidence({ incidentCount, distinctCategories, avgConfidence }) {
+  if (!incidentCount || !avgConfidence) return 0;
+  const sampleWeight = incidentCount / (incidentCount + CONFIDENCE_PRIOR_COUNT);
+  const extraCategories = Math.min(Math.max(distinctCategories - 1, 0), CONFIDENCE_CATEGORY_BONUS_MAX_EXTRA);
+  const categoryBonus = 1 + CONFIDENCE_CATEGORY_BONUS_PER_EXTRA * extraCategories;
+  return Math.max(0, Math.min(100, Math.round(avgConfidence * sampleWeight * categoryBonus)));
+}
+
 export function summarizePlayerRisk(incidents) {
   const byPlayer = new Map();
 
@@ -493,6 +518,7 @@ export function summarizePlayerRisk(incidents) {
         identityId: inc.identityId,
         riskScore: 0,
         incidentCount: 0,
+        confidenceSum: 0,
         categories: {},
         highestSeverity: SEVERITY.LOW,
         firstIncidentTsMs: inc.tsMs,
@@ -503,13 +529,22 @@ export function summarizePlayerRisk(incidents) {
 
     p.riskScore += SEVERITY_WEIGHT[inc.severity] * (inc.confidence / 100);
     p.incidentCount += 1;
+    p.confidenceSum += inc.confidence;
     p.categories[inc.category] = (p.categories[inc.category] || 0) + 1;
     if (SEVERITY_WEIGHT[inc.severity] > SEVERITY_WEIGHT[p.highestSeverity]) p.highestSeverity = inc.severity;
     if (inc.tsMs < p.firstIncidentTsMs) p.firstIncidentTsMs = inc.tsMs;
     if (inc.tsMs > p.lastIncidentTsMs) p.lastIncidentTsMs = inc.tsMs;
   }
 
-  const out = Array.from(byPlayer.values()).map((p) => ({ ...p, riskScore: Math.round(p.riskScore * 10) / 10 }));
+  const out = Array.from(byPlayer.values()).map(({ confidenceSum, ...p }) => ({
+    ...p,
+    riskScore: Math.round(p.riskScore * 10) / 10,
+    confidence: computeConfidence({
+      incidentCount: p.incidentCount,
+      distinctCategories: Object.keys(p.categories).length,
+      avgConfidence: confidenceSum / p.incidentCount,
+    }),
+  }));
   out.sort((a, b) => b.riskScore - a.riskScore);
   return out;
 }

@@ -12,7 +12,7 @@
 
 import Database from 'better-sqlite3';
 import path from 'node:path';
-import { checkHitForIncidents, checkInteractForIncident, SEVERITY } from './anticheat.js';
+import { checkHitForIncidents, checkInteractForIncident, SEVERITY, computeConfidence } from './anticheat.js';
 
 const SEVERITY_RANK = { [SEVERITY.LOW]: 1, [SEVERITY.MEDIUM]: 2, [SEVERITY.HIGH]: 4 };
 const SEVERITY_OF = {
@@ -72,6 +72,7 @@ export function initPlayerIndex(dataDir) {
     );
     CREATE INDEX IF NOT EXISTS idx_player_events_identity ON player_events(identity_id, ts_ms DESC);
     CREATE INDEX IF NOT EXISTS idx_player_events_server ON player_events(server_id, ts_ms DESC);
+    CREATE INDEX IF NOT EXISTS idx_player_events_type ON player_events(type);
 
     -- Bridges join -> disconnect for session/playtime pairing. Keyed by the
     -- numeric session-local playerId, NOT identityId, because join events
@@ -298,6 +299,20 @@ export function recordEvent(serverId, type, tsMs, evt) {
 const SEVERITY_RANK_SQL = "CASE pss.max_severity WHEN 'high' THEN 3 WHEN 'medium' THEN 2 ELSE 1 END";
 const SEVERITY_FROM_RANK = { 3: SEVERITY.HIGH, 2: SEVERITY.MEDIUM, 1: SEVERITY.LOW };
 
+// Shared aggregate over the permanently-indexed incident categories (see
+// listIncidentsIndexed's PERMANENT_INCIDENT_TYPES) - feeds computeConfidence.
+// json_extract needs SQLite's JSON1 extension, which better-sqlite3 ships
+// enabled by default.
+const INCIDENT_AGG_SUBQUERY = `
+  SELECT identity_id,
+         COUNT(*) AS incidentCount,
+         COUNT(DISTINCT type) AS distinctCategories,
+         AVG(json_extract(detail_json, '$.confidence')) AS avgConfidence
+  FROM player_events
+  WHERE type IN ('wallbang','godMode','interactRange')
+  GROUP BY identity_id
+`;
+
 // The default "All Players" view: every indexed player, all-time, ranked by
 // permanent risk score first (severity x confidence, accumulated by
 // bumpRisk) - not gated behind typing a search query. `query`, when given,
@@ -328,9 +343,13 @@ export function listPlayersIndexed({ query, limit, offset, excludeIds } = {}) {
       COALESCE(SUM(pss.hits), 0) AS hits,
       COALESCE(SUM(pss.sessions), 0) AS sessions,
       COALESCE(SUM(pss.playtime_ms), 0) AS playtimeMs,
-      COALESCE(SUM(pss.kills + pss.deaths + pss.hits + pss.sessions), 0) AS activity
+      COALESCE(SUM(pss.kills + pss.deaths + pss.hits + pss.sessions), 0) AS activity,
+      COALESCE(MAX(inc.incidentCount), 0) AS incidentCount,
+      COALESCE(MAX(inc.distinctCategories), 0) AS distinctCategories,
+      MAX(inc.avgConfidence) AS avgConfidence
     FROM players p
     LEFT JOIN player_server_stats pss ON pss.identity_id = p.identity_id
+    LEFT JOIN (${INCIDENT_AGG_SUBQUERY}) inc ON inc.identity_id = p.identity_id
     ${whereClause}
     GROUP BY p.identity_id
     -- riskScore is the primary sort, but while hit/interact capture isn't
@@ -351,6 +370,7 @@ export function listPlayersIndexed({ query, limit, offset, excludeIds } = {}) {
     riskScore: Math.round(r.riskScore * 10) / 10,
     flaggedCount: r.flaggedCount,
     highestSeverity: r.flaggedCount > 0 ? (SEVERITY_FROM_RANK[r.severityRank] || SEVERITY.LOW) : null,
+    confidence: computeConfidence({ incidentCount: r.incidentCount, distinctCategories: r.distinctCategories, avgConfidence: r.avgConfidence }),
     kills: r.kills, deaths: r.deaths, hits: r.hits, sessions: r.sessions, playtimeMs: r.playtimeMs,
   }));
 }
@@ -363,7 +383,7 @@ export function getPlayerProfileIndexed(identityId) {
     .all(identityId).map((n) => n.name);
   const perServer = db.prepare(`SELECT * FROM player_server_stats WHERE identity_id = ?`).all(identityId);
 
-  const totals = { kills: 0, deaths: 0, hits: 0, shots: 0, sessions: 0, playtimeMs: 0, riskScore: 0, flaggedCount: 0 };
+  const totals = { kills: 0, deaths: 0, hits: 0, shots: 0, sessions: 0, playtimeMs: 0, riskScore: 0, flaggedCount: 0, confidence: 0 };
   let severityRank = 0;
   for (const s of perServer) {
     totals.kills += s.kills; totals.deaths += s.deaths; totals.hits += s.hits;
@@ -372,6 +392,14 @@ export function getPlayerProfileIndexed(identityId) {
     severityRank = Math.max(severityRank, SEVERITY_RANK[s.max_severity] || 0);
   }
   totals.riskScore = Math.round(totals.riskScore * 10) / 10;
+
+  const inc = db.prepare(`
+    SELECT COUNT(*) AS incidentCount, COUNT(DISTINCT type) AS distinctCategories,
+           AVG(json_extract(detail_json, '$.confidence')) AS avgConfidence
+    FROM player_events
+    WHERE identity_id = ? AND type IN ('wallbang','godMode','interactRange')
+  `).get(identityId);
+  totals.confidence = computeConfidence({ incidentCount: inc.incidentCount, distinctCategories: inc.distinctCategories, avgConfidence: inc.avgConfidence });
 
   return {
     identityId,
@@ -433,6 +461,49 @@ export function listIncidentsIndexed(serverId, { identityId, category, minConfid
       };
     })
     .filter((i) => !minConfidence || i.confidence >= minConfidence);
+}
+
+// Batch risk+confidence lookup for a page's whole visible player list at once
+// (e.g. the Replay tool's live player panel) - one query for N players rather
+// than N round trips, since these lists render every connected player, not
+// just one the admin has drilled into. Returns a plain object keyed by
+// identityId so callers doing a per-row lookup (`riskById[identityId]`) don't
+// need Map semantics threaded through JSON.
+export function getRiskConfidenceForIdentities(identityIds) {
+  const ids = Array.from(new Set((identityIds || []).filter(Boolean)));
+  if (!ids.length) return {};
+  const placeholders = ids.map(() => '?').join(',');
+
+  const riskRows = db.prepare(`
+    SELECT identity_id AS identityId,
+           SUM(risk_score) AS riskScore,
+           SUM(flagged_count) AS flaggedCount,
+           MAX(${SEVERITY_RANK_SQL}) AS severityRank
+    FROM player_server_stats pss
+    WHERE identity_id IN (${placeholders})
+    GROUP BY identity_id
+  `).all(...ids);
+
+  const incRows = db.prepare(`
+    SELECT identity_id AS identityId, COUNT(*) AS incidentCount, COUNT(DISTINCT type) AS distinctCategories,
+           AVG(json_extract(detail_json, '$.confidence')) AS avgConfidence
+    FROM player_events
+    WHERE identity_id IN (${placeholders}) AND type IN ('wallbang','godMode','interactRange')
+    GROUP BY identity_id
+  `).all(...ids);
+  const incByIdentity = new Map(incRows.map((r) => [r.identityId, r]));
+
+  const out = {};
+  for (const r of riskRows) {
+    const inc = incByIdentity.get(r.identityId);
+    out[r.identityId] = {
+      riskScore: Math.round((r.riskScore || 0) * 10) / 10,
+      flaggedCount: r.flaggedCount || 0,
+      highestSeverity: r.flaggedCount > 0 ? (SEVERITY_FROM_RANK[r.severityRank] || SEVERITY.LOW) : null,
+      confidence: inc ? computeConfidence({ incidentCount: inc.incidentCount, distinctCategories: inc.distinctCategories, avgConfidence: inc.avgConfidence }) : 0,
+    };
+  }
+  return out;
 }
 
 export function getPlayerTimelineIndexed(identityId, { serverId, types, beforeTsMs, limit }) {

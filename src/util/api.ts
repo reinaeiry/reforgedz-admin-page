@@ -56,6 +56,7 @@ export async function getServerIncidents(opts: {
 export type PlayerRisk = {
   identityId: string;
   riskScore: number;
+  confidence: number;
   incidentCount: number;
   categories: Record<string, number>;
   highestSeverity: IncidentSeverity;
@@ -80,6 +81,10 @@ export type PlayerSearchResult = {
   riskScore: number;
   flaggedCount: number;
   highestSeverity: IncidentSeverity | null;
+  // How sure we are, separate from how bad it looks - a single high-severity
+  // incident still scores a low confidence until there's more evidence. See
+  // playerIndex.js's computeConfidence for the formula.
+  confidence: number;
   kills: number;
   deaths: number;
   hits: number;
@@ -125,7 +130,7 @@ export type PlayerProfile = {
   firstSeen: number | null;
   lastSeen: number | null;
   servers: ServerInfo[];
-  totals: { kills: number; deaths: number; hits: number; shots: number; sessions: number; playtimeMs: number; riskScore: number; flaggedCount: number };
+  totals: { kills: number; deaths: number; hits: number; shots: number; sessions: number; playtimeMs: number; riskScore: number; flaggedCount: number; confidence: number };
   highestSeverity: IncidentSeverity | null;
   perServer: PlayerServerStats[];
   ban: PlayerBanInfo | null;
@@ -196,7 +201,15 @@ export async function getReplayRange(serverId: string): Promise<ReplayRange> {
   return jsonOk<ReplayRange>(res, 'Failed to get replay range');
 }
 
-export type ReplayPlayer = { playerId: number; name: string; identityId?: string };
+export type ReplayPlayer = {
+  playerId: number;
+  name: string;
+  identityId?: string;
+  riskScore?: number;
+  confidence?: number;
+  highestSeverity?: 'low' | 'medium' | 'high' | null;
+  flaggedCount?: number;
+};
 
 export async function listReplayPlayers(serverId: string): Promise<ReplayPlayer[]> {
   const res = await fetch(`${requireApiBaseUrl()}/api/replay/players?serverId=${encodeURIComponent(serverId)}`, { credentials: 'include' });

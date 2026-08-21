@@ -38,15 +38,24 @@ import { listGameLogs, type GameLogRow } from '../../util/bmApi';
 // risk on them). Fails silently: no spinner, no error text, just shows
 // nothing until the fetch resolves - this is a small addition to an already
 // dense panel, not something that should draw attention while loading.
+// Same severity->class mapping as AntiCheatPage's severityBadgeClass, but not
+// shared - this file already has its own small badge helpers rather than a
+// cross-page import for one style lookup.
+function replaySeverityBadgeClass(sev: string | null | undefined): string {
+  if (sev === 'high') return 'bmBadge bmBadge-warn';
+  if (sev === 'medium') return 'bmBadge bmBadge-medium';
+  return 'bmBadge bmBadge-low';
+}
+
 function PlayerCareerBadge({ identityId }: { identityId: string }) {
-  const [stats, setStats] = useState<{ kills: number; deaths: number; hits: number; flaggedCount: number; highestSeverity: string | null } | null>(null);
+  const [stats, setStats] = useState<{ kills: number; deaths: number; hits: number; flaggedCount: number; confidence: number; highestSeverity: string | null } | null>(null);
 
   useEffect(() => {
     let alive = true;
     setStats(null);
     getPlayerProfile(identityId).then((p) => {
       if (!alive || !p) return;
-      setStats({ kills: p.totals.kills, deaths: p.totals.deaths, hits: p.totals.hits, flaggedCount: p.totals.flaggedCount, highestSeverity: p.highestSeverity });
+      setStats({ kills: p.totals.kills, deaths: p.totals.deaths, hits: p.totals.hits, flaggedCount: p.totals.flaggedCount, confidence: p.totals.confidence, highestSeverity: p.highestSeverity });
     }).catch(() => {});
     return () => { alive = false; };
   }, [identityId]);
@@ -56,8 +65,8 @@ function PlayerCareerBadge({ identityId }: { identityId: string }) {
     <span className="muted" style={{ fontSize: 10, fontWeight: 500, display: 'inline-flex', alignItems: 'center', gap: 6 }}>
       <span>{stats.kills}K/{stats.deaths}D · {stats.hits} hits (all-time)</span>
       {stats.highestSeverity ? (
-        <span className="bmBadge bmBadge-warn" title={`${stats.flaggedCount} flagged incident(s) on record`}>
-          {stats.highestSeverity} · {stats.flaggedCount}
+        <span className={replaySeverityBadgeClass(stats.highestSeverity)} title={`${stats.flaggedCount} flagged incident(s) on record, ${stats.confidence}% confidence`}>
+          {stats.highestSeverity} · {stats.confidence}% conf · {stats.flaggedCount}
         </span>
       ) : null}
     </span>
@@ -1510,16 +1519,25 @@ export function ReplayToolPage() {
   }, [events]);
 
   const knownPlayers = useMemo((): ReplayPlayer[] => {
-    const map = new Map<number, string>();
+    // Map values, not just names - identityId (and the risk/confidence it's
+    // keyed on) needs to survive this merge too, or every consumer downstream
+    // (the player-list badges, the selected-player career badge/profile link)
+    // has nothing to attach to. `players` (the live /api/replay/players fetch)
+    // is the only source carrying riskScore/confidence/highestSeverity - it's
+    // batched server-side once for the whole visible list - so once an
+    // identityId is known for a playerId, later sources (join/disconnect
+    // events, snapshots) only fill in the name, never overwrite it away.
+    const map = new Map<number, ReplayPlayer>();
 
     // Seed from server-reported (latest) players.
     for (const p of players) {
       if (!p || typeof p.playerId !== 'number') continue;
       const name = typeof p.name === 'string' && p.name.trim().length > 0 ? p.name.trim() : String(p.playerId);
-      map.set(p.playerId, name);
+      map.set(p.playerId, { ...p, name });
     }
 
-    // Add names from join/disconnect events.
+    // Add names from join/disconnect events; fill in identityId for players
+    // who've since left and so aren't in the live snapshot above.
     for (const e of events) {
       const p: any = e.payload;
       if (!p || typeof p !== 'object') continue;
@@ -1528,23 +1546,25 @@ export function ReplayToolPage() {
       const id = ev && typeof ev.playerId === 'number' ? ev.playerId : null;
       if (id === null) continue;
       const nm = ev && typeof ev.name === 'string' && ev.name.trim().length > 0 ? ev.name.trim() : '';
-      if (nm) map.set(id, nm);
-      else if (!map.has(id)) map.set(id, String(id));
+      const existing = map.get(id);
+      const identityId = existing?.identityId || (ev && typeof ev.identityId === 'string' && ev.identityId ? ev.identityId : undefined);
+      map.set(id, { ...existing, playerId: id, name: nm || existing?.name || String(id), identityId });
     }
 
-    // Add names from snapshots (historical timeline truth).
+    // Add names from snapshots (historical timeline truth), same fill-in rule.
     for (const s of snapshots) {
       for (const pj of s.players) {
         if (!pj || typeof pj !== 'object') continue;
         const id = (pj as any).playerId;
         if (typeof id !== 'number') continue;
         const nm = typeof (pj as any).name === 'string' && (pj as any).name.trim().length > 0 ? (pj as any).name.trim() : '';
-        if (nm) map.set(id, nm);
-        else if (!map.has(id)) map.set(id, String(id));
+        const existing = map.get(id);
+        const identityId = existing?.identityId || (typeof (pj as any).identityId === 'string' && (pj as any).identityId ? (pj as any).identityId : undefined);
+        map.set(id, { ...existing, playerId: id, name: nm || existing?.name || String(id), identityId });
       }
     }
 
-    const out = Array.from(map.entries()).map(([playerId, name]) => ({ playerId, name }));
+    const out = Array.from(map.values());
     out.sort((a, b) => a.name.localeCompare(b.name) || a.playerId - b.playerId);
     return out;
   }, [events, players, snapshots]);
@@ -2577,7 +2597,7 @@ export function ReplayToolPage() {
       const connected = isConnectedAt(pid, t);
       if (connected === true) {
         const name = nameAtTime.get(pid) || p.name;
-        out.push({ playerId: pid, name });
+        out.push({ ...p, playerId: pid, name });
         continue;
       }
       if (connected === false) continue;
@@ -2586,7 +2606,7 @@ export function ReplayToolPage() {
       if (!st) continue;
       if ((t - st.tsMs) <= unknownPresenceMaxAgeMs) {
         const name = nameAtTime.get(pid) || p.name;
-        out.push({ playerId: pid, name });
+        out.push({ ...p, playerId: pid, name });
       }
     }
 
@@ -3560,7 +3580,18 @@ export function ReplayToolPage() {
                                   padding: '6px 10px',
                                 }}
                               >
-                                <div style={{ fontWeight: 600, fontSize: 12 }}>{p.name}</div>
+                                <div style={{ fontWeight: 600, fontSize: 12, display: 'flex', alignItems: 'center', gap: 6 }}>
+                                  <span>{p.name}</span>
+                                  {p.highestSeverity ? (
+                                    <span
+                                      className={replaySeverityBadgeClass(p.highestSeverity)}
+                                      style={{ fontSize: 9, padding: '1px 4px', fontWeight: 700 }}
+                                      title={`All-time: risk ${p.riskScore ?? 0}, ${p.confidence ?? 0}% confidence, ${p.flaggedCount ?? 0} flagged incident(s)`}
+                                    >
+                                      {p.highestSeverity} · {p.confidence ?? 0}%
+                                    </span>
+                                  ) : null}
+                                </div>
                               </button>
                             );
                           })
