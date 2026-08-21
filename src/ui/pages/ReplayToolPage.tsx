@@ -74,7 +74,9 @@ function PlayerCareerBadge({ identityId }: { identityId: string }) {
 }
 import { type NameTagOptions, type PlayerMarker, type TerrainGrid, type TownLabel, type Trail, type VehicleMarker } from '../components/ReplayMap3D';
 import { ReplayMap2D, type WorldBounds } from '../components/ReplayMap2D';
-import { ItemSpawnControl } from '../components/ItemSpawnControl';
+import { ItemSpawnControl, type CopiedInventory, type CopiedInventoryItem, type SpawnCopiedProgress } from '../components/ItemSpawnControl';
+import { ReplayTimeline, type TimelineEvent } from '../components/replay/ReplayTimeline';
+import { InventorySearchModal } from '../components/replay/InventorySearchModal';
 import { resolveMapId, getMapDef } from '../../util/maps';
 
 // ─── Payload budget ─────────────────────────────────────────────────────────
@@ -259,6 +261,25 @@ function formatElapsedMs(ms: number): string {
   return `${hh}:${mm}:${ss}`;
 }
 
+// Raw inventory is one array entry per stack (no count field on the item
+// itself) - groups by prefab (falling back to name when a modded item has
+// no prefab) so a display list and the "copy inventory" action agree on
+// what counts as one distinct stack. Was previously duplicated inline at
+// the one call site that needed it; the copy button needs the exact same
+// grouping, so it's a shared function now, not two copies to keep in sync.
+function groupInventoryByPrefab(inv: any[]): { name: string; prefab: string; count: number }[] {
+  const byPrefab = new Map<string, { name: string; prefab: string; count: number }>();
+  for (const it of inv) {
+    const prefab = it && typeof it.prefab === 'string' ? it.prefab : '';
+    const rawName = it && it.name ? String(it.name) : '';
+    const name = (!rawName || rawName.startsWith('#')) ? ((prefab.split('/').pop() || 'Item').replace(/\.et$/i, '')) : rawName;
+    const key = prefab || name;
+    const g = byPrefab.get(key);
+    if (g) g.count++; else byPrefab.set(key, { name, prefab, count: 1 });
+  }
+  return Array.from(byPrefab.values());
+}
+
 function formatClockTime(tsMs: number | null | undefined): string {
   if (typeof tsMs !== 'number' || !Number.isFinite(tsMs)) return '—';
   try {
@@ -351,14 +372,6 @@ export function ReplayToolPage() {
   const [playersPanelOpen, setPlayersPanelOpen] = useState(true);
   const [nameTagOptionsOpen, setNameTagOptionsOpen] = useState(false);
 
-  const [showEventTimeline, setShowEventTimeline] = useState(true);
-  const [hoveredEventDot, setHoveredEventDot] = useState<null | {
-    tsMs: number;
-    type: 'kill' | 'death' | 'aiKill' | 'join' | 'disconnect' | 'restart' | 'gmPing';
-    title: string;
-    subtitle: string;
-    leftPct: number;
-  }>(null);
   const [selectedEventKey, setSelectedEventKey] = useState<string | null>(null);
   const eventCardRefs = useRef<Map<string, HTMLElement>>(new Map());
 
@@ -393,6 +406,36 @@ export function ReplayToolPage() {
   const [spawnQuery, setSpawnQuery] = useState('');
   const [spawnKind, setSpawnKind] = useState<'all' | 'vehicle' | 'character'>('all');
   const [spawnBusy, setSpawnBusy] = useState(false);
+  // "Copy inventory" clipboard - persisted so a page reload mid-workflow
+  // doesn't lose a copied loadout. Copying works on historical data too
+  // (browsing a past loadout is a real use case); spawning it back only
+  // makes sense live, gated the same way the rest of ItemSpawnControl is.
+  const [copiedInventory, setCopiedInventory] = useState<CopiedInventory | null>(() => {
+    try {
+      const raw = localStorage.getItem('replay.copiedInventory');
+      return raw ? JSON.parse(raw) : null;
+    } catch { return null; }
+  });
+  useEffect(() => {
+    try {
+      if (copiedInventory) localStorage.setItem('replay.copiedInventory', JSON.stringify(copiedInventory));
+      else localStorage.removeItem('replay.copiedInventory');
+    } catch { /* ignore - clipboard just won't survive a reload */ }
+  }, [copiedInventory]);
+  const [spawnCopiedProgress, setSpawnCopiedProgress] = useState<SpawnCopiedProgress | null>(null);
+  const [invSearchOpen, setInvSearchOpen] = useState(false);
+  // No admin-auth session has any concept of "this admin's own in-game
+  // character" (checked: nothing in the auth system links a login to a
+  // Steam/game identity) - "spawn to myself" can't be automatic. This is a
+  // thin convenience on top of the existing player-target flow: remember a
+  // name once (numeric playerId resets every reconnect, but names are
+  // stable), resolve it against whoever's currently connected each time.
+  const [myIngameName, setMyIngameName] = useState(() => {
+    try { return localStorage.getItem('replay.myIngameName') || ''; } catch { return ''; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem('replay.myIngameName', myIngameName); } catch { /* ignore */ }
+  }, [myIngameName]);
   const [scrubberZoom, setScrubberZoom] = useState(1); // 1 = full range, higher = zoomed in
   const [enableTrails, setEnableTrails] = useState(true);
   const [trailSeconds, setTrailSeconds] = useState(20);
@@ -1371,6 +1414,45 @@ export function ReplayToolPage() {
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Failed to remove item');
       }
+    })();
+  }, [serverId]);
+
+  // Spawns every item in a copied inventory onto a target. Deliberately
+  // doesn't reuse doSpawnItem in a loop: that toggles the single shared
+  // spawnBusy flag per call (would flicker rather than show one coherent
+  // "spawning N items…" state) and swallows errors into a toast with
+  // nothing a loop could aggregate. The queue this hits (POST /api/replay/
+  // spawnItem -> pendingCommands.spawnItem, drained in one shot on the
+  // exporter's next ingest) already accumulates across calls under a lock,
+  // so sequential awaits here are purely for clean per-item progress/error
+  // reporting, not for correctness. The 49-entry queue cap is real, though -
+  // warn rather than silently dropping the tail on a very large clipboard.
+  const spawnCopiedInventory = useCallback((target: 'player' | 'vehicle', key: string, items: CopiedInventoryItem[]) => {
+    if (!serverId || items.length === 0) return;
+    const serverIdValue = serverId;
+    if (items.length >= 40) {
+      pushToast({ kind: 'event', title: 'Large inventory', subtitle: `${items.length} distinct items - the spawn queue caps at 49, some may be dropped` });
+    }
+    setSpawnCopiedProgress({ done: 0, total: items.length, failed: [] });
+    (async () => {
+      let done = 0;
+      const failed: string[] = [];
+      for (const item of items) {
+        try {
+          await spawnReplayItem({ serverId: serverIdValue, target, key, prefab: item.prefab, count: item.count });
+        } catch {
+          failed.push(item.name || item.prefab);
+        }
+        done += 1;
+        setSpawnCopiedProgress({ done, total: items.length, failed: [...failed] });
+      }
+      const okCount = items.length - failed.length;
+      pushToast({
+        kind: 'event',
+        title: failed.length ? `Spawned ${okCount}/${items.length} items` : 'Copied inventory spawned',
+        subtitle: failed.length ? `Failed: ${failed.join(', ')}` : `${okCount} item(s) given`,
+      });
+      setTimeout(() => setSpawnCopiedProgress(null), 2000);
     })();
   }, [serverId]);
 
@@ -3237,6 +3319,48 @@ export function ReplayToolPage() {
           </button>
         ) : null}
 
+        {serverId ? (
+          <button
+            className="button"
+            onClick={() => setInvSearchOpen(true)}
+            title="Search every player's item history on this server, all-time"
+          >
+            🔍 Search item history
+          </button>
+        ) : null}
+
+        {copiedInventory ? (
+          <div className="row" style={{ gap: 6, alignItems: 'center' }}>
+            <span className="muted" style={{ fontSize: 11 }}>📋 {copiedInventory.items.length} item(s) from {copiedInventory.sourcePlayerName}</span>
+            <input
+              className="input"
+              style={{ width: 120, fontSize: 11, padding: '4px 6px' }}
+              placeholder="Your in-game name"
+              value={myIngameName}
+              onChange={(e) => setMyIngameName(e.target.value)}
+              title="Saved locally - used to find your live playerId for 'Spawn to myself'"
+            />
+            <button
+              type="button"
+              className="button"
+              style={{ fontSize: 11, padding: '4px 8px' }}
+              disabled={!myIngameName.trim() || !live}
+              title={!live ? 'Only available live' : "Spawn the copied inventory onto whoever matches this name in the current player list"}
+              onClick={() => {
+                const target = knownPlayers.find((p) => p.name.trim().toLowerCase() === myIngameName.trim().toLowerCase());
+                if (!target) {
+                  setError(`No connected player named "${myIngameName}" - pick yourself from the player list instead`);
+                  return;
+                }
+                spawnCopiedInventory('player', String(target.playerId), copiedInventory.items);
+              }}
+            >
+              Spawn to myself
+            </button>
+            <button type="button" className="button" style={{ fontSize: 11, padding: '4px 8px' }} title="Clear clipboard" onClick={() => setCopiedInventory(null)}>✕</button>
+          </div>
+        ) : null}
+
         {serverId ? null : (
           <button
             className="button"
@@ -3637,8 +3761,27 @@ export function ReplayToolPage() {
                               </div>
 
                               <details>
-                                <summary style={{ cursor: 'pointer', fontWeight: 700, fontSize: 11 }}>
-                                  Inventory ({Array.isArray((selectedPlayerStateWithEquipmentCache as any).inventory) ? (selectedPlayerStateWithEquipmentCache as any).inventory.length : 0})
+                                <summary style={{ cursor: 'pointer', fontWeight: 700, fontSize: 11, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                                  <span>Inventory ({Array.isArray((selectedPlayerStateWithEquipmentCache as any).inventory) ? (selectedPlayerStateWithEquipmentCache as any).inventory.length : 0})</span>
+                                  {Array.isArray((selectedPlayerStateWithEquipmentCache as any).inventory) && (selectedPlayerStateWithEquipmentCache as any).inventory.length > 0 && selectedPlayerId !== null ? (
+                                    <button
+                                      type="button"
+                                      className="button"
+                                      style={{ padding: '0 6px', fontSize: 10 }}
+                                      title="Copy this player's current inventory to spawn onto someone else later"
+                                      onClick={(e) => {
+                                        e.preventDefault();
+                                        const grouped = groupInventoryByPrefab((selectedPlayerStateWithEquipmentCache as any).inventory).filter((g) => g.prefab);
+                                        const sourceName = playersAtTime.find((x) => x.playerId === selectedPlayerId)?.name
+                                          || knownPlayers.find((x) => x.playerId === selectedPlayerId)?.name
+                                          || `#${selectedPlayerId}`;
+                                        setCopiedInventory({ sourcePlayerId: selectedPlayerId, sourcePlayerName: sourceName, capturedAtTsMs: Date.now(), items: grouped });
+                                        pushToast({ kind: 'event', title: 'Inventory copied', subtitle: `${grouped.length} item(s) from ${sourceName}` });
+                                      }}
+                                    >
+                                      📋 Copy
+                                    </button>
+                                  ) : null}
                                 </summary>
                                 <div className="scroll" style={{ marginTop: 4, maxHeight: 120, overflow: 'auto', border: '1px solid rgba(255,255,255,0.10)', borderRadius: 6 }}>
                                   {(() => {
@@ -3646,16 +3789,7 @@ export function ReplayToolPage() {
                                     if (!Array.isArray(inv) || inv.length === 0) {
                                       return <div className="muted" style={{ padding: 8, fontSize: 11 }}>No inventory data.</div>;
                                     }
-                                    const byPrefab = new Map<string, { name: string; prefab: string; count: number }>();
-                                    for (const it of inv) {
-                                      const prefab = it && typeof it.prefab === 'string' ? it.prefab : '';
-                                      const rawName = it && it.name ? String(it.name) : '';
-                                      const name = (!rawName || rawName.startsWith('#')) ? ((prefab.split('/').pop() || 'Item').replace(/\.et$/i, '')) : rawName;
-                                      const key = prefab || name;
-                                      const g = byPrefab.get(key);
-                                      if (g) g.count++; else byPrefab.set(key, { name, prefab, count: 1 });
-                                    }
-                                    return Array.from(byPrefab.values()).slice(0, 120).map((g, idx) => (
+                                    return groupInventoryByPrefab(inv).slice(0, 120).map((g, idx) => (
                                       <div key={idx} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6, padding: '4px 8px', borderBottom: '1px solid rgba(255,255,255,0.06)', fontSize: 11 }}>
                                         <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{g.name}{g.count > 1 ? ` ×${g.count}` : ''}</span>
                                         {live && selectedPlayerId !== null && g.prefab ? (
@@ -3695,6 +3829,9 @@ export function ReplayToolPage() {
                               items={itemCatalog}
                               busy={spawnBusy}
                               onSpawn={(prefab, count) => doSpawnItem('player', String(selectedPlayerId), prefab, count)}
+                              copiedInventory={copiedInventory}
+                              spawnCopiedProgress={spawnCopiedProgress}
+                              onSpawnCopied={(items) => selectedPlayerId !== null && spawnCopiedInventory('player', String(selectedPlayerId), items)}
                             />
                           ) : null}
                         </div>
@@ -3939,6 +4076,9 @@ export function ReplayToolPage() {
                           items={itemCatalog}
                           busy={spawnBusy}
                           onSpawn={(prefab, count) => doSpawnItem('vehicle', selectedVehicleId, prefab, count)}
+                          copiedInventory={copiedInventory}
+                          spawnCopiedProgress={spawnCopiedProgress}
+                          onSpawnCopied={(items) => spawnCopiedInventory('vehicle', selectedVehicleId, items)}
                         />
                       </div>
                     ) : null}
@@ -3975,211 +4115,34 @@ export function ReplayToolPage() {
                 </div>
               ) : null}
 
-              {/* Floating scrubber */}
+              {/* Timeline (day strip + marker track + prev/next-event, ReplayTimeline.tsx) */}
               <div style={{ position: 'absolute', left: 12, right: 12, bottom: 12, display: 'flex', justifyContent: 'center' }}>
-                <div className="card" style={{ width: 'min(980px, 100%)', padding: 10, background: 'rgba(0,0,0,0.45)', border: '1px solid rgba(255,255,255,0.14)' }}>
-                  <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-                    <div>
-                      <div className="label">Replay time</div>
-                      <div className="muted" style={{ fontSize: 12 }}>
-                        +{formatElapsedMs(scrubber.value - scrubber.min)} of +{formatElapsedMs(scrubber.max - scrubber.min)}{formatWallClock ? ` • ${formatWallClock(scrubber.value)}` : ''}
-                      </div>
-                    </div>
-
-                    <div className="row" style={{ gap: 10, alignItems: 'center' }}>
-                      <button
-                        type="button"
-                        className="button"
-                        style={{ padding: '6px 10px' }}
-                        onClick={() => {
-                          if (live) setLive(false);
-                          setIsPlaying((v) => !v);
-                        }}
-                        disabled={scrubber.disabled}
-                      >
-                        {isPlaying ? 'Pause' : 'Play'}
-                      </button>
-
-                      <select
-                        className="input"
-                        style={{ width: 110, padding: '6px 10px' }}
-                        value={String(playbackSpeed)}
-                        onChange={(e) => setPlaybackSpeed(Number(e.target.value))}
-                        disabled={scrubber.disabled}
-                        title="Playback speed"
-                      >
-                        <option value="0.25">0.25×</option>
-                        <option value="0.5">0.5×</option>
-                        <option value="1">1×</option>
-                        <option value="2">2×</option>
-                        <option value="4">4×</option>
-                      </select>
-
-                      <label className="row" style={{ gap: 8, userSelect: 'none' }}>
-                        <input
-                          type="checkbox"
-                          checked={showEventTimeline}
-                          onChange={(e) => setShowEventTimeline(e.target.checked)}
-                        />
-                        <span className="muted" style={{ fontSize: 12 }}>Events</span>
-                      </label>
-
-                      <label className="row" style={{ gap: 8, userSelect: 'none' }}>
-                        <input
-                          type="checkbox"
-                          checked={live}
-                          onChange={(e) => {
-                            const next = e.target.checked;
-                            setLive(next);
-                            if (next) setIsPlaying(false);
-                          }}
-                        />
-                        <span className="muted" style={{ fontSize: 12 }}>Live</span>
-                      </label>
-                    </div>
-                  </div>
-
-                  {/* Jump-to-time + Zoom */}
-                  <div style={{ display: 'flex', gap: 12, alignItems: 'center', marginTop: 8, paddingTop: 8, borderTop: '1px solid rgba(255,255,255,0.10)' }}>
-                    <span style={{ fontSize: 11, fontWeight: 700, color: '#e6edf3' }}>Go to</span>
-                    <input
-                      className="input"
-                      type="time"
-                      step="1"
-                      style={{ width: 110, padding: '4px 6px', fontSize: 11 }}
-                      title="Jump to wall-clock time"
-                      disabled={scrubber.disabled || !wallClockAnchor}
-                      onChange={(e) => {
-                        if (!wallClockAnchor || !e.target.value) return;
-                        const parts = e.target.value.split(':').map(Number);
-                        if (parts.length < 2) return;
-                        const now = new Date();
-                        const target = new Date(now.getFullYear(), now.getMonth(), now.getDate(), parts[0], parts[1], parts[2] || 0);
-                        const epochMs = target.getTime();
-                        const tsMs = wallClockAnchor.tsMs + (epochMs - wallClockAnchor.receivedAt);
-                        if (!Number.isFinite(tsMs)) return;
-                        const clamped = Math.min(range.maxTsMs ?? tsMs, Math.max(range.minTsMs ?? tsMs, tsMs));
-                        setLive(false);
-                        setIsPlaying(false);
-                        setCurrentTsMs(clamped);
-                      }}
-                    />
-                    <div style={{ height: 16, width: 1, background: 'rgba(255,255,255,0.15)', flexShrink: 0 }} />
-                    <span style={{ fontSize: 11, fontWeight: 700, color: '#e6edf3' }}>Zoom</span>
-                    <input
-                      type="range" min={1} max={48} step={1}
-                      value={scrubberZoom}
-                      onChange={(e) => setScrubberZoom(Number(e.target.value))}
-                      style={{ width: 100, flexShrink: 0 }}
-                      title="Scrubber zoom — narrow the visible time range"
-                    />
-                    <span style={{ fontSize: 11, fontWeight: 700, color: '#e6edf3', minWidth: 30 }}>{scrubberZoom > 1 ? `${scrubberZoom}×` : 'Full'}</span>
-                  </div>
-
-                  {showEventTimeline ? (
-                    <div style={{ position: 'relative', height: 18, marginTop: 6, marginBottom: 4 }}>
-                      <div style={{ position: 'absolute', left: 0, right: 0, top: 8, height: 2, background: 'rgba(255,255,255,0.10)' }} />
-                      {hoveredEventDot ? (
-                        <div
-                          style={{
-                            position: 'absolute',
-                            left: `${hoveredEventDot.leftPct}%`,
-                            top: 0,
-                            transform: 'translate(-50%, -110%)',
-                            zIndex: 10,
-                            pointerEvents: 'none',
-                            maxWidth: 320,
-                            whiteSpace: 'nowrap',
-                            overflow: 'hidden',
-                            textOverflow: 'ellipsis',
-                            background: 'rgba(255,255,255,0.06)',
-                            border: '1px solid rgba(255,255,255,0.10)',
-                            borderRadius: 10,
-                            padding: '6px 8px',
-                          }}
-                        >
-                          <div style={{ fontWeight: 800, fontSize: 12, lineHeight: 1.2 }}>{hoveredEventDot.title}</div>
-                          <div className="muted" style={{ fontSize: 11, marginTop: 2, lineHeight: 1.2 }}>{hoveredEventDot.subtitle}</div>
-                        </div>
-                      ) : null}
-                      {(() => {
-                        const min = scrubber.min;
-                        const max = scrubber.max;
-                        const span = Math.max(1, max - min);
-                        return eventDots.map((ev, idx) => {
-                          const pct = (ev.tsMs - min) / span;
-                          const leftPct = Math.min(1, Math.max(0, pct)) * 100;
-                          const baseColor = (ev.type === 'kill' || ev.type === 'death' || ev.type === 'aiKill')
-                            ? 'rgba(255,74,74,0.95)'
-                            : ev.type === 'restart'
-                              ? 'rgba(255,217,102,0.95)'
-                              : 'rgba(183,247,200,0.95)';
-                          const filter = ev.type === 'disconnect' ? 'brightness(0.65) saturate(1.1)' : undefined;
-                          const tooltipSubtitle = `+${formatElapsedMs(ev.tsMs - min)}${formatWallClock ? ` • ${formatWallClock(ev.tsMs)}` : ''}${ev.subtitle ? ` • ${ev.subtitle}` : ''}`;
-                          const key = `${ev.tsMs}|${ev.type}|${ev.title}|${ev.subtitle || ''}`;
-                          return (
-                            <button
-                              key={`${ev.tsMs}-${idx}-${ev.type}`}
-                              type="button"
-                              className="button"
-                              style={{
-                                position: 'absolute',
-                                left: `calc(${leftPct}% - 4px)`,
-                                top: 4,
-                                width: 8,
-                                height: 8,
-                                borderRadius: 999,
-                                padding: 0,
-                                border: '1px solid rgba(0,0,0,0.35)',
-                                background: baseColor,
-                                filter,
-                              }}
-                              onMouseEnter={() => {
-                                setHoveredEventDot({
-                                  tsMs: ev.tsMs,
-                                  type: ev.type,
-                                  title: ev.title,
-                                  subtitle: tooltipSubtitle,
-                                  leftPct,
-                                });
-                              }}
-                              onMouseLeave={() => setHoveredEventDot(null)}
-                              onClick={() => {
-                                setIsPlaying(false);
-                                setLive(false);
-                                jumpToEventTs(ev.tsMs);
-                                if (typeof ev.focusPlayerId === 'number') setSelectedPlayerId(ev.focusPlayerId);
-                                if (ev.focusPos) {
-                                  setFocusTarget(ev.focusPos);
-                                  setFocusNonce((n) => n + 1);
-                                }
-
-                                setSelectedEventKey(key);
-                                setHoveredEventDot(null);
-                              }}
-                            />
-                          );
-                        });
-                      })()}
-                    </div>
-                  ) : null}
-
-                  <input
-                    style={{ width: '100%' }}
-                    type="range"
-                    min={scrubber.min}
-                    max={scrubber.max}
-                    value={scrubber.value}
-                    disabled={scrubber.disabled}
-                    onChange={(e) => {
-                      const v = Number(e.target.value);
-                      if (!Number.isFinite(v)) return;
-                      if (live) setLive(false);
-                      if (isPlaying) setIsPlaying(false);
-                      setCurrentTsMs(v);
-                    }}
-                  />
-                </div>
+                <ReplayTimeline
+                  scrubber={scrubber}
+                  range={range}
+                  isPlaying={isPlaying}
+                  setIsPlaying={setIsPlaying}
+                  playbackSpeed={playbackSpeed}
+                  setPlaybackSpeed={setPlaybackSpeed}
+                  live={live}
+                  setLive={setLive}
+                  scrubberZoom={scrubberZoom}
+                  setScrubberZoom={setScrubberZoom}
+                  setCurrentTsMs={setCurrentTsMs}
+                  allEvents={allParsedEvents}
+                  eventDots={eventDots}
+                  wallClockAnchor={wallClockAnchor}
+                  formatWallClock={formatWallClock}
+                  onJumpToEvent={(ev: TimelineEvent) => {
+                    jumpToEventTs(ev.tsMs);
+                    if (typeof ev.focusPlayerId === 'number') setSelectedPlayerId(ev.focusPlayerId);
+                    if (ev.focusPos) {
+                      setFocusTarget(ev.focusPos);
+                      setFocusNonce((n) => n + 1);
+                    }
+                    setSelectedEventKey(`${ev.tsMs}|${ev.type}|${ev.title}|${ev.subtitle || ''}`);
+                  }}
+                />
               </div>
             </div>
           </div>
@@ -4277,6 +4240,19 @@ export function ReplayToolPage() {
             </div>
           ) : null}
         </div>
+      ) : null}
+
+      {invSearchOpen && serverId ? (
+        <InventorySearchModal
+          serverId={serverId}
+          range={range}
+          onJump={(tsMs) => {
+            setIsPlaying(false);
+            setLive(false);
+            jumpToEventTs(tsMs);
+          }}
+          onClose={() => setInvSearchOpen(false)}
+        />
       ) : null}
     </div>
   );

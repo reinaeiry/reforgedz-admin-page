@@ -1,0 +1,173 @@
+/* Replay tool - new timeline (replaces the old inline-styled scrubber bar)
+   and layout-repositioning styles. Reuses the root custom properties from
+   styles.css (--bg, --surface, --border, --text-dim, --red/--orange/--yellow/
+   --green + their -dim variants) rather than inventing a parallel palette. */
+
+.replayTimeline {
+  background: rgba(0, 0, 0, 0.45);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: var(--r, 8px);
+  padding: 10px;
+  width: min(980px, 100%);
+}
+
+.replayTimeline-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.replayTimeline-dayStrip {
+  display: flex;
+  gap: 2px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(255, 255, 255, 0.10);
+  overflow-x: auto;
+}
+
+.replayTimeline-dayCell {
+  flex: 1 0 auto;
+  min-width: 64px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-dim);
+  font-size: 11px;
+  cursor: pointer;
+}
+.replayTimeline-dayCell:hover:not(:disabled) {
+  border-color: var(--red);
+  color: var(--text-bright);
+}
+.replayTimeline-dayCell:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.replayTimeline-dayCount {
+  font-size: 9px;
+  font-weight: 700;
+  color: var(--text-bright);
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 999px;
+  padding: 0 5px;
+}
+
+.replayTimeline-chip {
+  font-size: 10px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  opacity: 0.55;
+}
+.replayTimeline-chip-on {
+  opacity: 1;
+  color: var(--text-bright);
+}
+
+.replayTimeline-track {
+  position: relative;
+  height: 28px;
+  margin-bottom: 4px;
+}
+.replayTimeline-track::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 13px;
+  height: 2px;
+  background: rgba(255, 255, 255, 0.10);
+}
+
+.replayTimeline-pip {
+  position: absolute;
+  top: 9px;
+  border-radius: 999px;
+  padding: 0;
+  border: 1px solid rgba(0, 0, 0, 0.35);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+.replayTimeline-pipCount {
+  font-size: 8px;
+  font-weight: 800;
+  color: rgba(0, 0, 0, 0.75);
+  line-height: 1;
+}
+
+.replayTimeline-tooltip {
+  position: absolute;
+  top: 0;
+  transform: translate(-50%, -110%);
+  z-index: 10;
+  pointer-events: none;
+  max-width: 320px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  border-radius: 10px;
+  padding: 6px 8px;
+}
+
+/* ─── Layout: collapsible side panels (low-risk repositioning - reclaim map
+   space without replacing the existing absolute-positioned overlay system) ─── */
+.replayPanel-collapseBtn {
+  padding: 2px 6px;
+  font-size: 11px;
+}
+
+/* ─── Inventory search modal ─── */
+.replayInvSearch-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  z-index: 100;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 8vh;
+}
+.replayInvSearch-modal {
+  width: min(720px, 92vw);
+  max-height: 78vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-raised, var(--surface));
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg, 12px);
+  padding: 16px;
+  overflow: hidden;
+}
+.replayInvSearch-results {
+  overflow-y: auto;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.replayInvSearch-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px;
+  border-left: 3px solid var(--border);
+  font-size: 12px;
+}
+.replayInvSearch-row-jumpable {
+  border-left-color: var(--green, #4ade80);
+}

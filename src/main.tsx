@@ -4,6 +4,7 @@ import { BrowserRouter } from 'react-router-dom';
 import { App } from './ui/App';
 import './ui/styles.css';
 import './ui/bm-styles.css';
+import './ui/replay.css';
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>

@@ -15,11 +15,24 @@ import { PlayerSearchView } from './PlayerSearchView';
 // combatLog fires constantly for completely mundane reasons (lag, a crash, a
 // player just moving on after a fight) - real signal drowned it out entirely
 // once identityId attribution got fixed and it started actually appearing.
-// It's still useful context on a player's own full history (see the "Flags"
-// filter on the profile page's detection timeline), just not here, where the
-// whole point is "does this player stand out" - so it's hard-excluded from
-// both the leaderboard and its drill-down, not just deprioritized.
-const FLAGGED_TAB_EXCLUDED_CATEGORIES = ['combatLog'];
+//
+// speedhack/noclip: a real snapshot-payload-shape bug meant these had NEVER
+// actually run against real data before - the first real scan (even after
+// widening their placeholder thresholds several-fold) still produced
+// hundreds of incidents per player, with the exact same timestamp shared
+// across unrelated players repeatedly - a strong signature of server lag
+// spikes or death/respawn teleports being misread as impossible movement,
+// not real cheating. This needs either real ReforgedZ-specific calibration
+// or teleport/respawn-aware suppression logic before it's trustworthy, so
+// it's excluded here the same way, rather than presenting obviously-wrong
+// volume as a cheater leaderboard. See anticheat.js's CONFIG comments.
+//
+// All three are still useful context on a player's own full history (see
+// the "Flags" filter on the profile page's detection timeline), just not
+// here, where the whole point is "does this player stand out" - so they're
+// hard-excluded from both the leaderboard and its drill-down, not just
+// deprioritized.
+const FLAGGED_TAB_EXCLUDED_CATEGORIES = ['combatLog', 'speedhack', 'noclip'];
 
 function severityBadgeClass(sev: Incident['severity']): string {
   if (sev === 'high') return 'bmBadge bmBadge-warn';

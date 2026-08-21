@@ -1,10 +1,18 @@
 import { useMemo, useState } from 'react';
 import type { ItemCatalogEntry } from '../../util/api';
 
+export type CopiedInventoryItem = { prefab: string; name: string; count: number };
+export type CopiedInventory = { sourcePlayerId: number; sourcePlayerName: string; capturedAtTsMs: number; items: CopiedInventoryItem[] };
+
+export type SpawnCopiedProgress = { done: number; total: number; failed: string[] };
+
 type Props = {
   items: ItemCatalogEntry[];
   onSpawn: (prefab: string, count: number) => void;
   busy?: boolean;
+  copiedInventory?: CopiedInventory | null;
+  onSpawnCopied?: (items: CopiedInventoryItem[]) => void;
+  spawnCopiedProgress?: SpawnCopiedProgress | null;
 };
 
 function prefabShort(prefab: string): string {
@@ -12,8 +20,12 @@ function prefabShort(prefab: string): string {
   return s.replace(/\.et$/i, '');
 }
 
-// Give-item picker shown on a selected player/vehicle in live replay.
-export function ItemSpawnControl({ items, onSpawn, busy }: Props) {
+// Give-item picker shown on a selected player/vehicle in live replay. Also
+// renders a "spawn the copied inventory" section when a clipboard is passed
+// in - a sibling action to the catalog picker below it, not a replacement,
+// since "give me one specific item" and "restore this whole loadout" are
+// both things an admin reaches for here.
+export function ItemSpawnControl({ items, onSpawn, busy, copiedInventory, onSpawnCopied, spawnCopiedProgress }: Props) {
   const [query, setQuery] = useState('');
   const [selected, setSelected] = useState<string | null>(null);
   const [count, setCount] = useState(1);
@@ -33,6 +45,31 @@ export function ItemSpawnControl({ items, onSpawn, busy }: Props) {
 
   return (
     <div className="stack" style={{ gap: 6, marginTop: 6, paddingTop: 6, borderTop: '1px solid rgba(255,255,255,0.10)' }}>
+      {copiedInventory ? (
+        <div className="stack" style={{ gap: 4, paddingBottom: 6, borderBottom: '1px solid rgba(255,255,255,0.10)' }}>
+          <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
+            <div style={{ fontWeight: 700, fontSize: 11 }}>📋 Copied from {copiedInventory.sourcePlayerName}</div>
+            <div className="muted" style={{ fontSize: 10 }}>{copiedInventory.items.length} item(s)</div>
+          </div>
+          {spawnCopiedProgress ? (
+            <div className="muted" style={{ fontSize: 10 }}>
+              Spawning… {spawnCopiedProgress.done}/{spawnCopiedProgress.total}
+              {spawnCopiedProgress.failed.length ? ` — failed: ${spawnCopiedProgress.failed.join(', ')}` : ''}
+            </div>
+          ) : (
+            <button
+              type="button"
+              className="button buttonPrimary"
+              style={{ fontSize: 11, padding: '5px 8px' }}
+              disabled={busy || !onSpawnCopied || copiedInventory.items.length === 0}
+              onClick={() => onSpawnCopied && onSpawnCopied(copiedInventory.items)}
+            >
+              Spawn copied inventory ({copiedInventory.items.length})
+            </button>
+          )}
+        </div>
+      ) : null}
+
       <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
         <div style={{ fontWeight: 700, fontSize: 11 }}>Give item</div>
         {items.length > 0 && (

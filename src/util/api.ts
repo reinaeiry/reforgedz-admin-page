@@ -674,6 +674,25 @@ export async function getSpawnCatalog(): Promise<SpawnCatalogEntry[]> {
   return Array.isArray(data.items) ? data.items : [];
 }
 
+export type InventorySighting = {
+  identityId: string;
+  displayName: string | null;
+  itemPrefab: string;
+  itemName: string | null;
+  firstTsMs: number;
+  lastTsMs: number;
+  count: number;
+};
+
+// Cross-time, cross-player search ("who's ever had a Cap") - backed by the
+// permanent inventory_sightings index (playerIndex.js), not a live scan.
+export async function searchReplayInventory(serverId: string, q: string): Promise<InventorySighting[]> {
+  const params = new URLSearchParams({ serverId, q });
+  const res = await fetch(`${requireApiBaseUrl()}/api/replay/inventorySearch?${params.toString()}`, { credentials: 'include' });
+  const data = await jsonOk<{ results: InventorySighting[] }>(res, 'Failed to search inventory history');
+  return Array.isArray(data.results) ? data.results : [];
+}
+
 export async function spawnReplayItem(params: {
   serverId: string;
   target: 'player' | 'vehicle';
