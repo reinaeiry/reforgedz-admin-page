@@ -214,7 +214,10 @@ export async function scanServerForIncidents(serverId, filePath) {
 
   let stream;
   try {
-    stream = createReadStream(filePath, { encoding: 'utf8' });
+    // Default highWaterMark (64KB) means far more read() syscalls than
+    // necessary on a 50GB+ file; 1MB chunks (same size copyRange in
+    // retention.js already uses) cuts that down with no other behavior change.
+    stream = createReadStream(filePath, { encoding: 'utf8', highWaterMark: 1 << 20 });
   } catch {
     return incidents;
   }
@@ -234,6 +237,23 @@ export async function scanServerForIncidents(serverId, filePath) {
       }
 
       if (!line) continue;
+
+      // Cheap pre-skip, same trick server/index.js's scanSlimSlice already
+      // uses: on a real server log, high-frequency bulk telemetry
+      // (vehicleIndex, serverHealth) outnumbers snapshot lines ~3.7:1 and
+      // this scanner never reads either - a substring search avoids paying
+      // for a full JSON.parse (and the object/array allocation that comes
+      // with it) on the large majority of lines in the file.
+      if (
+        line.indexOf('"type":"snapshot"') === -1 &&
+        line.indexOf('"type":"hit"') === -1 &&
+        line.indexOf('"type":"kill"') === -1 &&
+        line.indexOf('"type":"death"') === -1 &&
+        line.indexOf('"type":"disconnect"') === -1 &&
+        line.indexOf('"type":"interact"') === -1 &&
+        line.indexOf('"type":"terrain"') === -1
+      ) continue;
+
       let outer;
       try { outer = JSON.parse(line); } catch { continue; }
       const p = outer && outer.payload;
