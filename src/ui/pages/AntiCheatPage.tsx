@@ -12,6 +12,15 @@ import {
 import { INCIDENT_CATEGORY_LABELS } from '../../util/anticheatCategories';
 import { PlayerSearchView } from './PlayerSearchView';
 
+// combatLog fires constantly for completely mundane reasons (lag, a crash, a
+// player just moving on after a fight) - real signal drowned it out entirely
+// once identityId attribution got fixed and it started actually appearing.
+// It's still useful context on a player's own full history (see the "Flags"
+// filter on the profile page's detection timeline), just not here, where the
+// whole point is "does this player stand out" - so it's hard-excluded from
+// both the leaderboard and its drill-down, not just deprioritized.
+const FLAGGED_TAB_EXCLUDED_CATEGORIES = ['combatLog'];
+
 function severityBadgeClass(sev: Incident['severity']): string {
   if (sev === 'high') return 'bmBadge bmBadge-warn';
   if (sev === 'medium') return 'bmBadge bmBadge-medium';
@@ -54,7 +63,7 @@ function PlayerIncidentDetail({ serverId, identityId }: { serverId: string; iden
 
   useEffect(() => {
     let alive = true;
-    getServerIncidents({ serverId, identityId, limit: 100 }).then((r) => {
+    getServerIncidents({ serverId, identityId, limit: 100, excludeCategories: FLAGGED_TAB_EXCLUDED_CATEGORIES }).then((r) => {
       if (alive) setIncidents(r.incidents);
     }).catch((e: any) => { if (alive) setErr(e?.message || 'Failed to load incidents'); });
     return () => { alive = false; };
@@ -127,7 +136,7 @@ function FlaggedPlayersView() {
     setLoading(true);
     setErr(null);
     setExpanded(null);
-    getServerRiskSummary({ serverId: selectedServerId, limit: 200 }).then((r) => {
+    getServerRiskSummary({ serverId: selectedServerId, limit: 200, excludeCategories: FLAGGED_TAB_EXCLUDED_CATEGORIES }).then((r) => {
       if (!alive) return;
       setPlayers(r.players);
       setStale(r.stale);
@@ -243,8 +252,8 @@ function FlaggedPlayersView() {
                   <td title="How sure we are, weighted by how much independent evidence there is">{p.confidence}%</td>
                   <td><span className={severityBadgeClass(p.highestSeverity)}>{p.highestSeverity}</span></td>
                   <td>
-                    <Link to={`/player/${p.identityId}`} className="bmGuid" onClick={(e) => e.stopPropagation()}>
-                      {p.identityId}
+                    <Link to={`/player/${p.identityId}`} onClick={(e) => e.stopPropagation()} title={p.identityId}>
+                      {p.displayName || p.identityId}
                     </Link>
                   </td>
                   <td>{p.incidentCount}</td>

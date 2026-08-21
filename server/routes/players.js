@@ -5,7 +5,7 @@
 // since this is a single flat permission, not a category system like tickets.
 
 import express from 'express';
-import { listPlayersIndexed, getPlayerProfileIndexed, getPlayerTimelineIndexed, listIncidentsIndexed } from '../lib/playerIndex.js';
+import { listPlayersIndexed, getPlayerProfileIndexed, getPlayerTimelineIndexed, listIncidentsIndexed, getDisplayNamesForIdentities } from '../lib/playerIndex.js';
 import { getIncidentsCached, summarizePlayerRisk, getScanProgress } from '../lib/anticheat.js';
 
 // The live scanner (getIncidentsCached) only ever sees whatever's still in
@@ -97,6 +97,9 @@ export function buildPlayersRouter({ asyncRoute, DATA_DIR, sanitizeServerId, pat
     const identityId = req.query.identityId ? String(req.query.identityId) : null;
     const category = req.query.category ? String(req.query.category) : null;
     const minConfidence = req.query.minConfidence ? Number(req.query.minConfidence) : 0;
+    const excludeCategories = typeof req.query.excludeCategories === 'string' && req.query.excludeCategories.trim()
+      ? new Set(req.query.excludeCategories.split(',').map((c) => c.trim()).filter(Boolean))
+      : null;
 
     const indexed = listIncidentsIndexed(safeId, { identityId, category, minConfidence, limit: 2000 });
     let incidents = mergeIncidents(live, indexed);
@@ -104,6 +107,7 @@ export function buildPlayersRouter({ asyncRoute, DATA_DIR, sanitizeServerId, pat
     if (identityId) incidents = incidents.filter((i) => i.identityId === identityId);
     if (category) incidents = incidents.filter((i) => i.category === category);
     if (minConfidence > 0) incidents = incidents.filter((i) => i.confidence >= minConfidence);
+    if (excludeCategories) incidents = incidents.filter((i) => !excludeCategories.has(i.category));
 
     incidents.sort((a, b) => b.tsMs - a.tsMs);
 
@@ -121,14 +125,26 @@ export function buildPlayersRouter({ asyncRoute, DATA_DIR, sanitizeServerId, pat
     const safeId = sanitizeServerId(serverId);
     const filePath = path.join(DATA_DIR, 'servers', safeId, 'events.ndjson');
 
+    const excludeCategories = typeof req.query.excludeCategories === 'string' && req.query.excludeCategories.trim()
+      ? new Set(req.query.excludeCategories.split(',').map((c) => c.trim()).filter(Boolean))
+      : null;
+
     const { incidents: live, stale, scanning, computedAt } = await getIncidentsCached(safeId, filePath);
     const indexed = listIncidentsIndexed(safeId, { limit: 2000 });
-    const players = summarizePlayerRisk(mergeIncidents(live, indexed));
+    let merged = mergeIncidents(live, indexed);
+    if (excludeCategories) merged = merged.filter((i) => !excludeCategories.has(i.category));
+    const players = summarizePlayerRisk(merged);
 
     const limit = req.query.limit ? Number(req.query.limit) : 100;
     const cap = Math.min(Math.max(limit, 1), 500);
+    const page = players.slice(0, cap);
 
-    res.json({ serverId: safeId, players: players.slice(0, cap), total: players.length, stale, scanning, computedAt });
+    // The scanner only ever knows identityId - resolve display names from the
+    // permanent index so the leaderboard doesn't just show raw GUIDs.
+    const namesById = getDisplayNamesForIdentities(page.map((p) => p.identityId));
+    for (const p of page) p.displayName = namesById[p.identityId] || null;
+
+    res.json({ serverId: safeId, players: page, total: players.length, stale, scanning, computedAt });
   }));
 
   // Progress feed for an in-flight scan, so the frontend can show a real bar

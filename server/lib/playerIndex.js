@@ -506,6 +506,23 @@ export function getRiskConfidenceForIdentities(identityIds) {
   return out;
 }
 
+// The live scanner (summarizePlayerRisk) only ever knows identityId - it has
+// no idea what anyone's called. Batch-resolve display names from the
+// permanent index for whatever identityIds a risk leaderboard came back
+// with, same shape/spirit as getRiskConfidenceForIdentities above.
+export function getDisplayNamesForIdentities(identityIds) {
+  const ids = Array.from(new Set((identityIds || []).filter(Boolean)));
+  if (!ids.length) return {};
+  const placeholders = ids.map(() => '?').join(',');
+  const rows = db.prepare(`
+    SELECT identity_id AS identityId, display_name AS displayName
+    FROM players WHERE identity_id IN (${placeholders})
+  `).all(...ids);
+  const out = {};
+  for (const r of rows) out[r.identityId] = r.displayName;
+  return out;
+}
+
 export function getPlayerTimelineIndexed(identityId, { serverId, types, beforeTsMs, limit }) {
   const conditions = ['identity_id = ?'];
   const params = [identityId];

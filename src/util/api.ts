@@ -42,12 +42,14 @@ export async function getServerIncidents(opts: {
   identityId?: string;
   category?: string;
   minConfidence?: number;
+  excludeCategories?: string[];
   limit?: number;
 }): Promise<{ serverId: string; incidents: Incident[]; total: number; stale: boolean; scanning: boolean; computedAt: number }> {
   const params = new URLSearchParams({ serverId: opts.serverId });
   if (opts.identityId) params.set('identityId', opts.identityId);
   if (opts.category) params.set('category', opts.category);
   if (opts.minConfidence) params.set('minConfidence', String(opts.minConfidence));
+  if (opts.excludeCategories?.length) params.set('excludeCategories', opts.excludeCategories.join(','));
   if (opts.limit) params.set('limit', String(opts.limit));
   const res = await fetch(`${requireApiBaseUrl()}/api/players/incidents?${params.toString()}`, { credentials: 'include' });
   return jsonOk(res, 'Failed to load incidents');
@@ -55,6 +57,7 @@ export async function getServerIncidents(opts: {
 
 export type PlayerRisk = {
   identityId: string;
+  displayName: string | null;
   riskScore: number;
   confidence: number;
   incidentCount: number;
@@ -67,9 +70,11 @@ export type PlayerRisk = {
 export async function getServerRiskSummary(opts: {
   serverId: string;
   limit?: number;
+  excludeCategories?: string[];
 }): Promise<{ serverId: string; players: PlayerRisk[]; total: number; stale: boolean; scanning: boolean; computedAt: number }> {
   const params = new URLSearchParams({ serverId: opts.serverId });
   if (opts.limit) params.set('limit', String(opts.limit));
+  if (opts.excludeCategories?.length) params.set('excludeCategories', opts.excludeCategories.join(','));
   const res = await fetch(`${requireApiBaseUrl()}/api/players/risk-summary?${params.toString()}`, { credentials: 'include' });
   return jsonOk(res, 'Failed to load risk summary');
 }
