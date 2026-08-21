@@ -6,7 +6,7 @@
 
 import express from 'express';
 import { searchPlayers, getPlayerProfile, getPlayerActivity } from '../lib/playerHistory.js';
-import { scanServerForIncidents } from '../lib/anticheat.js';
+import { getIncidentsCached, summarizePlayerRisk } from '../lib/anticheat.js';
 
 export function buildPlayersRouter({ asyncRoute, DATA_DIR, listAllServers, sanitizeServerId, readJsonOrNull, path }) {
   const router = express.Router();
@@ -52,17 +52,19 @@ export function buildPlayersRouter({ asyncRoute, DATA_DIR, listAllServers, sanit
 
   // Anti-cheat incidents, always scoped to one server (per the requirement that
   // this reads the same way the replay tooling is organized - per server, not
-  // a merged global pool). v1 scans the server's full events.ndjson on each
-  // request; this is the same "expensive on a multi-GB log" tradeoff flagged
-  // for /profile - a SQLite side-index is the natural place to cache this if
-  // request latency becomes a problem.
+  // a merged global pool). Backed by getIncidentsCached's stale-while-revalidate
+  // cache - only the first-ever request for a given server blocks on a real
+  // scan; every request after that is instant. `stale`/`computedAt` in the
+  // response tell the frontend whether it's looking at a background-refresh-
+  // pending result, so it can show that rather than pretend it's always live.
   router.get('/incidents', asyncRoute(async (req, res) => {
     const serverId = String(req.query.serverId || '');
     if (!serverId) { res.status(400).json({ error: 'missing serverId' }); return; }
     const safeId = sanitizeServerId(serverId);
     const filePath = path.join(DATA_DIR, 'servers', safeId, 'events.ndjson');
 
-    let incidents = await scanServerForIncidents(safeId, filePath);
+    const { incidents: all, stale, computedAt } = await getIncidentsCached(safeId, filePath);
+    let incidents = all;
 
     const identityId = req.query.identityId ? String(req.query.identityId) : null;
     if (identityId) incidents = incidents.filter((i) => i.identityId === identityId);
@@ -78,7 +80,24 @@ export function buildPlayersRouter({ asyncRoute, DATA_DIR, listAllServers, sanit
     const limit = req.query.limit ? Number(req.query.limit) : 200;
     const cap = Math.min(Math.max(limit, 1), 1000);
 
-    res.json({ serverId: safeId, incidents: incidents.slice(0, cap), total: incidents.length });
+    res.json({ serverId: safeId, incidents: incidents.slice(0, cap), total: incidents.length, stale, computedAt });
+  }));
+
+  // Player-ranked risk view - the primary landing view (vendor-anti-cheat-panel
+  // style), backed by the same cache as /incidents so it costs nothing extra.
+  router.get('/risk-summary', asyncRoute(async (req, res) => {
+    const serverId = String(req.query.serverId || '');
+    if (!serverId) { res.status(400).json({ error: 'missing serverId' }); return; }
+    const safeId = sanitizeServerId(serverId);
+    const filePath = path.join(DATA_DIR, 'servers', safeId, 'events.ndjson');
+
+    const { incidents, stale, computedAt } = await getIncidentsCached(safeId, filePath);
+    const players = summarizePlayerRisk(incidents);
+
+    const limit = req.query.limit ? Number(req.query.limit) : 100;
+    const cap = Math.min(Math.max(limit, 1), 500);
+
+    res.json({ serverId: safeId, players: players.slice(0, cap), total: players.length, stale, computedAt });
   }));
 
   return router;

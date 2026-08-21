@@ -156,6 +156,7 @@ async function fetchMe(): Promise<Session | null> {
           moderation: adminMod,
           tickets: adminTickets,
           dev: !!u.perms?.admin?.dev,
+          players: !!u.perms?.admin?.players,
         },
         transcripts: {
           read: !!u.perms?.transcripts?.read,

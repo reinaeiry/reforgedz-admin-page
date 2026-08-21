@@ -352,4 +352,85 @@ export async function scanServerForIncidents(serverId, filePath) {
   return incidents;
 }
 
+// ─── Caching ────────────────────────────────────────────────────────────────
+// A full scan is O(file size) - measured at ~90s for a real 37GB server log.
+// Stale-while-revalidate: only the very first-ever request for a given server
+// blocks on a real scan. Every request after that is instant, even the first
+// one after the cache goes stale - it gets the old (briefly stale) result
+// immediately while a fresh scan runs in the background for next time. This
+// intentionally does NOT proactively scan servers nobody is looking at - no
+// speculative background load on a box that's also running live game servers.
+const CACHE_TTL_MS = 5 * 60 * 1000;
+const scanCache = new Map(); // serverId -> { incidents, computedAt, refreshing }
+
+export async function getIncidentsCached(serverId, filePath) {
+  const entry = scanCache.get(serverId);
+  const now = Date.now();
+
+  if (entry && now - entry.computedAt < CACHE_TTL_MS) {
+    return { incidents: entry.incidents, stale: false, computedAt: entry.computedAt };
+  }
+
+  if (entry) {
+    // Stale (or a refresh already in flight): serve what we have immediately,
+    // kick off exactly one background refresh.
+    if (!entry.refreshing) {
+      entry.refreshing = true;
+      scanServerForIncidents(serverId, filePath)
+        .then((incidents) => {
+          scanCache.set(serverId, { incidents, computedAt: Date.now(), refreshing: false });
+        })
+        .catch(() => { entry.refreshing = false; });
+    }
+    return { incidents: entry.incidents, stale: true, computedAt: entry.computedAt };
+  }
+
+  // Cold - nothing cached yet for this server, has to block this one time.
+  const incidents = await scanServerForIncidents(serverId, filePath);
+  const computedAt = Date.now();
+  scanCache.set(serverId, { incidents, computedAt, refreshing: false });
+  return { incidents, stale: false, computedAt };
+}
+
+// ─── Player risk aggregation ────────────────────────────────────────────────
+// Vendor-anti-cheat-panel style: rank players by an aggregate risk score
+// instead of presenting a flat incident log as the primary view. Score is a
+// simple weighted sum (severity weight x confidence fraction) summed across
+// every incident for that player - a rough, explainable ranking signal, not a
+// calibrated probability. Drill-down into a player's own incident list is
+// still the flat log, just scoped to one identityId.
+const SEVERITY_WEIGHT = { [SEVERITY.LOW]: 1, [SEVERITY.MEDIUM]: 2, [SEVERITY.HIGH]: 4 };
+
+export function summarizePlayerRisk(incidents) {
+  const byPlayer = new Map();
+
+  for (const inc of incidents) {
+    if (!inc.identityId) continue;
+    let p = byPlayer.get(inc.identityId);
+    if (!p) {
+      p = {
+        identityId: inc.identityId,
+        riskScore: 0,
+        incidentCount: 0,
+        categories: {},
+        highestSeverity: SEVERITY.LOW,
+        firstIncidentTsMs: inc.tsMs,
+        lastIncidentTsMs: inc.tsMs,
+      };
+      byPlayer.set(inc.identityId, p);
+    }
+
+    p.riskScore += SEVERITY_WEIGHT[inc.severity] * (inc.confidence / 100);
+    p.incidentCount += 1;
+    p.categories[inc.category] = (p.categories[inc.category] || 0) + 1;
+    if (SEVERITY_WEIGHT[inc.severity] > SEVERITY_WEIGHT[p.highestSeverity]) p.highestSeverity = inc.severity;
+    if (inc.tsMs < p.firstIncidentTsMs) p.firstIncidentTsMs = inc.tsMs;
+    if (inc.tsMs > p.lastIncidentTsMs) p.lastIncidentTsMs = inc.tsMs;
+  }
+
+  const out = Array.from(byPlayer.values()).map((p) => ({ ...p, riskScore: Math.round(p.riskScore * 10) / 10 }));
+  out.sort((a, b) => b.riskScore - a.riskScore);
+  return out;
+}
+
 export { CONFIG as ANTICHEAT_CONFIG };
