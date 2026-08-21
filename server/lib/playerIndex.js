@@ -344,7 +344,7 @@ function groupInventoryByPrefab(inventory) {
 // cadence if streaks look wrong in practice.
 const INVENTORY_STREAK_GAP_MS = 60_000;
 
-function recordInventorySighting(identityId, serverId, inventory, tsMs) {
+export function recordInventorySighting(identityId, serverId, inventory, tsMs) {
   const grouped = groupInventoryByPrefab(inventory);
   for (const item of grouped.values()) {
     const existing = db.prepare(`
