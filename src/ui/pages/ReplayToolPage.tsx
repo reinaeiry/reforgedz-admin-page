@@ -28,8 +28,41 @@ import {
   type ServerInfo,
   type VehicleIndexEntry,
   type VehicleDetail,
+  getPlayerProfile,
 } from '../../util/api';
 import { listGameLogs, type GameLogRow } from '../../util/bmApi';
+
+// Lightweight, cross-server career-stat indicator for the selected replay
+// player - not a log, just a compact "have they done anything notable"
+// summary (K/D, hits, and a flagged badge if the permanent index has any
+// risk on them). Fails silently: no spinner, no error text, just shows
+// nothing until the fetch resolves - this is a small addition to an already
+// dense panel, not something that should draw attention while loading.
+function PlayerCareerBadge({ identityId }: { identityId: string }) {
+  const [stats, setStats] = useState<{ kills: number; deaths: number; hits: number; flaggedCount: number; highestSeverity: string | null } | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    setStats(null);
+    getPlayerProfile(identityId).then((p) => {
+      if (!alive || !p) return;
+      setStats({ kills: p.totals.kills, deaths: p.totals.deaths, hits: p.totals.hits, flaggedCount: p.totals.flaggedCount, highestSeverity: p.highestSeverity });
+    }).catch(() => {});
+    return () => { alive = false; };
+  }, [identityId]);
+
+  if (!stats) return null;
+  return (
+    <span className="muted" style={{ fontSize: 10, fontWeight: 500, display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+      <span>{stats.kills}K/{stats.deaths}D · {stats.hits} hits (all-time)</span>
+      {stats.highestSeverity ? (
+        <span className="bmBadge bmBadge-warn" title={`${stats.flaggedCount} flagged incident(s) on record`}>
+          {stats.highestSeverity} · {stats.flaggedCount}
+        </span>
+      ) : null}
+    </span>
+  );
+}
 import { type NameTagOptions, type PlayerMarker, type TerrainGrid, type TownLabel, type Trail, type VehicleMarker } from '../components/ReplayMap3D';
 import { ReplayMap2D, type WorldBounds } from '../components/ReplayMap2D';
 import { ItemSpawnControl } from '../components/ItemSpawnControl';
@@ -3546,15 +3579,18 @@ export function ReplayToolPage() {
                                     || knownPlayers.find((x) => x.playerId === selectedPlayerId)?.identityId;
                                   if (!identityId) return null;
                                   return (
-                                    <button
-                                      type="button"
-                                      className="button"
-                                      style={{ padding: '0 6px', fontSize: 10, fontWeight: 600 }}
-                                      title="Open this player's permanent profile (kills, deaths, sessions, playtime, full history)"
-                                      onClick={() => navigate(`/players?identityId=${encodeURIComponent(identityId)}`)}
-                                    >
-                                      Profile →
-                                    </button>
+                                    <>
+                                      <PlayerCareerBadge identityId={identityId} />
+                                      <button
+                                        type="button"
+                                        className="button"
+                                        style={{ padding: '0 6px', fontSize: 10, fontWeight: 600 }}
+                                        title="Open this player's permanent profile (kills, deaths, sessions, playtime, full history)"
+                                        onClick={() => navigate(`/players?identityId=${encodeURIComponent(identityId)}`)}
+                                      >
+                                        Profile →
+                                      </button>
+                                    </>
                                   );
                                 })()}
                               </div>

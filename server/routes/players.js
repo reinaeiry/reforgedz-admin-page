@@ -5,7 +5,7 @@
 // since this is a single flat permission, not a category system like tickets.
 
 import express from 'express';
-import { searchPlayersIndexed, getPlayerProfileIndexed, getPlayerTimelineIndexed } from '../lib/playerIndex.js';
+import { listPlayersIndexed, getPlayerProfileIndexed, getPlayerTimelineIndexed } from '../lib/playerIndex.js';
 import { getIncidentsCached, summarizePlayerRisk, getScanProgress } from '../lib/anticheat.js';
 
 // search/profile/activity now read the permanent SQLite index (playerIndex.js)
@@ -18,11 +18,14 @@ import { getIncidentsCached, summarizePlayerRisk, getScanProgress } from '../lib
 export function buildPlayersRouter({ asyncRoute, DATA_DIR, sanitizeServerId, path }) {
   const router = express.Router();
 
+  // No-query returns everyone, ranked by permanent risk score - this is the
+  // "all inclusive" list, not a search-gated one. A query narrows it by name
+  // without changing the ranking.
   router.get('/search', asyncRoute(async (req, res) => {
-    const q = String(req.query.q || '');
-    const limit = req.query.limit ? Number(req.query.limit) : 25;
-    if (q.trim().length < 2) { res.json({ results: [] }); return; }
-    const results = searchPlayersIndexed(q, Math.min(Math.max(limit, 1), 100));
+    const q = req.query.q ? String(req.query.q) : '';
+    const limit = req.query.limit ? Number(req.query.limit) : 50;
+    const offset = req.query.offset ? Number(req.query.offset) : 0;
+    const results = listPlayersIndexed({ query: q, limit: Math.min(Math.max(limit, 1), 200), offset: Math.max(offset, 0) });
     res.json({ results });
   }));
 

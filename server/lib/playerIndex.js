@@ -12,6 +12,12 @@
 
 import Database from 'better-sqlite3';
 import path from 'node:path';
+import { checkHitForIncidents, checkInteractForIncident, SEVERITY } from './anticheat.js';
+
+const SEVERITY_RANK = { [SEVERITY.LOW]: 1, [SEVERITY.MEDIUM]: 2, [SEVERITY.HIGH]: 4 };
+const SEVERITY_OF = {
+  wallbang: SEVERITY.HIGH, godMode: SEVERITY.HIGH, interactRange: SEVERITY.MEDIUM,
+};
 
 let db = null;
 
@@ -45,6 +51,14 @@ export function initPlayerIndex(dataDir) {
       playtime_ms INTEGER NOT NULL DEFAULT 0,
       first_seen_ms INTEGER,
       last_seen_ms INTEGER,
+      -- Permanent, all-time anti-cheat signal - NOT a live rescan. Only the
+      -- cheap single-event checks (wallbang, godMode, interactRange) are
+      -- accumulated here as events are indexed; the multi-event checks
+      -- (speedhack, noclip, aimSnap, ammo) still need a live scan (Flagged tab)
+      -- since they require rolling snapshot state this indexer doesn't keep.
+      risk_score REAL NOT NULL DEFAULT 0,
+      flagged_count INTEGER NOT NULL DEFAULT 0,
+      max_severity TEXT NOT NULL DEFAULT 'low',
       PRIMARY KEY (identity_id, server_id)
     );
 
@@ -118,6 +132,32 @@ function logEvent(identityId, serverId, tsMs, type, detail) {
   `).run(identityId, serverId, tsMs, type, JSON.stringify(detail || {}));
 }
 
+// Permanent risk accumulation. riskScore uses the same weighting as the live
+// scanner's summarizePlayerRisk (severity weight x confidence fraction) so a
+// player's "All Players" risk number and their "Flagged" tab standing agree
+// in spirit, even though this only ever sees the cheap single-event checks.
+function bumpRisk(identityId, serverId, category, confidence, tsMs) {
+  if (!identityId) return;
+  const severity = SEVERITY_OF[category] || SEVERITY.LOW;
+  const scoreDelta = (SEVERITY_RANK[severity] || 1) * (confidence / 100);
+
+  const existing = db.prepare(`SELECT max_severity FROM player_server_stats WHERE identity_id = ? AND server_id = ?`)
+    .get(identityId, serverId);
+  const nextSeverity = (!existing || (SEVERITY_RANK[severity] > (SEVERITY_RANK[existing.max_severity] || 0)))
+    ? severity : existing.max_severity;
+
+  db.prepare(`
+    INSERT INTO player_server_stats (identity_id, server_id, risk_score, flagged_count, max_severity, first_seen_ms, last_seen_ms)
+    VALUES (?, ?, ?, 1, ?, ?, ?)
+    ON CONFLICT(identity_id, server_id) DO UPDATE SET
+      risk_score = risk_score + excluded.risk_score,
+      flagged_count = flagged_count + 1,
+      max_severity = excluded.max_severity,
+      first_seen_ms = MIN(first_seen_ms, excluded.first_seen_ms),
+      last_seen_ms = MAX(last_seen_ms, excluded.last_seen_ms)
+  `).run(identityId, serverId, scoreDelta, nextSeverity, tsMs, tsMs);
+}
+
 // Sanity cap on a single session's computed duration, in case a join was
 // orphaned (server restarted between join and what would have been its
 // disconnect) and got wrongly paired with a much later disconnect for the
@@ -188,10 +228,33 @@ export function recordEvent(serverId, type, tsMs, evt) {
     if (evt.shooterIdentityId) {
       upsertPlayer(evt.shooterIdentityId, evt.shooterName, tsMs);
       bumpServerStat(evt.shooterIdentityId, serverId, 'hits', 1, tsMs);
+      // Instigator-side record: who they hit, with what, how much damage, from
+      // how far, and whether it was through blocked line of sight.
       logEvent(evt.shooterIdentityId, serverId, tsMs, 'hit', {
-        victimName: evt.victimName, weaponName: evt.weaponName, distanceM: evt.distanceM,
+        victimIdentityId: evt.victimIdentityId, victimName: evt.victimName,
+        weaponName: evt.weaponName, distanceM: evt.distanceM, damage: evt.damage,
         losBlocked: evt.losBlocked, fatal: evt.fatal,
       });
+    }
+    if (evt.victimIdentityId) {
+      upsertPlayer(evt.victimIdentityId, evt.victimName, tsMs);
+      // Receiving-side record: who hit them and how much - this is the
+      // "instigator/damage" half that was missing from a victim's own timeline.
+      logEvent(evt.victimIdentityId, serverId, tsMs, 'damaged', {
+        shooterIdentityId: evt.shooterIdentityId, shooterName: evt.shooterName,
+        weaponName: evt.weaponName, distanceM: evt.distanceM, damage: evt.damage,
+        healthBefore: evt.victimHealthBefore, healthAfter: evt.victimHealthAfter, fatal: evt.fatal,
+      });
+    }
+
+    // Permanent risk accumulation - the cheap single-event checks only (see
+    // bumpRisk's comment). Logged as their own event type (not 'hit') so a
+    // flagged incident is visually distinct from a normal hit in the timeline.
+    for (const check of checkHitForIncidents(evt)) {
+      const owner = check.category === 'wallbang' ? evt.shooterIdentityId : evt.victimIdentityId;
+      if (!owner) continue;
+      bumpRisk(owner, serverId, check.category, check.confidence, tsMs);
+      logEvent(owner, serverId, tsMs, check.category, { confidence: check.confidence, summary: check.summary, ...check.evidence });
     }
     return;
   }
@@ -210,6 +273,12 @@ export function recordEvent(serverId, type, tsMs, evt) {
       logEvent(evt.playerIdentityId, serverId, tsMs, 'interact', {
         actionType: evt.actionType, distanceM: evt.distanceM,
       });
+
+      const check = checkInteractForIncident(evt);
+      if (check) {
+        bumpRisk(evt.playerIdentityId, serverId, check.category, check.confidence, tsMs);
+        logEvent(evt.playerIdentityId, serverId, tsMs, check.category, { confidence: check.confidence, summary: check.summary, ...check.evidence });
+      }
     }
     return;
   }
@@ -226,31 +295,49 @@ export function recordEvent(serverId, type, tsMs, evt) {
   }
 }
 
-export function searchPlayersIndexed(query, limit) {
-  const q = `%${String(query || '').toLowerCase()}%`;
-  const rows = db.prepare(`
-    SELECT p.identity_id AS identityId, p.display_name AS displayName, p.last_seen_ms AS lastSeen
-    FROM players p
-    WHERE p.identity_id IN (
-      SELECT DISTINCT identity_id FROM player_names WHERE LOWER(name) LIKE ?
-    )
-    ORDER BY p.last_seen_ms DESC
-    LIMIT ?
-  `).all(q, limit || 25);
+const SEVERITY_RANK_SQL = "CASE pss.max_severity WHEN 'high' THEN 3 WHEN 'medium' THEN 2 ELSE 1 END";
+const SEVERITY_FROM_RANK = { 3: SEVERITY.HIGH, 2: SEVERITY.MEDIUM, 1: SEVERITY.LOW };
 
-  return rows.map((r) => {
-    const names = db.prepare(`SELECT name FROM player_names WHERE identity_id = ? ORDER BY last_seen_ms DESC`)
-      .all(r.identityId).map((n) => n.name);
-    const servers = db.prepare(`SELECT DISTINCT server_id AS serverId FROM player_server_stats WHERE identity_id = ?`)
-      .all(r.identityId);
-    return {
-      identityId: r.identityId,
-      displayName: names[0] || r.displayName,
-      alsoKnownAs: names.slice(1),
-      lastSeen: r.lastSeen,
-      servers,
-    };
-  });
+// The default "All Players" view: every indexed player, all-time, ranked by
+// permanent risk score first (severity x confidence, accumulated by
+// bumpRisk) - not gated behind typing a search query. `query`, when given,
+// filters by name on top of the same ranking; it's a refinement, not a gate.
+export function listPlayersIndexed({ query, limit, offset } = {}) {
+  const hasQuery = typeof query === 'string' && query.trim().length >= 2;
+  const nameFilter = hasQuery
+    ? `WHERE p.identity_id IN (SELECT DISTINCT identity_id FROM player_names WHERE LOWER(name) LIKE ?)`
+    : '';
+
+  const rows = db.prepare(`
+    SELECT
+      p.identity_id AS identityId,
+      p.display_name AS displayName,
+      p.last_seen_ms AS lastSeen,
+      COALESCE(SUM(pss.risk_score), 0) AS riskScore,
+      COALESCE(SUM(pss.flagged_count), 0) AS flaggedCount,
+      MAX(${SEVERITY_RANK_SQL}) AS severityRank,
+      COALESCE(SUM(pss.kills), 0) AS kills,
+      COALESCE(SUM(pss.deaths), 0) AS deaths,
+      COALESCE(SUM(pss.hits), 0) AS hits,
+      COALESCE(SUM(pss.sessions), 0) AS sessions,
+      COALESCE(SUM(pss.playtime_ms), 0) AS playtimeMs
+    FROM players p
+    LEFT JOIN player_server_stats pss ON pss.identity_id = p.identity_id
+    ${nameFilter}
+    GROUP BY p.identity_id
+    ORDER BY riskScore DESC, lastSeen DESC
+    LIMIT ? OFFSET ?
+  `).all(...(hasQuery ? [`%${query.trim().toLowerCase()}%`] : []), limit || 50, offset || 0);
+
+  return rows.map((r) => ({
+    identityId: r.identityId,
+    displayName: r.displayName,
+    lastSeen: r.lastSeen,
+    riskScore: Math.round(r.riskScore * 10) / 10,
+    flaggedCount: r.flaggedCount,
+    highestSeverity: r.flaggedCount > 0 ? (SEVERITY_FROM_RANK[r.severityRank] || SEVERITY.LOW) : null,
+    kills: r.kills, deaths: r.deaths, hits: r.hits, sessions: r.sessions, playtimeMs: r.playtimeMs,
+  }));
 }
 
 export function getPlayerProfileIndexed(identityId) {
@@ -261,11 +348,15 @@ export function getPlayerProfileIndexed(identityId) {
     .all(identityId).map((n) => n.name);
   const perServer = db.prepare(`SELECT * FROM player_server_stats WHERE identity_id = ?`).all(identityId);
 
-  const totals = { kills: 0, deaths: 0, hits: 0, shots: 0, sessions: 0, playtimeMs: 0 };
+  const totals = { kills: 0, deaths: 0, hits: 0, shots: 0, sessions: 0, playtimeMs: 0, riskScore: 0, flaggedCount: 0 };
+  let severityRank = 0;
   for (const s of perServer) {
     totals.kills += s.kills; totals.deaths += s.deaths; totals.hits += s.hits;
     totals.shots += s.shots; totals.sessions += s.sessions; totals.playtimeMs += s.playtime_ms;
+    totals.riskScore += s.risk_score; totals.flaggedCount += s.flagged_count;
+    severityRank = Math.max(severityRank, SEVERITY_RANK[s.max_severity] || 0);
   }
+  totals.riskScore = Math.round(totals.riskScore * 10) / 10;
 
   return {
     identityId,
@@ -275,6 +366,7 @@ export function getPlayerProfileIndexed(identityId) {
     lastSeen: player.last_seen_ms,
     servers: perServer.map((s) => ({ id: s.server_id, name: s.server_id })),
     totals,
+    highestSeverity: totals.flaggedCount > 0 ? (SEVERITY_FROM_RANK[severityRank] || SEVERITY.LOW) : null,
     perServer: perServer.map((s) => ({
       serverId: s.server_id, serverName: s.server_id,
       kills: s.kills, deaths: s.deaths, hits: s.hits, shots: s.shots,

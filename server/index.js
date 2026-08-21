@@ -3843,13 +3843,17 @@ app.post('/api/replay/ingest', async (req, res) => {
         await fs.appendFile(eventsPath, `${JSON.stringify(restartRecord)}\n`, 'utf8');
 
         pushReplayRecent(safeId, restartRecord);
-        try { recordEvent(safeId, restartRecord.payload.type, restartRecord.payload.tsMs, restartRecord.payload.event); } catch { /* index is best-effort, never block ingest on it */ }
+        // receivedAt (this server's own Date.now() at ingest), NOT payload.tsMs -
+        // the exporter's tsMs is milliseconds since the mod started, not wall-clock
+        // time, so new Date(tsMs) landed near the Unix epoch. receivedAt is what
+        // the Replay tool actually displays; recordEvent needs the same.
+        try { recordEvent(safeId, restartRecord.payload.type, restartRecord.receivedAt, restartRecord.payload.event); } catch { /* index is best-effort, never block ingest on it */ }
       }
 
       await fs.appendFile(eventsPath, `${JSON.stringify(record)}\n`, 'utf8');
 
       pushReplayRecent(safeId, record);
-      try { recordEvent(safeId, record.payload.type, record.payload.tsMs, record.payload.event); } catch { /* index is best-effort, never block ingest on it */ }
+      try { recordEvent(safeId, record.payload.type, record.receivedAt, record.payload.event); } catch { /* index is best-effort, never block ingest on it */ }
 
       let minTsMs = (typeof prev.minTsMs === 'number') ? prev.minTsMs : null;
       let maxTsMs = (typeof prev.maxTsMs === 'number') ? prev.maxTsMs : null;

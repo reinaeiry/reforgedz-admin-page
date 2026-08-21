@@ -76,15 +76,22 @@ export async function getServerRiskSummary(opts: {
 export type PlayerSearchResult = {
   identityId: string;
   displayName: string;
-  alsoKnownAs: string[];
   lastSeen: number | null;
-  servers: ServerInfo[];
+  riskScore: number;
+  flaggedCount: number;
+  highestSeverity: IncidentSeverity | null;
+  kills: number;
+  deaths: number;
+  hits: number;
+  sessions: number;
+  playtimeMs: number;
 };
 
-export async function searchPlayers(query: string, limit = 25): Promise<{ results: PlayerSearchResult[] }> {
-  const params = new URLSearchParams({ q: query, limit: String(limit) });
+// query='' returns everyone, ranked by all-time risk score - not search-gated.
+export async function searchPlayers(query: string, limit = 50, offset = 0): Promise<{ results: PlayerSearchResult[] }> {
+  const params = new URLSearchParams({ q: query, limit: String(limit), offset: String(offset) });
   const res = await fetch(`${requireApiBaseUrl()}/api/players/search?${params.toString()}`, { credentials: 'include' });
-  return jsonOk(res, 'Failed to search players');
+  return jsonOk(res, 'Failed to load players');
 }
 
 export type PlayerServerStats = {
@@ -107,7 +114,8 @@ export type PlayerProfile = {
   firstSeen: number | null;
   lastSeen: number | null;
   servers: ServerInfo[];
-  totals: { kills: number; deaths: number; hits: number; shots: number; sessions: number; playtimeMs: number };
+  totals: { kills: number; deaths: number; hits: number; shots: number; sessions: number; playtimeMs: number; riskScore: number; flaggedCount: number };
+  highestSeverity: IncidentSeverity | null;
   perServer: PlayerServerStats[];
 };
 

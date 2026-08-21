@@ -129,6 +129,63 @@ function makeIncident(category, serverId, identityId, tsMs, confidence, summary,
   };
 }
 
+// Pure, identityId/serverId/tsMs-free versions of the single-event checks
+// below (wallbang, godMode, interactRange - the ones that don't need rolling
+// state across multiple events). Shared by both the live per-server scanner
+// above/below and playerIndex.js's permanent per-event indexer, so the two
+// never disagree on what counts as flagged or at what confidence. The
+// multi-event checks (speedhack, noclip, aimSnap, ammo) stay scan-only - they
+// need the rolling snapshot state this function intentionally doesn't have.
+export function checkHitForIncidents(evt) {
+  const out = [];
+  if (!evt) return out;
+
+  if (evt.losBlocked === true) {
+    out.push({
+      category: 'wallbang',
+      confidence: 85,
+      summary: `Hit landed through blocked line of sight (${(evt.distanceM || 0).toFixed(1)}m, ${evt.weaponName || 'unknown weapon'})`,
+      evidence: {
+        shooterIdentityId: evt.shooterIdentityId, shooterName: evt.shooterName,
+        victimIdentityId: evt.victimIdentityId, victimName: evt.victimName,
+        distanceM: evt.distanceM, weaponName: evt.weaponName, damage: evt.damage,
+      },
+    });
+  }
+
+  if (typeof evt.victimHealthBefore === 'number' && typeof evt.victimHealthAfter === 'number' && typeof evt.damage === 'number') {
+    if (evt.victimHealthBefore > 0) {
+      const actualDrop = evt.victimHealthBefore - evt.victimHealthAfter;
+      const delta = Math.abs(actualDrop - evt.damage);
+      if (delta >= CONFIG.godModeMinDamageDeltaM) {
+        out.push({
+          category: 'godMode',
+          confidence: clampConfidence((delta / Math.max(evt.damage, 1)) * 100),
+          summary: `Reported ${evt.damage.toFixed(1)} damage but health only dropped ${actualDrop.toFixed(1)} (or vice versa)`,
+          evidence: {
+            shooterIdentityId: evt.shooterIdentityId, shooterName: evt.shooterName,
+            damage: evt.damage, healthBefore: evt.victimHealthBefore, healthAfter: evt.victimHealthAfter,
+          },
+        });
+      }
+    }
+  }
+
+  return out;
+}
+
+export function checkInteractForIncident(evt) {
+  if (!evt) return null;
+  const cap = CONFIG.interactRangeM[evt.actionType] ?? CONFIG.interactRangeM.default;
+  if (typeof evt.distanceM !== 'number' || evt.distanceM <= cap) return null;
+  return {
+    category: 'interactRange',
+    confidence: clampConfidence(((evt.distanceM - cap) / cap) * 100),
+    summary: `${evt.actionType || 'Interaction'} performed from ${evt.distanceM.toFixed(1)}m (max plausible ~${cap}m)`,
+    evidence: { actionType: evt.actionType, distanceM: evt.distanceM, targetEntityId: evt.targetEntityId },
+  };
+}
+
 // Scans one server's events.ndjson start to finish, returning all incidents
 // found. For large files this is O(n) with small constant memory (a handful
 // of rolling maps keyed by playerId - NOT identityId, since events carry the
@@ -298,29 +355,12 @@ export async function scanServerForIncidents(serverId, filePath) {
           shotConfirmed.set(`${evt.shooterPlayerId}:${evt.weaponName}`, tsMs);
         }
 
-        if (evt.losBlocked === true) {
-          incidents.push(makeIncident(
-            'wallbang', serverId, evt.shooterIdentityId || '', tsMs,
-            85,
-            `Hit landed through blocked line of sight (${(evt.distanceM || 0).toFixed(1)}m, ${evt.weaponName || 'unknown weapon'})`,
-            { victimIdentityId: evt.victimIdentityId, distanceM: evt.distanceM, weaponName: evt.weaponName }
-          ));
-        }
-
-        if (typeof evt.victimHealthBefore === 'number' && typeof evt.victimHealthAfter === 'number' && typeof evt.damage === 'number') {
-          // healthBefore == 0 means the watcher hadn't polled yet - not a real "before", skip.
-          if (evt.victimHealthBefore > 0) {
-            const actualDrop = evt.victimHealthBefore - evt.victimHealthAfter;
-            const delta = Math.abs(actualDrop - evt.damage);
-            if (delta >= CONFIG.godModeMinDamageDeltaM) {
-              incidents.push(makeIncident(
-                'godMode', serverId, evt.victimIdentityId || '', tsMs,
-                clampConfidence((delta / Math.max(evt.damage, 1)) * 100),
-                `Reported ${evt.damage.toFixed(1)} damage but health only dropped ${actualDrop.toFixed(1)} (or vice versa)`,
-                { damage: evt.damage, healthBefore: evt.victimHealthBefore, healthAfter: evt.victimHealthAfter }
-              ));
-            }
-          }
+        for (const check of checkHitForIncidents(evt)) {
+          // wallbang is attributed to the shooter (they're the one who took the
+          // shot through cover); godMode to the victim (their damage handling is
+          // what's wrong) - matches the identityId each category's evidence implies.
+          const owner = check.category === 'wallbang' ? evt.shooterIdentityId : evt.victimIdentityId;
+          incidents.push(makeIncident(check.category, serverId, owner || '', tsMs, check.confidence, check.summary, check.evidence));
         }
       }
 
@@ -349,15 +389,8 @@ export async function scanServerForIncidents(serverId, filePath) {
       }
 
       if (type === 'interact' && evt) {
-        const cap = CONFIG.interactRangeM[evt.actionType] ?? CONFIG.interactRangeM.default;
-        if (typeof evt.distanceM === 'number' && evt.distanceM > cap) {
-          incidents.push(makeIncident(
-            'interactRange', serverId, evt.playerIdentityId || '', tsMs,
-            clampConfidence(((evt.distanceM - cap) / cap) * 100),
-            `${evt.actionType || 'Interaction'} performed from ${evt.distanceM.toFixed(1)}m (max plausible ~${cap}m)`,
-            { actionType: evt.actionType, distanceM: evt.distanceM, targetEntityId: evt.targetEntityId }
-          ));
-        }
+        const check = checkInteractForIncident(evt);
+        if (check) incidents.push(makeIncident(check.category, serverId, evt.playerIdentityId || '', tsMs, check.confidence, check.summary, check.evidence));
       }
 
       if (type === 'disconnect' && evt && typeof evt.playerId === 'number') {

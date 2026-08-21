@@ -58,8 +58,10 @@ async function backfillOne(serverId, filePath, size) {
     let outer;
     try { outer = JSON.parse(line); } catch { continue; }
     const p = outer && outer.payload;
-    if (!p || typeof p.tsMs !== 'number' || !p.type) continue;
-    batch.push({ type: p.type, tsMs: p.tsMs, evt: p.event || {} });
+    // receivedAt (the admin server's own Date.now() at ingest), not payload.tsMs -
+    // tsMs is the exporter's engine-uptime clock, not wall-clock time.
+    if (!p || typeof outer.receivedAt !== 'number' || !p.type) continue;
+    batch.push({ type: p.type, tsMs: outer.receivedAt, evt: p.event || {} });
     indexed++;
     if (batch.length >= BATCH_SIZE) {
       runInTx(batch);
