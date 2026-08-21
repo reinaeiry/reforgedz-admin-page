@@ -27,12 +27,17 @@ import { PlayerSearchView } from './PlayerSearchView';
 // it's excluded here the same way, rather than presenting obviously-wrong
 // volume as a cheater leaderboard. See anticheat.js's CONFIG comments.
 //
-// All three are still useful context on a player's own full history (see
+// fallImmunity ("no fall damage from a lethal-looking drop") - excluded per
+// operator request. Its confidence is also a flat hardcoded 50 (never
+// computed from anything), so it never had a real basis for ranking players
+// against each other to begin with.
+//
+// All four are still useful context on a player's own full history (see
 // the "Flags" filter on the profile page's detection timeline), just not
 // here, where the whole point is "does this player stand out" - so they're
 // hard-excluded from both the leaderboard and its drill-down, not just
 // deprioritized.
-const FLAGGED_TAB_EXCLUDED_CATEGORIES = ['combatLog', 'speedhack', 'noclip'];
+const FLAGGED_TAB_EXCLUDED_CATEGORIES = ['combatLog', 'speedhack', 'noclip', 'fallImmunity'];
 
 function severityBadgeClass(sev: Incident['severity']): string {
   if (sev === 'high') return 'bmBadge bmBadge-warn';

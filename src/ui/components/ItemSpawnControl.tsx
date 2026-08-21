@@ -134,9 +134,8 @@ export function ItemSpawnControl({ items, onSpawn, busy, copiedInventory, onSpaw
               className="input"
               type="number"
               min={1}
-              max={50}
               value={count}
-              onChange={(e) => setCount(Math.max(1, Math.min(50, parseInt(e.target.value, 10) || 1)))}
+              onChange={(e) => setCount(Math.max(1, parseInt(e.target.value, 10) || 1))}
               style={{ width: 56, fontSize: 11, padding: '4px 6px' }}
             />
             <button

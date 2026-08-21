@@ -2394,7 +2394,7 @@ app.post('/api/replay/spawnItem', requireAuth, requireTool('replay'), requireSer
   if (typeof key !== 'string' || !key) { res.status(400).send('Missing target key'); return; }
   if (typeof prefab !== 'string' || !prefab) { res.status(400).send('Missing prefab'); return; }
   const tgt = (target === 'vehicle') ? 'vehicle' : 'player';
-  const n = (typeof count === 'number' && Number.isFinite(count)) ? Math.max(1, Math.min(50, Math.floor(count))) : 1;
+  const n = (typeof count === 'number' && Number.isFinite(count)) ? Math.max(1, Math.floor(count)) : 1;
 
   const safeId = sanitizeServerId(serverId);
   await withIngestLock(safeId, async () => {
@@ -2405,7 +2405,10 @@ app.post('/api/replay/spawnItem', requireAuth, requireTool('replay'), requireSer
     const prevPending = (idx.pendingCommands && typeof idx.pendingCommands === 'object' && !Array.isArray(idx.pendingCommands))
       ? idx.pendingCommands : {};
     const prev = Array.isArray(prevPending.spawnItem) ? prevPending.spawnItem : [];
-    const nextArr = prev.slice(-49);
+    // Was capped at 49 (50 total incl. the new one) - removed per request. Still
+    // bounded at a high number rather than fully unbounded, purely so a queue
+    // the exporter somehow stops draining can't grow index.json without limit.
+    const nextArr = prev.slice(-999);
     nextArr.push({ target: tgt, key, prefab, count: n });
     const nextIdx = { ...idx, id: safeId, pendingCommands: { ...prevPending, spawnItem: nextArr } };
     await writeJsonAtomic(idxPath, nextIdx);

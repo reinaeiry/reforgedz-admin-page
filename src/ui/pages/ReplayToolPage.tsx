@@ -1425,14 +1425,10 @@ export function ReplayToolPage() {
   // spawnItem -> pendingCommands.spawnItem, drained in one shot on the
   // exporter's next ingest) already accumulates across calls under a lock,
   // so sequential awaits here are purely for clean per-item progress/error
-  // reporting, not for correctness. The 49-entry queue cap is real, though -
-  // warn rather than silently dropping the tail on a very large clipboard.
+  // reporting, not for correctness.
   const spawnCopiedInventory = useCallback((target: 'player' | 'vehicle', key: string, items: CopiedInventoryItem[]) => {
     if (!serverId || items.length === 0) return;
     const serverIdValue = serverId;
-    if (items.length >= 40) {
-      pushToast({ kind: 'event', title: 'Large inventory', subtitle: `${items.length} distinct items - the spawn queue caps at 49, some may be dropped` });
-    }
     setSpawnCopiedProgress({ done: 0, total: items.length, failed: [] });
     (async () => {
       let done = 0;
