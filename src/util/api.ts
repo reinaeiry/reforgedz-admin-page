@@ -87,6 +87,63 @@ export async function searchPlayers(query: string, limit = 25): Promise<{ result
   return jsonOk(res, 'Failed to search players');
 }
 
+export type PlayerServerStats = {
+  serverId: string;
+  serverName: string;
+  kills: number;
+  deaths: number;
+  hits: number;
+  shots: number;
+  sessions: number;
+  playtimeMs: number;
+  firstSeen: number | null;
+  lastSeen: number | null;
+};
+
+export type PlayerProfile = {
+  identityId: string;
+  displayName: string;
+  alsoKnownAs: string[];
+  firstSeen: number | null;
+  lastSeen: number | null;
+  servers: ServerInfo[];
+  totals: { kills: number; deaths: number; hits: number; shots: number; sessions: number; playtimeMs: number };
+  perServer: PlayerServerStats[];
+};
+
+export async function getPlayerProfile(identityId: string): Promise<PlayerProfile | null> {
+  const res = await fetch(`${requireApiBaseUrl()}/api/players/${encodeURIComponent(identityId)}/profile`, { credentials: 'include' });
+  if (res.status === 404) return null;
+  return jsonOk(res, 'Failed to load player profile');
+}
+
+export type PlayerActivityItem = {
+  tsMs: number;
+  type: string;
+  serverId: string;
+  serverName: string;
+  detail: Record<string, unknown>;
+};
+
+export async function getPlayerActivity(identityId: string, opts: {
+  serverId?: string;
+  types?: string[];
+  beforeTsMs?: number;
+  limit?: number;
+} = {}): Promise<{ items: PlayerActivityItem[]; nextBeforeTsMs: number | null }> {
+  const params = new URLSearchParams();
+  if (opts.serverId) params.set('serverId', opts.serverId);
+  if (opts.types?.length) params.set('types', opts.types.join(','));
+  if (opts.beforeTsMs) params.set('beforeTsMs', String(opts.beforeTsMs));
+  if (opts.limit) params.set('limit', String(opts.limit));
+  const qs = params.toString();
+  const res = await fetch(
+    `${requireApiBaseUrl()}/api/players/${encodeURIComponent(identityId)}/activity${qs ? `?${qs}` : ''}`,
+    { credentials: 'include' }
+  );
+  return jsonOk(res, 'Failed to load player activity');
+}
+
 // ─── Replay ─────────────────────────────────────────────────────────────────
 
 export type ReplayStatus = {
@@ -119,7 +176,7 @@ export async function getReplayRange(serverId: string): Promise<ReplayRange> {
   return jsonOk<ReplayRange>(res, 'Failed to get replay range');
 }
 
-export type ReplayPlayer = { playerId: number; name: string };
+export type ReplayPlayer = { playerId: number; name: string; identityId?: string };
 
 export async function listReplayPlayers(serverId: string): Promise<ReplayPlayer[]> {
   const res = await fetch(`${requireApiBaseUrl()}/api/replay/players?serverId=${encodeURIComponent(serverId)}`, { credentials: 'include' });

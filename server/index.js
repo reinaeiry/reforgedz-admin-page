@@ -17,6 +17,7 @@ import { buildBmRouter } from './routes/bm.js';
 import bmWebhookRouter from './routes/bm-webhook.js';
 import { buildTicketsRouter } from './routes/tickets.js';
 import { buildPlayersRouter } from './routes/players.js';
+import { initPlayerIndex, recordEvent } from './lib/playerIndex.js';
 import * as ticketEventRelay from './lib/ticketEventRelay.js';
 import { buildBmSseRouter } from './routes/bm-sse.js';
 import { postAuditEvent, ctxFromReq } from './lib/bmAudit.js';
@@ -135,6 +136,7 @@ app.use(rzAuth.attachSession);
 const INGEST_KEYS = process.env.INGEST_KEYS || '';
 
 const DATA_DIR = process.env.DATA_DIR || 'data';
+initPlayerIndex(DATA_DIR);
 
 // Rolling retention for events.ndjson (see server/lib/retention.js).
 // - Set RETENTION_MS=0 to keep everything (the log then grows without bound).
@@ -2054,6 +2056,7 @@ app.get('/api/replay/players', requireAuth, requireTool('replay'), requireServer
     out.push({
       playerId: p.playerId,
       name: typeof p.name === 'string' ? p.name : String(p.playerId),
+      identityId: typeof p.identityId === 'string' ? p.identityId : '',
     });
   }
 
@@ -3840,11 +3843,13 @@ app.post('/api/replay/ingest', async (req, res) => {
         await fs.appendFile(eventsPath, `${JSON.stringify(restartRecord)}\n`, 'utf8');
 
         pushReplayRecent(safeId, restartRecord);
+        try { recordEvent(safeId, restartRecord.payload.type, restartRecord.payload.tsMs, restartRecord.payload.event); } catch { /* index is best-effort, never block ingest on it */ }
       }
 
       await fs.appendFile(eventsPath, `${JSON.stringify(record)}\n`, 'utf8');
 
       pushReplayRecent(safeId, record);
+      try { recordEvent(safeId, record.payload.type, record.payload.tsMs, record.payload.event); } catch { /* index is best-effort, never block ingest on it */ }
 
       let minTsMs = (typeof prev.minTsMs === 'number') ? prev.minTsMs : null;
       let maxTsMs = (typeof prev.maxTsMs === 'number') ? prev.maxTsMs : null;

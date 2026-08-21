@@ -3539,8 +3539,24 @@ export function ReplayToolPage() {
                         <div style={{ flexShrink: 0, borderTop: '1px solid rgba(255,255,255,0.10)', paddingTop: 8 }}>
                           {selectedPlayerStateWithEquipmentCache ? (
                             <div style={{ fontSize: 12 }}>
-                              <div style={{ fontWeight: 700, marginBottom: 4 }}>
-                                {playersAtTime.find((x) => x.playerId === selectedPlayerId)?.name || knownPlayers.find((x) => x.playerId === selectedPlayerId)?.name || `#${selectedPlayerId}`}
+                              <div style={{ fontWeight: 700, marginBottom: 4, display: 'flex', alignItems: 'center', gap: 8 }}>
+                                <span>{playersAtTime.find((x) => x.playerId === selectedPlayerId)?.name || knownPlayers.find((x) => x.playerId === selectedPlayerId)?.name || `#${selectedPlayerId}`}</span>
+                                {(() => {
+                                  const identityId = playersAtTime.find((x) => x.playerId === selectedPlayerId)?.identityId
+                                    || knownPlayers.find((x) => x.playerId === selectedPlayerId)?.identityId;
+                                  if (!identityId) return null;
+                                  return (
+                                    <button
+                                      type="button"
+                                      className="button"
+                                      style={{ padding: '0 6px', fontSize: 10, fontWeight: 600 }}
+                                      title="Open this player's permanent profile (kills, deaths, sessions, playtime, full history)"
+                                      onClick={() => navigate(`/players?identityId=${encodeURIComponent(identityId)}`)}
+                                    >
+                                      Profile →
+                                    </button>
+                                  );
+                                })()}
                               </div>
                               <div className="muted" style={{ fontSize: 11, marginBottom: 2 }}>
                                 {((selectedPlayerStateWithEquipmentCache as any).weapon && (selectedPlayerStateWithEquipmentCache as any).weapon.name)

@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import {
   getServerIncidents,
   getServerRiskSummary,
@@ -10,6 +10,7 @@ import {
   type ServerInfo,
 } from '../../util/api';
 import { INCIDENT_CATEGORY_LABELS } from '../../util/anticheatCategories';
+import { PlayerSearchView } from './PlayerSearchView';
 
 function severityBadgeClass(sev: Incident['severity']): string {
   if (sev === 'high') return 'bmBadge bmBadge-warn';
@@ -89,7 +90,11 @@ function PlayerIncidentDetail({ serverId, identityId }: { serverId: string; iden
   );
 }
 
-export function AntiCheatPage() {
+// The per-server flagged-player leaderboard (renamed from what used to be the
+// whole page - "everything about every player, permanently" is a genuinely
+// different view from "who looks worst right now on this server", so this is
+// one tab of AntiCheatPage below, not the entire page anymore.
+function FlaggedPlayersView() {
   const [servers, setServers] = useState<ServerInfo[]>([]);
   const [selectedServerId, setSelectedServerId] = useState<string>('');
   const [players, setPlayers] = useState<PlayerRisk[] | null>(null);
@@ -148,7 +153,7 @@ export function AntiCheatPage() {
   const maxScore = players && players.length ? players[0].riskScore : 0;
 
   return (
-    <div className="page" style={{ padding: 24 }}>
+    <div>
       <div className="row" style={{ gap: 12, alignItems: 'center', marginBottom: 16 }}>
         <div style={{ minWidth: 220 }}>
           <select
@@ -239,6 +244,35 @@ export function AntiCheatPage() {
           </tbody>
         </table>
       )}
+    </div>
+  );
+}
+
+type Tab = 'players' | 'flagged';
+
+export function AntiCheatPage() {
+  const [searchParams] = useSearchParams();
+  const deepLinkIdentityId = searchParams.get('identityId');
+  const [tab, setTab] = useState<Tab>('players');
+
+  return (
+    <div className="page" style={{ padding: 24 }}>
+      <div className="row" style={{ gap: 4, marginBottom: 20, borderBottom: '1px solid var(--border)' }}>
+        <button
+          className={tab === 'players' ? 'pageTab pageTabActive' : 'pageTab'}
+          onClick={() => setTab('players')}
+        >
+          All Players
+        </button>
+        <button
+          className={tab === 'flagged' ? 'pageTab pageTabActive' : 'pageTab'}
+          onClick={() => setTab('flagged')}
+        >
+          Flagged (Anti-Cheat)
+        </button>
+      </div>
+
+      {tab === 'players' ? <PlayerSearchView initialIdentityId={deepLinkIdentityId} /> : <FlaggedPlayersView />}
     </div>
   );
 }

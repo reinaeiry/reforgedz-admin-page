@@ -5,31 +5,32 @@
 // since this is a single flat permission, not a category system like tickets.
 
 import express from 'express';
-import { searchPlayers, getPlayerProfile, getPlayerActivity } from '../lib/playerHistory.js';
+import { searchPlayersIndexed, getPlayerProfileIndexed, getPlayerTimelineIndexed } from '../lib/playerIndex.js';
 import { getIncidentsCached, summarizePlayerRisk, getScanProgress } from '../lib/anticheat.js';
 
-export function buildPlayersRouter({ asyncRoute, DATA_DIR, listAllServers, sanitizeServerId, readJsonOrNull, path }) {
+// search/profile/activity now read the permanent SQLite index (playerIndex.js)
+// instead of scanning raw events.ndjson - orders of magnitude faster, and
+// survives the 7-day retention trim on the raw logs. The old raw-scan
+// versions (lib/playerHistory.js) are left in place but unused here; incident
+// scanning (below) still reads the raw log directly since incidents aren't
+// indexed, only the underlying kill/death/hit/interact events are.
+
+export function buildPlayersRouter({ asyncRoute, DATA_DIR, sanitizeServerId, path }) {
   const router = express.Router();
 
   router.get('/search', asyncRoute(async (req, res) => {
     const q = String(req.query.q || '');
     const limit = req.query.limit ? Number(req.query.limit) : 25;
-    const results = await searchPlayers({
-      query: q,
-      limit: Math.min(Math.max(limit, 1), 100),
-      listAllServers,
-      readJsonOrNull,
-      dataDir: DATA_DIR,
-    });
+    if (q.trim().length < 2) { res.json({ results: [] }); return; }
+    const results = searchPlayersIndexed(q, Math.min(Math.max(limit, 1), 100));
     res.json({ results });
   }));
 
   router.get('/:identityId/profile', asyncRoute(async (req, res) => {
     const identityId = String(req.params.identityId || '');
     if (!identityId) { res.status(400).json({ error: 'missing identityId' }); return; }
-    const profile = await getPlayerProfile({
-      identityId, listAllServers, readJsonOrNull, dataDir: DATA_DIR, sanitizeServerId,
-    });
+    const profile = getPlayerProfileIndexed(identityId);
+    if (!profile) { res.status(404).json({ error: 'not found' }); return; }
     res.json(profile);
   }));
 
@@ -37,15 +38,13 @@ export function buildPlayersRouter({ asyncRoute, DATA_DIR, listAllServers, sanit
     const identityId = String(req.params.identityId || '');
     if (!identityId) { res.status(400).json({ error: 'missing identityId' }); return; }
     const serverId = req.query.serverId ? String(req.query.serverId) : null;
-    const beforeTsMs = req.query.beforeTsMs ? Number(req.query.beforeTsMs) : null;
+    const beforeTsMs = req.query.beforeTsMs ? Number(req.query.beforeTsMs) : undefined;
     const limit = req.query.limit ? Number(req.query.limit) : 50;
     const types = typeof req.query.types === 'string' && req.query.types.trim()
       ? new Set(req.query.types.split(',').map((t) => t.trim()).filter(Boolean))
       : null;
-    const result = await getPlayerActivity({
-      identityId, serverId, types, beforeTsMs,
-      limit: Math.min(Math.max(limit, 1), 200),
-      listAllServers, dataDir: DATA_DIR, sanitizeServerId,
+    const result = getPlayerTimelineIndexed(identityId, {
+      serverId, types, beforeTsMs, limit: Math.min(Math.max(limit, 1), 200),
     });
     res.json(result);
   }));
