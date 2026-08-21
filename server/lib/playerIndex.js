@@ -85,6 +85,26 @@ export function initPlayerIndex(dataDir) {
       name TEXT,
       PRIMARY KEY (server_id, player_id)
     );
+
+    -- Inventory search ("who's ever had a Cap") - one row per contiguous
+    -- "had it" streak, not a lifetime min/max, so a January possession and
+    -- an unrelated March reacquisition of the same prefab stay two separate,
+    -- individually-jumpable results instead of collapsing into one
+    -- misleading span. Populated purely from recordEvent's existing
+    -- 'snapshot' branch below - no separate scan pass, unlike the anti-cheat
+    -- categories that need rolling multi-event state (see anticheat.js).
+    CREATE TABLE IF NOT EXISTS inventory_sightings (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      identity_id TEXT NOT NULL,
+      server_id TEXT NOT NULL,
+      item_prefab TEXT NOT NULL,
+      item_name TEXT,
+      first_ts_ms INTEGER NOT NULL,
+      last_ts_ms INTEGER NOT NULL,
+      count INTEGER NOT NULL DEFAULT 1
+    );
+    CREATE INDEX IF NOT EXISTS idx_inv_sightings_lookup ON inventory_sightings(identity_id, server_id, item_prefab, last_ts_ms DESC);
+    CREATE INDEX IF NOT EXISTS idx_inv_sightings_name ON inventory_sightings(item_name COLLATE NOCASE);
   `);
   return db;
 }
@@ -288,12 +308,83 @@ export function recordEvent(serverId, type, tsMs, evt) {
   // bulk telemetry, stays in the raw (retention-bound) log only. Snapshot
   // *does* carry names/identityId per player though, and is by far the most
   // frequent event, which is exactly why it's cheap to at least refresh
-  // known-name/last-seen from it without writing a full event row.
+  // known-name/last-seen from it without writing a full event row. It also
+  // carries each player's inventory - cheap enough to index per-item (a
+  // stateless upsert, no rolling in-memory state) for cross-time/cross-player
+  // "who's ever had a Cap" search, unlike the anti-cheat categories that need
+  // real rolling state and so stay live-scan-only.
   if (type === 'snapshot' && Array.isArray(evt.players)) {
     for (const pl of evt.players) {
-      if (pl && pl.identityId) upsertPlayer(pl.identityId, pl.name, tsMs);
+      if (!pl || !pl.identityId) continue;
+      upsertPlayer(pl.identityId, pl.name, tsMs);
+      if (Array.isArray(pl.inventory)) recordInventorySighting(pl.identityId, serverId, pl.inventory, tsMs);
     }
   }
+}
+
+// Groups by prefab first - mirrors the exact grouping ReplayToolPage.tsx
+// already does client-side for display (raw inventory is one array entry
+// per stack, no count field on the item itself).
+function groupInventoryByPrefab(inventory) {
+  const byPrefab = new Map();
+  for (const item of inventory) {
+    if (!item || typeof item.prefab !== 'string' || !item.prefab) continue;
+    const g = byPrefab.get(item.prefab);
+    if (g) g.count += 1;
+    else byPrefab.set(item.prefab, { prefab: item.prefab, name: typeof item.name === 'string' ? item.name : '', count: 1 });
+  }
+  return byPrefab;
+}
+
+// A snapshot only samples inventory every ~10s per player (see
+// ReplayToolPage.tsx's equipment-cache comments), so a short gap between two
+// sightings of the same prefab is almost certainly a couple of missed
+// samples, not a real drop-and-reacquire. INVENTORY_STREAK_GAP_MS is a
+// placeholder like anticheat.js's CONFIG - tune against real sampling
+// cadence if streaks look wrong in practice.
+const INVENTORY_STREAK_GAP_MS = 60_000;
+
+function recordInventorySighting(identityId, serverId, inventory, tsMs) {
+  const grouped = groupInventoryByPrefab(inventory);
+  for (const item of grouped.values()) {
+    const existing = db.prepare(`
+      SELECT id, last_ts_ms FROM inventory_sightings
+      WHERE identity_id = ? AND server_id = ? AND item_prefab = ?
+      ORDER BY last_ts_ms DESC LIMIT 1
+    `).get(identityId, serverId, item.prefab);
+
+    if (existing && tsMs - existing.last_ts_ms <= INVENTORY_STREAK_GAP_MS) {
+      db.prepare(`UPDATE inventory_sightings SET last_ts_ms = ?, count = ?, item_name = ? WHERE id = ?`)
+        .run(tsMs, item.count, item.name || null, existing.id);
+    } else {
+      db.prepare(`
+        INSERT INTO inventory_sightings (identity_id, server_id, item_prefab, item_name, first_ts_ms, last_ts_ms, count)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).run(identityId, serverId, item.prefab, item.name || null, tsMs, tsMs, item.count);
+    }
+  }
+}
+
+// query matches against item name OR prefab (a modded item might only have
+// a meaningful prefab, no display name) - same tolerance the raw-prefab
+// fallback in ItemSpawnControl.tsx already assumes admins need.
+export function searchInventorySightings({ serverId, query, limit } = {}) {
+  const q = typeof query === 'string' ? query.trim() : '';
+  if (q.length < 2) return [];
+  const cap = Math.min(Math.max(limit || 100, 1), 500);
+
+  const rows = db.prepare(`
+    SELECT s.identity_id AS identityId, p.display_name AS displayName,
+           s.item_prefab AS itemPrefab, s.item_name AS itemName,
+           s.first_ts_ms AS firstTsMs, s.last_ts_ms AS lastTsMs, s.count AS count
+    FROM inventory_sightings s
+    JOIN players p ON p.identity_id = s.identity_id
+    WHERE s.server_id = ? AND (s.item_name LIKE ? COLLATE NOCASE OR s.item_prefab LIKE ? COLLATE NOCASE)
+    ORDER BY s.last_ts_ms DESC
+    LIMIT ?
+  `).all(serverId, `%${q}%`, `%${q}%`, cap);
+
+  return rows;
 }
 
 const SEVERITY_RANK_SQL = "CASE pss.max_severity WHEN 'high' THEN 3 WHEN 'medium' THEN 2 ELSE 1 END";

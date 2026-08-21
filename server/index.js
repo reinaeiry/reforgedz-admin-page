@@ -17,7 +17,7 @@ import { buildBmRouter } from './routes/bm.js';
 import bmWebhookRouter from './routes/bm-webhook.js';
 import { buildTicketsRouter } from './routes/tickets.js';
 import { buildPlayersRouter } from './routes/players.js';
-import { initPlayerIndex, recordEvent, getRiskConfidenceForIdentities } from './lib/playerIndex.js';
+import { initPlayerIndex, recordEvent, getRiskConfidenceForIdentities, searchInventorySightings } from './lib/playerIndex.js';
 import * as ticketEventRelay from './lib/ticketEventRelay.js';
 import { buildBmSseRouter } from './routes/bm-sse.js';
 import { postAuditEvent, ctxFromReq } from './lib/bmAudit.js';
@@ -2371,6 +2371,20 @@ app.get('/api/replay/spawnCatalog', requireAuth, requireTool('replay'), requireS
     items: (data && Array.isArray(data.items)) ? data.items : [],
     updatedAt: (data && typeof data.updatedAt === 'number') ? data.updatedAt : null,
   });
+}));
+
+// "Who's ever had a Cap" - searches the permanent inventory_sightings index
+// (playerIndex.js), populated incrementally on every ingested snapshot, not
+// a live re-scan - unlike anti-cheat incidents, a sighting is a stateless
+// per-event fact, so there's no rolling-state category forcing a full-file
+// scan here the way scanServerForIncidents needs for speedhack/noclip/etc.
+app.get('/api/replay/inventorySearch', requireAuth, requireTool('replay'), requireServerAccess, asyncRoute(async (req, res) => {
+  const serverId = String(req.query.serverId || '');
+  if (!serverId) { res.status(400).send('Missing serverId'); return; }
+  const safeId = sanitizeServerId(serverId);
+  const q = String(req.query.q || '');
+  const results = searchInventorySightings({ serverId: safeId, query: q, limit: 100 });
+  res.json({ serverId: safeId, results });
 }));
 
 // Queue a spawn-item command for the exporter to execute in-game (live).
