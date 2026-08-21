@@ -14,7 +14,6 @@
 
 import { createReadStream } from 'node:fs';
 import { stat } from 'node:fs/promises';
-import readline from 'node:readline';
 
 // Live progress for in-flight scans, polled by the /scan-progress SSE route.
 // Keyed by serverId; entry is removed when the scan finishes (success or not),
@@ -214,10 +213,11 @@ export async function scanServerForIncidents(serverId, filePath) {
 
   let stream;
   try {
-    // Default highWaterMark (64KB) means far more read() syscalls than
-    // necessary on a 50GB+ file; 1MB chunks (same size copyRange in
-    // retention.js already uses) cuts that down with no other behavior change.
-    stream = createReadStream(filePath, { encoding: 'utf8', highWaterMark: 1 << 20 });
+    // Raw byte chunks (no 'utf8' encoding at the stream level) - the type
+    // pre-filter below runs directly on the Buffer, so a skipped line is
+    // never even UTF-8-decoded. 1MB highWaterMark (same size copyRange in
+    // retention.js already uses) also cuts down read() syscalls on 50GB+ files.
+    stream = createReadStream(filePath, { highWaterMark: 1 << 20 });
   } catch {
     return incidents;
   }
@@ -226,220 +226,240 @@ export async function scanServerForIncidents(serverId, filePath) {
   let bytesRead = 0;
   let linesSinceProgressUpdate = 0;
 
-  const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
-  try {
-    for await (const line of rl) {
-      bytesRead += Buffer.byteLength(line, 'utf8') + 1; // +1 for the stripped newline
-      linesSinceProgressUpdate += 1;
-      if (linesSinceProgressUpdate >= 2000) {
-        linesSinceProgressUpdate = 0;
-        scanProgress.set(serverId, { bytesRead, totalBytes, startedAt: scanProgress.get(serverId)?.startedAt || Date.now() });
-      }
+  const RELEVANT_LINE_TYPES = new Set(['snapshot', 'hit', 'kill', 'death', 'disconnect', 'interact', 'terrain']);
+  const TYPE_PREFIX = Buffer.from('"type":"');
 
-      if (!line) continue;
+  // One synchronous function processes each line, called from a manual
+  // chunk+newline splitter below instead of readline.createInterface - the
+  // async-iteration step readline takes PER LINE is real overhead at
+  // millions of lines (measured: adding the type pre-filter alone barely
+  // moved scan time, because readline's per-line stepping - not JSON.parse -
+  // was the actual bottleneck). Async-iterating raw ~1MB chunks instead pays
+  // that overhead once per chunk; splitting a chunk into lines and handling
+  // each is a plain synchronous call, not another layer of async iteration.
+  // Same low-level pattern retention.js's findLineStart/readRecordAtOrAfter
+  // already use elsewhere in this codebase for exactly this reason.
+  function processLine(lineBuf) {
+    bytesRead += lineBuf.length + 1; // +1 for the stripped newline
+    linesSinceProgressUpdate += 1;
+    if (linesSinceProgressUpdate >= 2000) {
+      linesSinceProgressUpdate = 0;
+      scanProgress.set(serverId, { bytesRead, totalBytes, startedAt: scanProgress.get(serverId)?.startedAt || Date.now() });
+    }
+    if (!lineBuf.length) return;
 
-      // Cheap pre-skip, same trick server/index.js's scanSlimSlice already
-      // uses: on a real server log, high-frequency bulk telemetry
-      // (vehicleIndex, serverHealth) outnumbers snapshot lines ~3.7:1 and
-      // this scanner never reads either - a substring search avoids paying
-      // for a full JSON.parse (and the object/array allocation that comes
-      // with it) on the large majority of lines in the file.
-      if (
-        line.indexOf('"type":"snapshot"') === -1 &&
-        line.indexOf('"type":"hit"') === -1 &&
-        line.indexOf('"type":"kill"') === -1 &&
-        line.indexOf('"type":"death"') === -1 &&
-        line.indexOf('"type":"disconnect"') === -1 &&
-        line.indexOf('"type":"interact"') === -1 &&
-        line.indexOf('"type":"terrain"') === -1
-      ) continue;
+    // Cheap pre-skip, same trick server/index.js's scanSlimSlice already
+    // uses: on a real server log, high-frequency bulk telemetry
+    // (vehicleIndex, serverHealth) outnumbers snapshot lines ~3.7:1 and this
+    // scanner never reads either - find just the type value and check it
+    // against the handled set before decoding (or JSON.parse-ing) anything else.
+    const typeIdx = lineBuf.indexOf(TYPE_PREFIX);
+    if (typeIdx !== -1) {
+      const valStart = typeIdx + TYPE_PREFIX.length;
+      const valEnd = lineBuf.indexOf(0x22, valStart); // closing "
+      if (valEnd !== -1 && !RELEVANT_LINE_TYPES.has(lineBuf.toString('utf8', valStart, valEnd))) return;
+    }
 
-      let outer;
-      try { outer = JSON.parse(line); } catch { continue; }
-      const p = outer && outer.payload;
-      if (!p || typeof p.tsMs !== 'number') continue;
-      const type = p.type;
-      const evt = p.event;
-      // outer.receivedAt (this server's own Date.now() at ingest), NOT p.tsMs -
-      // the exporter's tsMs is milliseconds since the mod started, not wall-clock
-      // time, so incidents timestamped from it land near the Unix epoch. Same
-      // bug as the ingest-path fix in index.js, just in this separate reader -
-      // falls back to p.tsMs only for old records written before receivedAt existed.
-      const tsMs = typeof outer.receivedAt === 'number' ? outer.receivedAt : p.tsMs;
+    const line = lineBuf.toString('utf8');
+    let outer;
+    try { outer = JSON.parse(line); } catch { return; }
+    const p = outer && outer.payload;
+    if (!p || typeof p.tsMs !== 'number') return;
+    const type = p.type;
+    const evt = p.event;
+    // outer.receivedAt (this server's own Date.now() at ingest), NOT p.tsMs -
+    // the exporter's tsMs is milliseconds since the mod started, not wall-clock
+    // time, so incidents timestamped from it land near the Unix epoch. Same
+    // bug as the ingest-path fix in index.js, just in this separate reader -
+    // falls back to p.tsMs only for old records written before receivedAt existed.
+    const tsMs = typeof outer.receivedAt === 'number' ? outer.receivedAt : p.tsMs;
 
-      if (type === 'terrain' && evt && Array.isArray(evt.bbMin) && Array.isArray(evt.bbMax) && Array.isArray(evt.heights)) {
-        terrain = { bbMin: evt.bbMin, bbMax: evt.bbMax, gridW: evt.gridW, gridH: evt.gridH, heights: evt.heights };
-      }
+    if (type === 'terrain' && evt && Array.isArray(evt.bbMin) && Array.isArray(evt.bbMax) && Array.isArray(evt.heights)) {
+      terrain = { bbMin: evt.bbMin, bbMax: evt.bbMax, gridW: evt.gridW, gridH: evt.gridH, heights: evt.heights };
+    }
 
-      if (type === 'snapshot' && evt && Array.isArray(evt.players)) {
-        for (const pl of evt.players) {
-          if (!pl || typeof pl.playerId !== 'number') continue;
-          if (pl.identityId) identityByPlayer.set(pl.playerId, pl.identityId);
+    if (type === 'snapshot' && evt && Array.isArray(evt.players)) {
+      for (const pl of evt.players) {
+        if (!pl || typeof pl.playerId !== 'number') continue;
+        if (pl.identityId) identityByPlayer.set(pl.playerId, pl.identityId);
 
-          const prev = lastSnapshot.get(pl.playerId);
-          if (prev && Array.isArray(pl.pos) && Array.isArray(prev.pos)) {
-            const dtMs = tsMs - prev.tsMs;
-            if (dtMs > 0 && dtMs < 30000) {
-              const dist = distance3(pl.pos, prev.pos);
-              const speedMps = dist / (dtMs / 1000);
-              const cap = pl.inVehicle ? CONFIG.maxPlausibleSpeedInVehicleMps : CONFIG.maxPlausibleSpeedOnFootMps;
-              if (speedMps > cap) {
+        const prev = lastSnapshot.get(pl.playerId);
+        if (prev && Array.isArray(pl.pos) && Array.isArray(prev.pos)) {
+          const dtMs = tsMs - prev.tsMs;
+          if (dtMs > 0 && dtMs < 30000) {
+            const dist = distance3(pl.pos, prev.pos);
+            const speedMps = dist / (dtMs / 1000);
+            const cap = pl.inVehicle ? CONFIG.maxPlausibleSpeedInVehicleMps : CONFIG.maxPlausibleSpeedOnFootMps;
+            if (speedMps > cap) {
+              incidents.push(makeIncident(
+                'speedhack', serverId, pl.identityId || identityByPlayer.get(pl.playerId) || '', tsMs,
+                clampConfidence(((speedMps - cap) / cap) * 100),
+                `Moved ${dist.toFixed(1)}m in ${dtMs}ms (${speedMps.toFixed(1)} m/s, cap ${cap} m/s${pl.inVehicle ? ', in vehicle' : ''})`,
+                { fromPos: prev.pos, toPos: pl.pos, dtMs, speedMps, inVehicle: !!pl.inVehicle }
+              ));
+            }
+            // Fall immunity: large drop with no corresponding recent-combat/damage entry.
+            const dropM = prev.pos[1] - pl.pos[1];
+            if (!pl.inVehicle && dropM > CONFIG.fallImmunityMinDropM && dtMs < CONFIG.fallImmunityWindowMs) {
+              const lastCombat = recentCombat.get(pl.playerId) || 0;
+              if (tsMs - lastCombat > CONFIG.fallImmunityWindowMs) {
                 incidents.push(makeIncident(
-                  'speedhack', serverId, pl.identityId || identityByPlayer.get(pl.playerId) || '', tsMs,
-                  clampConfidence(((speedMps - cap) / cap) * 100),
-                  `Moved ${dist.toFixed(1)}m in ${dtMs}ms (${speedMps.toFixed(1)} m/s, cap ${cap} m/s${pl.inVehicle ? ', in vehicle' : ''})`,
-                  { fromPos: prev.pos, toPos: pl.pos, dtMs, speedMps, inVehicle: !!pl.inVehicle }
+                  'fallImmunity', serverId, pl.identityId || identityByPlayer.get(pl.playerId) || '', tsMs,
+                  50,
+                  `Dropped ${dropM.toFixed(1)}m in ${dtMs}ms with no recorded damage`,
+                  { fromPos: prev.pos, toPos: pl.pos, dtMs, dropM }
                 ));
-              }
-              // Fall immunity: large drop with no corresponding recent-combat/damage entry.
-              const dropM = prev.pos[1] - pl.pos[1];
-              if (!pl.inVehicle && dropM > CONFIG.fallImmunityMinDropM && dtMs < CONFIG.fallImmunityWindowMs) {
-                const lastCombat = recentCombat.get(pl.playerId) || 0;
-                if (tsMs - lastCombat > CONFIG.fallImmunityWindowMs) {
-                  incidents.push(makeIncident(
-                    'fallImmunity', serverId, pl.identityId || identityByPlayer.get(pl.playerId) || '', tsMs,
-                    50,
-                    `Dropped ${dropM.toFixed(1)}m in ${dtMs}ms with no recorded damage`,
-                    { fromPos: prev.pos, toPos: pl.pos, dtMs, dropM }
-                  ));
-                }
               }
             }
           }
-          if (terrain && Array.isArray(pl.pos) && !pl.inVehicle) {
-            const surfaceY = surfaceHeightAt(terrain, pl.pos[0], pl.pos[2]);
-            if (surfaceY !== null && pl.pos[1] < surfaceY - CONFIG.noclipMarginM) {
+        }
+        if (terrain && Array.isArray(pl.pos) && !pl.inVehicle) {
+          const surfaceY = surfaceHeightAt(terrain, pl.pos[0], pl.pos[2]);
+          if (surfaceY !== null && pl.pos[1] < surfaceY - CONFIG.noclipMarginM) {
+            incidents.push(makeIncident(
+              'noclip', serverId, pl.identityId || identityByPlayer.get(pl.playerId) || '', tsMs,
+              clampConfidence(((surfaceY - pl.pos[1] - CONFIG.noclipMarginM) / CONFIG.noclipMarginM) * 50),
+              `Position ${(surfaceY - pl.pos[1]).toFixed(1)}m below the terrain surface`,
+              { pos: pl.pos, surfaceY }
+            ));
+          }
+        }
+
+        lastSnapshot.set(pl.playerId, {
+          pos: pl.pos, tsMs, aimDir: pl.aimDir, identityId: pl.identityId, inVehicle: !!pl.inVehicle,
+        });
+
+        if (pl.weapon && typeof pl.weapon.ammoCount === 'number' && pl.weapon.name) {
+          const key = `${pl.playerId}:${pl.weapon.name}`;
+          const prevAmmo = lastAmmo.get(key);
+          if (prevAmmo) {
+            const dtMs = tsMs - prevAmmo.tsMs;
+            // Refilled to (near) max faster than any plausible reload -> instant reload.
+            // Only fires if a reference reload time is actually configured (see CONFIG).
+            const refReload = CONFIG.realWeaponReloadMsByName[pl.weapon.name]
+              ?? CONFIG.minPlausibleReloadMsFallback;
+            if (refReload && pl.weapon.ammoCount > prevAmmo.ammoCount && dtMs > 0 && dtMs < refReload) {
               incidents.push(makeIncident(
-                'noclip', serverId, pl.identityId || identityByPlayer.get(pl.playerId) || '', tsMs,
-                clampConfidence(((surfaceY - pl.pos[1] - CONFIG.noclipMarginM) / CONFIG.noclipMarginM) * 50),
-                `Position ${(surfaceY - pl.pos[1]).toFixed(1)}m below the terrain surface`,
-                { pos: pl.pos, surfaceY }
+                'instantReload', serverId, pl.identityId || identityByPlayer.get(pl.playerId) || '', tsMs,
+                clampConfidence(((refReload - dtMs) / refReload) * 100),
+                `Magazine refilled in ${dtMs}ms (expected >= ${refReload}ms for ${pl.weapon.name || 'weapon'})`,
+                { weapon: pl.weapon.name, dtMs, refReload, from: prevAmmo.ammoCount, to: pl.weapon.ammoCount }
+              ));
+            }
+            // Infinite ammo: we know at least one shot was fired on this weapon between
+            // these two snapshots (a hit/kill was attributed to this player+weapon in that
+            // window, tracked via shotConfirmed below), but ammo didn't drop. Weaker proxy
+            // than a real shot-fired count (that capture point isn't wired in the exporter
+            // yet - see EmitShotFired's comments), but doesn't need it.
+            const confirmedShotAt = shotConfirmed.get(key);
+            if (confirmedShotAt && confirmedShotAt > prevAmmo.tsMs && confirmedShotAt <= tsMs
+              && pl.weapon.ammoCount >= prevAmmo.ammoCount) {
+              incidents.push(makeIncident(
+                'infiniteAmmo', serverId, pl.identityId || identityByPlayer.get(pl.playerId) || '', tsMs,
+                55,
+                `A confirmed hit was fired from ${pl.weapon.name || 'this weapon'} between two ammo readings, but ammo count did not drop (${prevAmmo.ammoCount} -> ${pl.weapon.ammoCount})`,
+                { weapon: pl.weapon.name, from: prevAmmo.ammoCount, to: pl.weapon.ammoCount }
               ));
             }
           }
-
-          lastSnapshot.set(pl.playerId, {
-            pos: pl.pos, tsMs, aimDir: pl.aimDir, identityId: pl.identityId, inVehicle: !!pl.inVehicle,
-          });
-
-          if (pl.weapon && typeof pl.weapon.ammoCount === 'number' && pl.weapon.name) {
-            const key = `${pl.playerId}:${pl.weapon.name}`;
-            const prevAmmo = lastAmmo.get(key);
-            if (prevAmmo) {
-              const dtMs = tsMs - prevAmmo.tsMs;
-              // Refilled to (near) max faster than any plausible reload -> instant reload.
-              // Only fires if a reference reload time is actually configured (see CONFIG).
-              const refReload = CONFIG.realWeaponReloadMsByName[pl.weapon.name]
-                ?? CONFIG.minPlausibleReloadMsFallback;
-              if (refReload && pl.weapon.ammoCount > prevAmmo.ammoCount && dtMs > 0 && dtMs < refReload) {
-                incidents.push(makeIncident(
-                  'instantReload', serverId, pl.identityId || identityByPlayer.get(pl.playerId) || '', tsMs,
-                  clampConfidence(((refReload - dtMs) / refReload) * 100),
-                  `Magazine refilled in ${dtMs}ms (expected >= ${refReload}ms for ${pl.weapon.name || 'weapon'})`,
-                  { weapon: pl.weapon.name, dtMs, refReload, from: prevAmmo.ammoCount, to: pl.weapon.ammoCount }
-                ));
-              }
-              // Infinite ammo: we know at least one shot was fired on this weapon between
-              // these two snapshots (a hit/kill was attributed to this player+weapon in that
-              // window, tracked via shotConfirmed below), but ammo didn't drop. Weaker proxy
-              // than a real shot-fired count (that capture point isn't wired in the exporter
-              // yet - see EmitShotFired's comments), but doesn't need it.
-              const confirmedShotAt = shotConfirmed.get(key);
-              if (confirmedShotAt && confirmedShotAt > prevAmmo.tsMs && confirmedShotAt <= tsMs
-                && pl.weapon.ammoCount >= prevAmmo.ammoCount) {
-                incidents.push(makeIncident(
-                  'infiniteAmmo', serverId, pl.identityId || identityByPlayer.get(pl.playerId) || '', tsMs,
-                  55,
-                  `A confirmed hit was fired from ${pl.weapon.name || 'this weapon'} between two ammo readings, but ammo count did not drop (${prevAmmo.ammoCount} -> ${pl.weapon.ammoCount})`,
-                  { weapon: pl.weapon.name, from: prevAmmo.ammoCount, to: pl.weapon.ammoCount }
-                ));
-              }
-            }
-            lastAmmo.set(key, { ammoCount: pl.weapon.ammoCount, tsMs });
-          }
-
-          if (Array.isArray(pl.inventory)) {
-            for (const item of pl.inventory) {
-              if (item && item.prefab && CONFIG.restrictedItemPrefabs.has(item.prefab)) {
-                incidents.push(makeIncident(
-                  'restrictedItem', serverId, pl.identityId || identityByPlayer.get(pl.playerId) || '', tsMs,
-                  75,
-                  `Inventory contains restricted item: ${item.name || item.prefab}`,
-                  { prefab: item.prefab, name: item.name }
-                ));
-              }
-            }
-          }
-        }
-      }
-
-      if (type === 'hit' && evt) {
-        if (typeof evt.victimPlayerId === 'number') recentCombat.set(evt.victimPlayerId, tsMs);
-        if (typeof evt.shooterPlayerId === 'number') recentCombat.set(evt.shooterPlayerId, tsMs);
-        if (typeof evt.shooterPlayerId === 'number' && evt.weaponName) {
-          shotConfirmed.set(`${evt.shooterPlayerId}:${evt.weaponName}`, tsMs);
+          lastAmmo.set(key, { ammoCount: pl.weapon.ammoCount, tsMs });
         }
 
-        for (const check of checkHitForIncidents(evt)) {
-          // wallbang is attributed to the shooter (they're the one who took the
-          // shot through cover); godMode to the victim (their damage handling is
-          // what's wrong) - matches the identityId each category's evidence implies.
-          const owner = check.category === 'wallbang' ? evt.shooterIdentityId : evt.victimIdentityId;
-          incidents.push(makeIncident(check.category, serverId, owner || '', tsMs, check.confidence, check.summary, check.evidence));
-        }
-      }
-
-      if ((type === 'kill' || type === 'death') && evt) {
-        if (typeof evt.victimPlayerId === 'number') recentCombat.set(evt.victimPlayerId, tsMs);
-        if (typeof evt.killerPlayerId === 'number') recentCombat.set(evt.killerPlayerId, tsMs);
-
-        // Basic snap-angle check: killer's aim direction at the kill vs their last
-        // known snapshot aim direction shortly before it. A large instantaneous
-        // swing right at the kill, outside of a normal tracking curve, is the classic
-        // aimbot signal - this is a coarse first pass, not a statistical model.
-        if (typeof evt.killerPlayerId === 'number' && Array.isArray(evt.killerAimDir)) {
-          const prev = lastSnapshot.get(evt.killerPlayerId);
-          if (prev && Array.isArray(prev.aimDir) && tsMs - prev.tsMs < 1000) {
-            const angle = angleBetweenDeg(evt.killerAimDir, prev.aimDir);
-            if (angle > 45) {
+        if (Array.isArray(pl.inventory)) {
+          for (const item of pl.inventory) {
+            if (item && item.prefab && CONFIG.restrictedItemPrefabs.has(item.prefab)) {
               incidents.push(makeIncident(
-                'aimSnap', serverId, evt.killerIdentityId || '', tsMs,
-                clampConfidence(((angle - 45) / 135) * 100),
-                `Aim snapped ${angle.toFixed(0)} degrees in the ${tsMs - prev.tsMs}ms before this kill`,
-                { angleDeg: angle, dtMs: tsMs - prev.tsMs, weaponName: evt.weaponName }
+                'restrictedItem', serverId, pl.identityId || identityByPlayer.get(pl.playerId) || '', tsMs,
+                75,
+                `Inventory contains restricted item: ${item.name || item.prefab}`,
+                { prefab: item.prefab, name: item.name }
               ));
             }
           }
-        }
-      }
-
-      if (type === 'interact' && evt) {
-        const check = checkInteractForIncident(evt);
-        if (check) incidents.push(makeIncident(check.category, serverId, evt.playerIdentityId || '', tsMs, check.confidence, check.summary, check.evidence));
-      }
-
-      if (type === 'disconnect' && evt && typeof evt.playerId === 'number') {
-        const lastCombat = recentCombat.get(evt.playerId) || 0;
-        if (lastCombat && tsMs - lastCombat <= CONFIG.combatLogWindowMs) {
-          // The disconnect event's own identityId (evt.identityId) is the
-          // primary source here, not just identityByPlayer - a player who
-          // combat-logs within seconds of joining may disconnect before any
-          // snapshot ever captured their resolved identity, leaving the map
-          // empty even though the disconnect event itself reliably carries
-          // it (same assumption playerIndex.js's own disconnect handling
-          // already relies on). The map is only a fallback for older log
-          // formats that might not have carried identityId on disconnect.
-          incidents.push(makeIncident(
-            'combatLog', serverId, evt.identityId || identityByPlayer.get(evt.playerId) || '', tsMs,
-            70,
-            `Disconnected ${tsMs - lastCombat}ms after last combat activity`,
-            { msSinceCombat: tsMs - lastCombat }
-          ));
         }
       }
     }
+
+    if (type === 'hit' && evt) {
+      if (typeof evt.victimPlayerId === 'number') recentCombat.set(evt.victimPlayerId, tsMs);
+      if (typeof evt.shooterPlayerId === 'number') recentCombat.set(evt.shooterPlayerId, tsMs);
+      if (typeof evt.shooterPlayerId === 'number' && evt.weaponName) {
+        shotConfirmed.set(`${evt.shooterPlayerId}:${evt.weaponName}`, tsMs);
+      }
+
+      for (const check of checkHitForIncidents(evt)) {
+        // wallbang is attributed to the shooter (they're the one who took the
+        // shot through cover); godMode to the victim (their damage handling is
+        // what's wrong) - matches the identityId each category's evidence implies.
+        const owner = check.category === 'wallbang' ? evt.shooterIdentityId : evt.victimIdentityId;
+        incidents.push(makeIncident(check.category, serverId, owner || '', tsMs, check.confidence, check.summary, check.evidence));
+      }
+    }
+
+    if ((type === 'kill' || type === 'death') && evt) {
+      if (typeof evt.victimPlayerId === 'number') recentCombat.set(evt.victimPlayerId, tsMs);
+      if (typeof evt.killerPlayerId === 'number') recentCombat.set(evt.killerPlayerId, tsMs);
+
+      // Basic snap-angle check: killer's aim direction at the kill vs their last
+      // known snapshot aim direction shortly before it. A large instantaneous
+      // swing right at the kill, outside of a normal tracking curve, is the classic
+      // aimbot signal - this is a coarse first pass, not a statistical model.
+      if (typeof evt.killerPlayerId === 'number' && Array.isArray(evt.killerAimDir)) {
+        const prev = lastSnapshot.get(evt.killerPlayerId);
+        if (prev && Array.isArray(prev.aimDir) && tsMs - prev.tsMs < 1000) {
+          const angle = angleBetweenDeg(evt.killerAimDir, prev.aimDir);
+          if (angle > 45) {
+            incidents.push(makeIncident(
+              'aimSnap', serverId, evt.killerIdentityId || '', tsMs,
+              clampConfidence(((angle - 45) / 135) * 100),
+              `Aim snapped ${angle.toFixed(0)} degrees in the ${tsMs - prev.tsMs}ms before this kill`,
+              { angleDeg: angle, dtMs: tsMs - prev.tsMs, weaponName: evt.weaponName }
+            ));
+          }
+        }
+      }
+    }
+
+    if (type === 'interact' && evt) {
+      const check = checkInteractForIncident(evt);
+      if (check) incidents.push(makeIncident(check.category, serverId, evt.playerIdentityId || '', tsMs, check.confidence, check.summary, check.evidence));
+    }
+
+    if (type === 'disconnect' && evt && typeof evt.playerId === 'number') {
+      const lastCombat = recentCombat.get(evt.playerId) || 0;
+      if (lastCombat && tsMs - lastCombat <= CONFIG.combatLogWindowMs) {
+        // The disconnect event's own identityId (evt.identityId) is the
+        // primary source here, not just identityByPlayer - a player who
+        // combat-logs within seconds of joining may disconnect before any
+        // snapshot ever captured their resolved identity, leaving the map
+        // empty even though the disconnect event itself reliably carries
+        // it (same assumption playerIndex.js's own disconnect handling
+        // already relies on). The map is only a fallback for older log
+        // formats that might not have carried identityId on disconnect.
+        incidents.push(makeIncident(
+          'combatLog', serverId, evt.identityId || identityByPlayer.get(evt.playerId) || '', tsMs,
+          70,
+          `Disconnected ${tsMs - lastCombat}ms after last combat activity`,
+          { msSinceCombat: tsMs - lastCombat }
+        ));
+      }
+    }
+  }
+
+  let leftover = Buffer.alloc(0);
+  try {
+    for await (const chunk of stream) {
+      const buf = leftover.length ? Buffer.concat([leftover, chunk]) : chunk;
+      let start = 0;
+      let nl;
+      while ((nl = buf.indexOf(0x0a, start)) !== -1) {
+        processLine(buf.subarray(start, nl));
+        start = nl + 1;
+      }
+      leftover = start < buf.length ? Buffer.from(buf.subarray(start)) : Buffer.alloc(0);
+    }
+    if (leftover.length) processLine(leftover);
   } finally {
-    try { rl.close(); } catch { /* ignore */ }
     try { stream.destroy(); } catch { /* ignore */ }
     scanProgress.delete(serverId);
   }
