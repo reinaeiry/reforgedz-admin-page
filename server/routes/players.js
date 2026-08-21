@@ -6,7 +6,7 @@
 
 import express from 'express';
 import { searchPlayers, getPlayerProfile, getPlayerActivity } from '../lib/playerHistory.js';
-import { getIncidentsCached, summarizePlayerRisk } from '../lib/anticheat.js';
+import { getIncidentsCached, summarizePlayerRisk, getScanProgress } from '../lib/anticheat.js';
 
 export function buildPlayersRouter({ asyncRoute, DATA_DIR, listAllServers, sanitizeServerId, readJsonOrNull, path }) {
   const router = express.Router();
@@ -99,6 +99,45 @@ export function buildPlayersRouter({ asyncRoute, DATA_DIR, listAllServers, sanit
 
     res.json({ serverId: safeId, players: players.slice(0, cap), total: players.length, stale, computedAt });
   }));
+
+  // Progress feed for an in-flight scan, so the frontend can show a real bar
+  // instead of a spinner on the unavoidable first-ever scan of a server.
+  // Mirrors routes/bm-sse.js's header/heartbeat conventions but polls
+  // getScanProgress on an interval rather than subscribing to the event bus -
+  // this isn't event-driven, it's "ask the scanner how far through the file
+  // it is" every half second. Closes itself once the scan is no longer
+  // running (progress entry gone), whether that's because it finished or
+  // because no scan for this server was ever started.
+  router.get('/scan-progress', (req, res) => {
+    const serverId = String(req.query.serverId || '');
+    if (!serverId) { res.status(400).json({ error: 'missing serverId' }); return; }
+    const safeId = sanitizeServerId(serverId);
+
+    res.set({
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache, no-transform',
+      'Connection': 'keep-alive',
+      'X-Accel-Buffering': 'no',
+    });
+    res.flushHeaders?.();
+    res.write(`event: hello\ndata: {"ts":${Date.now()}}\n\n`);
+
+    const poll = setInterval(() => {
+      const progress = getScanProgress(safeId);
+      if (!progress) {
+        res.write(`event: done\ndata: {}\n\n`);
+        clearInterval(poll);
+        res.end();
+        return;
+      }
+      const percent = progress.totalBytes > 0
+        ? Math.min(99, Math.round((progress.bytesRead / progress.totalBytes) * 100))
+        : 0;
+      res.write(`event: progress\ndata: ${JSON.stringify({ ...progress, percent })}\n\n`);
+    }, 500);
+
+    req.on('close', () => clearInterval(poll));
+  });
 
   return router;
 }

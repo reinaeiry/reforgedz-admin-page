@@ -4,6 +4,7 @@ import {
   getServerIncidents,
   getServerRiskSummary,
   listServers,
+  requireApiBaseUrl,
   type Incident,
   type PlayerRisk,
   type ServerInfo,
@@ -96,12 +97,34 @@ export function AntiCheatPage() {
   const [err, setErr] = useState<string | null>(null);
   const [stale, setStale] = useState(false);
   const [expanded, setExpanded] = useState<string | null>(null);
+  const [scanPercent, setScanPercent] = useState<number | null>(null);
 
   useEffect(() => {
     let alive = true;
     listServers().then((s) => { if (alive) setServers(s); }).catch(() => {});
     return () => { alive = false; };
   }, []);
+
+  // Progress bar for the unavoidable first-ever scan of a server. Only shows
+  // anything once a scan is actually in flight server-side (getScanProgress
+  // returns null the instant a cached result exists), so this stays silent
+  // on every load after the first.
+  useEffect(() => {
+    if (!selectedServerId || !loading) { setScanPercent(null); return; }
+    const es = new EventSource(
+      `${requireApiBaseUrl()}/api/players/scan-progress?serverId=${encodeURIComponent(selectedServerId)}`,
+      { withCredentials: true } as EventSourceInit
+    );
+    es.addEventListener('progress', (ev) => {
+      try {
+        const data = JSON.parse((ev as MessageEvent).data);
+        setScanPercent(typeof data.percent === 'number' ? data.percent : null);
+      } catch { /* ignore */ }
+    });
+    es.addEventListener('done', () => setScanPercent(null));
+    es.onerror = () => { /* connection drop is fine, the main fetch is the source of truth */ };
+    return () => es.close();
+  }, [selectedServerId, loading]);
 
   useEffect(() => {
     if (!selectedServerId) { setPlayers(null); return; }
@@ -149,7 +172,25 @@ export function AntiCheatPage() {
       {!selectedServerId ? (
         <div className="muted">Select a server to view flagged players.</div>
       ) : loading ? (
-        <div className="muted">Scanning this server for the first time — this can take a while on a large log. Every load after this one will be instant.</div>
+        <div style={{ maxWidth: 420 }}>
+          <div className="muted" style={{ marginBottom: 8, fontSize: '.85rem' }}>
+            Scanning this server for the first time — every load after this one will be instant.
+          </div>
+          <div style={{ height: 8, background: 'var(--surface)', borderRadius: 4, overflow: 'hidden' }}>
+            <div
+              style={{
+                width: `${scanPercent ?? 4}%`,
+                height: '100%',
+                background: 'var(--accent, #cc1f1f)',
+                borderRadius: 4,
+                transition: 'width .3s ease',
+              }}
+            />
+          </div>
+          <div className="muted" style={{ marginTop: 6, fontSize: '.75rem', fontVariantNumeric: 'tabular-nums' }}>
+            {scanPercent !== null ? `${scanPercent}%` : 'Connecting…'}
+          </div>
+        </div>
       ) : err ? (
         <div className="bmError">{err}</div>
       ) : !players || players.length === 0 ? (

@@ -13,7 +13,17 @@
 // under-flagging) so the scanner is safe to run before those values are filled in.
 
 import { createReadStream } from 'node:fs';
+import { stat } from 'node:fs/promises';
 import readline from 'node:readline';
+
+// Live progress for in-flight scans, polled by the /scan-progress SSE route.
+// Keyed by serverId; entry is removed when the scan finishes (success or not),
+// so "no entry" doubles as "not currently scanning" from the route's POV.
+const scanProgress = new Map(); // serverId -> { bytesRead, totalBytes, startedAt }
+
+export function getScanProgress(serverId) {
+  return scanProgress.get(serverId) || null;
+}
 
 export const SEVERITY = Object.freeze({ LOW: 'low', MEDIUM: 'medium', HIGH: 'high' });
 
@@ -138,6 +148,13 @@ export async function scanServerForIncidents(serverId, filePath) {
   const identityByPlayer = new Map(); // playerId -> identityId (best-known)
   let terrain = null; // set from the one-time 'terrain' event; null until then
 
+  let totalBytes = 0;
+  try {
+    totalBytes = (await stat(filePath)).size;
+  } catch {
+    return incidents;
+  }
+
   let stream;
   try {
     stream = createReadStream(filePath, { encoding: 'utf8' });
@@ -145,9 +162,20 @@ export async function scanServerForIncidents(serverId, filePath) {
     return incidents;
   }
 
+  scanProgress.set(serverId, { bytesRead: 0, totalBytes, startedAt: Date.now() });
+  let bytesRead = 0;
+  let linesSinceProgressUpdate = 0;
+
   const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
   try {
     for await (const line of rl) {
+      bytesRead += Buffer.byteLength(line, 'utf8') + 1; // +1 for the stripped newline
+      linesSinceProgressUpdate += 1;
+      if (linesSinceProgressUpdate >= 2000) {
+        linesSinceProgressUpdate = 0;
+        scanProgress.set(serverId, { bytesRead, totalBytes, startedAt: scanProgress.get(serverId)?.startedAt || Date.now() });
+      }
+
       if (!line) continue;
       let outer;
       try { outer = JSON.parse(line); } catch { continue; }
@@ -347,6 +375,7 @@ export async function scanServerForIncidents(serverId, filePath) {
   } finally {
     try { rl.close(); } catch { /* ignore */ }
     try { stream.destroy(); } catch { /* ignore */ }
+    scanProgress.delete(serverId);
   }
 
   return incidents;
