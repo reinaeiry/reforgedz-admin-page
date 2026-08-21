@@ -43,7 +43,7 @@ export async function getServerIncidents(opts: {
   category?: string;
   minConfidence?: number;
   limit?: number;
-}): Promise<{ serverId: string; incidents: Incident[]; total: number; stale: boolean; computedAt: number }> {
+}): Promise<{ serverId: string; incidents: Incident[]; total: number; stale: boolean; scanning: boolean; computedAt: number }> {
   const params = new URLSearchParams({ serverId: opts.serverId });
   if (opts.identityId) params.set('identityId', opts.identityId);
   if (opts.category) params.set('category', opts.category);
