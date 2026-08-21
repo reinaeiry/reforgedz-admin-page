@@ -401,8 +401,16 @@ export async function scanServerForIncidents(serverId, filePath) {
       if (type === 'disconnect' && evt && typeof evt.playerId === 'number') {
         const lastCombat = recentCombat.get(evt.playerId) || 0;
         if (lastCombat && tsMs - lastCombat <= CONFIG.combatLogWindowMs) {
+          // The disconnect event's own identityId (evt.identityId) is the
+          // primary source here, not just identityByPlayer - a player who
+          // combat-logs within seconds of joining may disconnect before any
+          // snapshot ever captured their resolved identity, leaving the map
+          // empty even though the disconnect event itself reliably carries
+          // it (same assumption playerIndex.js's own disconnect handling
+          // already relies on). The map is only a fallback for older log
+          // formats that might not have carried identityId on disconnect.
           incidents.push(makeIncident(
-            'combatLog', serverId, identityByPlayer.get(evt.playerId) || '', tsMs,
+            'combatLog', serverId, evt.identityId || identityByPlayer.get(evt.playerId) || '', tsMs,
             70,
             `Disconnected ${tsMs - lastCombat}ms after last combat activity`,
             { msSinceCombat: tsMs - lastCombat }
