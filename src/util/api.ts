@@ -88,8 +88,10 @@ export type PlayerSearchResult = {
 };
 
 // query='' returns everyone, ranked by all-time risk score - not search-gated.
-export async function searchPlayers(query: string, limit = 50, offset = 0): Promise<{ results: PlayerSearchResult[] }> {
+// Banned players are excluded unless includeBanned is set.
+export async function searchPlayers(query: string, limit = 50, offset = 0, includeBanned = false): Promise<{ results: PlayerSearchResult[] }> {
   const params = new URLSearchParams({ q: query, limit: String(limit), offset: String(offset) });
+  if (includeBanned) params.set('includeBanned', '1');
   const res = await fetch(`${requireApiBaseUrl()}/api/players/search?${params.toString()}`, { credentials: 'include' });
   return jsonOk(res, 'Failed to load players');
 }
@@ -107,6 +109,15 @@ export type PlayerServerStats = {
   lastSeen: number | null;
 };
 
+export type PlayerBanInfo = {
+  name: string;
+  reason: string;
+  timestamp: number; // Unix seconds, not ms
+  duration: number;
+  bannedBy: string;
+  active: boolean;
+};
+
 export type PlayerProfile = {
   identityId: string;
   displayName: string;
@@ -117,6 +128,7 @@ export type PlayerProfile = {
   totals: { kills: number; deaths: number; hits: number; shots: number; sessions: number; playtimeMs: number; riskScore: number; flaggedCount: number };
   highestSeverity: IncidentSeverity | null;
   perServer: PlayerServerStats[];
+  ban: PlayerBanInfo | null;
 };
 
 export async function getPlayerProfile(identityId: string): Promise<PlayerProfile | null> {

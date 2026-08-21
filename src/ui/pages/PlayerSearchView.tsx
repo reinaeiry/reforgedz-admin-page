@@ -113,6 +113,9 @@ function PlayerProfilePanel({ identityId, onBack }: { identityId: string; onBack
               {profile.highestSeverity} · {profile.totals.flaggedCount} flagged
             </span>
           ) : null}
+          {profile.ban?.active ? (
+            <span className="bmBadge bmBadge-warn">BANNED</span>
+          ) : null}
         </div>
         <div className="muted" style={{ fontSize: '.8rem' }}>
           <code className="bmGuid">{profile.identityId}</code>
@@ -123,6 +126,12 @@ function PlayerProfilePanel({ identityId, onBack }: { identityId: string; onBack
           {' '}Last seen {profile.lastSeen ? new Date(profile.lastSeen).toLocaleString() : '—'} ·
           {' '}Servers: {profile.servers.map((s) => s.name).join(', ') || '—'}
         </div>
+        {profile.ban ? (
+          <div className="bmError" style={{ marginTop: 8, fontSize: '.8rem' }}>
+            {profile.ban.active ? 'Banned' : 'Previously banned (expired)'} by <strong>{profile.ban.bannedBy || 'unknown'}</strong> on{' '}
+            {new Date(profile.ban.timestamp * 1000).toLocaleString()} — {profile.ban.reason || 'no reason recorded'}
+          </div>
+        ) : null}
       </header>
 
       <div className="bmStats" style={{ marginBottom: 20 }}>
@@ -217,18 +226,20 @@ export function PlayerSearchView({ initialIdentityId }: { initialIdentityId?: st
   const [results, setResults] = useState<PlayerSearchResult[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [offset, setOffset] = useState(0);
+  const [includeBanned, setIncludeBanned] = useState(false);
   const [selected, setSelected] = useState<string | null>(initialIdentityId || null);
 
   // Every player, all-time, ranked by risk score - no minimum query length,
   // an empty query is the default "show everyone" state. Typing narrows by
-  // name without changing the ranking.
+  // name without changing the ranking. Banned players are excluded by
+  // default ("should disappear if banned") unless includeBanned is checked.
   useEffect(() => {
     setLoading(true);
     const handle = setTimeout(() => {
-      searchPlayers(query, PAGE_SIZE, offset).then((r) => { setResults(r.results); setLoading(false); }).catch(() => setLoading(false));
+      searchPlayers(query, PAGE_SIZE, offset, includeBanned).then((r) => { setResults(r.results); setLoading(false); }).catch(() => setLoading(false));
     }, query ? 300 : 0);
     return () => clearTimeout(handle);
-  }, [query, offset]);
+  }, [query, offset, includeBanned]);
 
   if (selected) {
     return <PlayerProfilePanel identityId={selected} onBack={() => setSelected(null)} />;
@@ -236,14 +247,20 @@ export function PlayerSearchView({ initialIdentityId }: { initialIdentityId?: st
 
   return (
     <div>
-      <input
-        className="input"
-        style={{ maxWidth: 360, marginBottom: 16 }}
-        placeholder="Filter by player name (optional)…"
-        value={query}
-        onChange={(e) => { setQuery(e.target.value); setOffset(0); }}
-        autoFocus
-      />
+      <div className="row" style={{ gap: 14, alignItems: 'center', marginBottom: 16 }}>
+        <input
+          className="input"
+          style={{ maxWidth: 360 }}
+          placeholder="Filter by player name (optional)…"
+          value={query}
+          onChange={(e) => { setQuery(e.target.value); setOffset(0); }}
+          autoFocus
+        />
+        <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: '.8rem', cursor: 'pointer' }}>
+          <input type="checkbox" checked={includeBanned} onChange={(e) => { setIncludeBanned(e.target.checked); setOffset(0); }} />
+          <span className="muted">Show banned players</span>
+        </label>
+      </div>
 
       {loading && !results ? (
         <div className="muted">Loading…</div>

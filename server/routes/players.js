@@ -15,17 +15,23 @@ import { getIncidentsCached, summarizePlayerRisk, getScanProgress } from '../lib
 // scanning (below) still reads the raw log directly since incidents aren't
 // indexed, only the underlying kill/death/hit/interact events are.
 
-export function buildPlayersRouter({ asyncRoute, DATA_DIR, sanitizeServerId, path }) {
+export function buildPlayersRouter({ asyncRoute, DATA_DIR, sanitizeServerId, path, getBanInfo, getActiveBannedIdentityIds }) {
   const router = express.Router();
 
   // No-query returns everyone, ranked by permanent risk score - this is the
   // "all inclusive" list, not a search-gated one. A query narrows it by name
-  // without changing the ranking.
+  // without changing the ranking. Banned players are excluded by default
+  // ("should disappear if banned") - pass includeBanned=1 to still see them,
+  // e.g. for auditing an old ban rather than losing the record entirely.
   router.get('/search', asyncRoute(async (req, res) => {
     const q = req.query.q ? String(req.query.q) : '';
     const limit = req.query.limit ? Number(req.query.limit) : 50;
     const offset = req.query.offset ? Number(req.query.offset) : 0;
-    const results = listPlayersIndexed({ query: q, limit: Math.min(Math.max(limit, 1), 200), offset: Math.max(offset, 0) });
+    const includeBanned = req.query.includeBanned === '1';
+    const excludeIds = includeBanned ? [] : getActiveBannedIdentityIds();
+    const results = listPlayersIndexed({
+      query: q, limit: Math.min(Math.max(limit, 1), 200), offset: Math.max(offset, 0), excludeIds,
+    });
     res.json({ results });
   }));
 
@@ -34,6 +40,7 @@ export function buildPlayersRouter({ asyncRoute, DATA_DIR, sanitizeServerId, pat
     if (!identityId) { res.status(400).json({ error: 'missing identityId' }); return; }
     const profile = getPlayerProfileIndexed(identityId);
     if (!profile) { res.status(404).json({ error: 'not found' }); return; }
+    profile.ban = getBanInfo(identityId);
     res.json(profile);
   }));
 

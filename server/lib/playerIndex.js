@@ -302,11 +302,18 @@ const SEVERITY_FROM_RANK = { 3: SEVERITY.HIGH, 2: SEVERITY.MEDIUM, 1: SEVERITY.L
 // permanent risk score first (severity x confidence, accumulated by
 // bumpRisk) - not gated behind typing a search query. `query`, when given,
 // filters by name on top of the same ranking; it's a refinement, not a gate.
-export function listPlayersIndexed({ query, limit, offset } = {}) {
+export function listPlayersIndexed({ query, limit, offset, excludeIds } = {}) {
   const hasQuery = typeof query === 'string' && query.trim().length >= 2;
-  const nameFilter = hasQuery
-    ? `WHERE p.identity_id IN (SELECT DISTINCT identity_id FROM player_names WHERE LOWER(name) LIKE ?)`
-    : '';
+  const excludeList = Array.isArray(excludeIds) ? excludeIds.filter(Boolean) : [];
+
+  const conditions = [];
+  if (hasQuery) conditions.push(`p.identity_id IN (SELECT DISTINCT identity_id FROM player_names WHERE LOWER(name) LIKE ?)`);
+  if (excludeList.length) conditions.push(`p.identity_id NOT IN (${excludeList.map(() => '?').join(',')})`);
+  const whereClause = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+
+  const params = [];
+  if (hasQuery) params.push(`%${query.trim().toLowerCase()}%`);
+  if (excludeList.length) params.push(...excludeList);
 
   const rows = db.prepare(`
     SELECT
@@ -320,14 +327,22 @@ export function listPlayersIndexed({ query, limit, offset } = {}) {
       COALESCE(SUM(pss.deaths), 0) AS deaths,
       COALESCE(SUM(pss.hits), 0) AS hits,
       COALESCE(SUM(pss.sessions), 0) AS sessions,
-      COALESCE(SUM(pss.playtime_ms), 0) AS playtimeMs
+      COALESCE(SUM(pss.playtime_ms), 0) AS playtimeMs,
+      COALESCE(SUM(pss.kills + pss.deaths + pss.hits + pss.sessions), 0) AS activity
     FROM players p
     LEFT JOIN player_server_stats pss ON pss.identity_id = p.identity_id
-    ${nameFilter}
+    ${whereClause}
     GROUP BY p.identity_id
-    ORDER BY riskScore DESC, lastSeen DESC
+    -- riskScore is the primary sort, but while hit/interact capture isn't
+    -- deployed everywhere it's 0 for literally everyone, which degraded the
+    -- ranking to pure recency - surfacing players who joined for two minutes
+    -- and left, making the whole list look empty even though most players
+    -- have real kill/death history. activity (kills+deaths+hits+sessions) as
+    -- the second sort key means substantive profiles surface even when no
+    -- one has been flagged yet; lastSeen is only the final tiebreaker now.
+    ORDER BY riskScore DESC, activity DESC, lastSeen DESC
     LIMIT ? OFFSET ?
-  `).all(...(hasQuery ? [`%${query.trim().toLowerCase()}%`] : []), limit || 50, offset || 0);
+  `).all(...params, limit || 50, offset || 0);
 
   return rows.map((r) => ({
     identityId: r.identityId,

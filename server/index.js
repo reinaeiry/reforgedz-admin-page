@@ -1683,7 +1683,7 @@ app.use('/api/bm', bmRouter);
 const ticketsRouter = buildTicketsRouter({ requireAuth, asyncRoute });
 app.use('/api/tickets', ticketsRouter);
 
-const playersRouter = buildPlayersRouter({ asyncRoute, DATA_DIR, listAllServers, sanitizeServerId, readJsonOrNull, path });
+const playersRouter = buildPlayersRouter({ asyncRoute, DATA_DIR, listAllServers, sanitizeServerId, readJsonOrNull, path, getBanInfo, getActiveBannedIdentityIds });
 app.use('/api/players', requireAuth, requireTool('players'), playersRouter);
 
 // Tail the ticket-bot's SSE stream so events flow into our shared eventBus
@@ -3010,6 +3010,77 @@ async function sshReadFileWithHash(server, remotePath) {
   try { config = JSON.parse(text); }
   catch { throw new Error('config_parse_failed'); }
   return { config, hash };
+}
+
+// ─── Ban index (ReforgedZBans.json) ────────────────────────────────────────
+// Each Reforger server keeps its own copy of ReforgedZBans.json under
+// profile/profile/ (synced across servers by an existing external process -
+// .rzsync-* timestamped files alongside it confirm this), read the same way
+// GM Management already reads config.json: listReforgerServers() for the
+// live server list, sshReadFile() for the actual file. Merged into one
+// in-memory map keyed by uid (== our identityId) since bans are effectively
+// global, not per-server. Refreshed on boot and periodically - this is a
+// cache, not a live lookup, so a fresh ban won't show up in the Players list
+// until the next refresh (same tradeoff the adminmgr admin-list cache already
+// makes for the same reason: don't SSH to 6 boxes on every page load).
+let banIndexCache = new Map(); // uid -> { name, reason, timestamp, duration, bannedBy, active }
+let banIndexLastRefreshMs = 0;
+let banIndexRefreshing = false;
+
+function banIsActive(ban) {
+  if (!ban.duration || ban.duration <= 0) return true; // duration 0 == permanent, per every real example seen
+  // UNVERIFIED: no real duration>0 example was available to confirm the unit.
+  // Assuming seconds (matching timestamp, which is Unix seconds) - if temp
+  // bans use a different unit this will under/over-estimate expiry.
+  return (ban.timestamp + ban.duration) * 1000 > Date.now();
+}
+
+async function refreshBanIndex() {
+  if (banIndexRefreshing) return;
+  banIndexRefreshing = true;
+  try {
+    const servers = await listReforgerServers();
+    const merged = new Map();
+    for (const server of servers) {
+      const banPath = `${ADMIN_MGR_VOLUMES_ROOT}/${server.volumeUuid}/profile/profile/ReforgedZBans.json`;
+      try {
+        const data = await sshReadFile(server, banPath);
+        const bans = Array.isArray(data?.bans) ? data.bans : [];
+        for (const b of bans) {
+          if (!b || typeof b.uid !== 'string' || !b.uid) continue;
+          const existing = merged.get(b.uid);
+          if (existing && existing.timestamp >= b.timestamp) continue; // keep the most recent record per uid
+          merged.set(b.uid, {
+            name: b.name || '', reason: b.reason || '', timestamp: b.timestamp || 0,
+            duration: b.duration || 0, bannedBy: b.bannedBy || '',
+          });
+        }
+      } catch (e) {
+        console.warn(`[banIndex] read failed for ${server.tag || server.pteroId}: ${e.message}`);
+      }
+    }
+    for (const [uid, ban] of merged) merged.set(uid, { ...ban, active: banIsActive(ban) });
+    banIndexCache = merged;
+    banIndexLastRefreshMs = Date.now();
+    console.log(`[banIndex] refreshed: ${banIndexCache.size} bans across ${servers.length} servers`);
+  } catch (e) {
+    console.warn(`[banIndex] refresh failed: ${e.message}`);
+  } finally {
+    banIndexRefreshing = false;
+  }
+}
+
+function getBanInfo(identityId) {
+  return banIndexCache.get(identityId) || null;
+}
+
+// Only currently-active bans (duration:0 permanent, or not yet expired) -
+// listPlayersIndexed excludes these ids at the SQL level so LIMIT/OFFSET
+// pagination stays correct (filtering post-query would short-count pages).
+function getActiveBannedIdentityIds() {
+  const out = [];
+  for (const [uid, ban] of banIndexCache) if (ban.active) out.push(uid);
+  return out;
 }
 
 // Atomic read-modify-write of config.json, immune to the cross-process race with
@@ -4732,6 +4803,11 @@ const server = app.listen(PORT, () => {
 
     // Periodic name resolution so newly-spotted admins get filled in without user action.
     setInterval(() => maybeAutoBackfill(), 30 * 60 * 1000);
+
+    // Ban index shares the same Pterodactyl/SSH plumbing, so it's gated on
+    // the same credential check. Refresh every 5 minutes.
+    refreshBanIndex().catch(() => {});
+    setInterval(() => refreshBanIndex(), 5 * 60 * 1000);
   }
 
   // Warm caches on boot so the replay tool is instant on demand. The recent cache
