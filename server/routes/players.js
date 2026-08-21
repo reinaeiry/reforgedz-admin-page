@@ -5,15 +5,35 @@
 // since this is a single flat permission, not a category system like tickets.
 
 import express from 'express';
-import { listPlayersIndexed, getPlayerProfileIndexed, getPlayerTimelineIndexed } from '../lib/playerIndex.js';
+import { listPlayersIndexed, getPlayerProfileIndexed, getPlayerTimelineIndexed, listIncidentsIndexed } from '../lib/playerIndex.js';
 import { getIncidentsCached, summarizePlayerRisk, getScanProgress } from '../lib/anticheat.js';
+
+// The live scanner (getIncidentsCached) only ever sees whatever's still in
+// events.ndjson - once the 7-day retention sweep trims a line, any incident
+// on it is gone from that source forever, which is exactly what "all time"
+// flags require it not to do. listIncidentsIndexed reads the permanent SQLite
+// index instead (fed forever by recordEvent, never trimmed) for the subset of
+// categories cheap enough to accumulate per-event (wallbang/godMode/
+// interactRange); the rest (speedhack, noclip, aimSnap, ammo, ...) still only
+// exist in the live scan, bound by retention, since they need rolling
+// multi-event state the permanent indexer doesn't keep. Merging both here
+// means a caller always sees everything permanently known, plus whatever
+// multi-event-only categories are still inside the live window - not one or
+// the other. Deduped on (identityId, category, tsMs): the same wallbang, say,
+// shows up in both sources while it's still within retention, and should
+// count once, not twice.
+function mergeIncidents(liveIncidents, indexedIncidents) {
+  const seen = new Set(indexedIncidents.map((i) => `${i.identityId}|${i.category}|${i.tsMs}`));
+  const extra = liveIncidents.filter((i) => !seen.has(`${i.identityId}|${i.category}|${i.tsMs}`));
+  return [...indexedIncidents, ...extra];
+}
 
 // search/profile/activity now read the permanent SQLite index (playerIndex.js)
 // instead of scanning raw events.ndjson - orders of magnitude faster, and
 // survives the 7-day retention trim on the raw logs. The old raw-scan
-// versions (lib/playerHistory.js) are left in place but unused here; incident
-// scanning (below) still reads the raw log directly since incidents aren't
-// indexed, only the underlying kill/death/hit/interact events are.
+// versions (lib/playerHistory.js) are left in place but unused here; incidents
+// (below) merge that same permanent index with a live raw-log scan - see
+// mergeIncidents above.
 
 export function buildPlayersRouter({ asyncRoute, DATA_DIR, sanitizeServerId, path, getBanInfo, getActiveBannedIdentityIds }) {
   const router = express.Router();
@@ -72,16 +92,17 @@ export function buildPlayersRouter({ asyncRoute, DATA_DIR, sanitizeServerId, pat
     const safeId = sanitizeServerId(serverId);
     const filePath = path.join(DATA_DIR, 'servers', safeId, 'events.ndjson');
 
-    const { incidents: all, stale, scanning, computedAt } = await getIncidentsCached(safeId, filePath);
-    let incidents = all;
+    const { incidents: live, stale, scanning, computedAt } = await getIncidentsCached(safeId, filePath);
 
     const identityId = req.query.identityId ? String(req.query.identityId) : null;
-    if (identityId) incidents = incidents.filter((i) => i.identityId === identityId);
-
     const category = req.query.category ? String(req.query.category) : null;
-    if (category) incidents = incidents.filter((i) => i.category === category);
-
     const minConfidence = req.query.minConfidence ? Number(req.query.minConfidence) : 0;
+
+    const indexed = listIncidentsIndexed(safeId, { identityId, category, minConfidence, limit: 2000 });
+    let incidents = mergeIncidents(live, indexed);
+
+    if (identityId) incidents = incidents.filter((i) => i.identityId === identityId);
+    if (category) incidents = incidents.filter((i) => i.category === category);
     if (minConfidence > 0) incidents = incidents.filter((i) => i.confidence >= minConfidence);
 
     incidents.sort((a, b) => b.tsMs - a.tsMs);
@@ -100,8 +121,9 @@ export function buildPlayersRouter({ asyncRoute, DATA_DIR, sanitizeServerId, pat
     const safeId = sanitizeServerId(serverId);
     const filePath = path.join(DATA_DIR, 'servers', safeId, 'events.ndjson');
 
-    const { incidents, stale, scanning, computedAt } = await getIncidentsCached(safeId, filePath);
-    const players = summarizePlayerRisk(incidents);
+    const { incidents: live, stale, scanning, computedAt } = await getIncidentsCached(safeId, filePath);
+    const indexed = listIncidentsIndexed(safeId, { limit: 2000 });
+    const players = summarizePlayerRisk(mergeIncidents(live, indexed));
 
     const limit = req.query.limit ? Number(req.query.limit) : 100;
     const cap = Math.min(Math.max(limit, 1), 500);

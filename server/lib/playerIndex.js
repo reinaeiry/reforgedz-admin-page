@@ -391,6 +391,50 @@ export function getPlayerProfileIndexed(identityId) {
   };
 }
 
+// Permanent incidents for a server - survives the raw log's 7-day retention
+// trim, unlike the live scanner (anticheat.js's scanServerForIncidents), which
+// only ever sees whatever's still in events.ndjson. Only covers the categories
+// bumpRisk actually accumulates (wallbang, godMode, interactRange - the
+// single-event checks; see recordEvent's 'hit'/'interact' branches). The
+// multi-event categories (speedhack, noclip, aimSnap, ammo, ...) never make it
+// here and stay live-scan-only, bound by retention - routes/players.js merges
+// both sources so a caller sees "whatever's permanently known, plus whatever's
+// still in the live window" rather than picking one.
+const PERMANENT_INCIDENT_TYPES = Object.freeze(['wallbang', 'godMode', 'interactRange']);
+
+export function listIncidentsIndexed(serverId, { identityId, category, minConfidence, limit } = {}) {
+  const types = category ? PERMANENT_INCIDENT_TYPES.filter((t) => t === category) : PERMANENT_INCIDENT_TYPES;
+  if (!types.length) return [];
+
+  const conditions = ['server_id = ?', `type IN (${types.map(() => '?').join(',')})`];
+  const params = [serverId, ...types];
+  if (identityId) { conditions.push('identity_id = ?'); params.push(identityId); }
+
+  const rows = db.prepare(`
+    SELECT identity_id AS identityId, ts_ms AS tsMs, type AS category, detail_json AS detailJson
+    FROM player_events
+    WHERE ${conditions.join(' AND ')}
+    ORDER BY ts_ms DESC
+    LIMIT ?
+  `).all(...params, Math.min(Math.max(limit || 500, 1), 2000));
+
+  return rows
+    .map((r) => {
+      const detail = JSON.parse(r.detailJson || '{}');
+      return {
+        category: r.category,
+        severity: SEVERITY_OF[r.category] || SEVERITY.LOW,
+        confidence: typeof detail.confidence === 'number' ? detail.confidence : 0,
+        serverId,
+        identityId: r.identityId,
+        tsMs: r.tsMs,
+        summary: detail.summary || '',
+        evidence: detail,
+      };
+    })
+    .filter((i) => !minConfidence || i.confidence >= minConfidence);
+}
+
 export function getPlayerTimelineIndexed(identityId, { serverId, types, beforeTsMs, limit }) {
   const conditions = ['identity_id = ?'];
   const params = [identityId];

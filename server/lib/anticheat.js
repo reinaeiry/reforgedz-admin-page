@@ -240,7 +240,12 @@ export async function scanServerForIncidents(serverId, filePath) {
       if (!p || typeof p.tsMs !== 'number') continue;
       const type = p.type;
       const evt = p.event;
-      const tsMs = p.tsMs;
+      // outer.receivedAt (this server's own Date.now() at ingest), NOT p.tsMs -
+      // the exporter's tsMs is milliseconds since the mod started, not wall-clock
+      // time, so incidents timestamped from it land near the Unix epoch. Same
+      // bug as the ingest-path fix in index.js, just in this separate reader -
+      // falls back to p.tsMs only for old records written before receivedAt existed.
+      const tsMs = typeof outer.receivedAt === 'number' ? outer.receivedAt : p.tsMs;
 
       if (type === 'terrain' && evt && Array.isArray(evt.bbMin) && Array.isArray(evt.bbMax) && Array.isArray(evt.heights)) {
         terrain = { bbMin: evt.bbMin, bbMax: evt.bbMax, gridW: evt.gridW, gridH: evt.gridH, heights: evt.heights };

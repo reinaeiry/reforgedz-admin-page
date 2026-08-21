@@ -217,7 +217,7 @@ function FlaggedPlayersView() {
       ) : err ? (
         <div className="bmError">{err}</div>
       ) : !players || players.length === 0 ? (
-        <div className="muted">No flagged players on this server right now.</div>
+        <div className="muted">No flagged players on this server — this covers this server's full history, not just recent activity.</div>
       ) : (
         <table className="bmTable">
           <thead>
