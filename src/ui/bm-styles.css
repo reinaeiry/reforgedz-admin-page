@@ -158,6 +158,8 @@
 .bmProfile-slot { opacity: .65; }
 .bmBadge { background: var(--surface-3); border: 1px solid var(--border); padding: 1px 6px; border-radius: 3px; font-size: .65rem; color: var(--text-dim); text-transform: uppercase; letter-spacing: 1px; }
 .bmBadge-warn { border-color: rgba(239,68,68,.5); color: #fca5a5; background: rgba(239,68,68,.08); }
+.bmBadge-medium { border-color: rgba(241,196,15,.5); color: #f9e28e; background: rgba(241,196,15,.08); }
+.bmBadge-low { border-color: rgba(46,204,113,.5); color: #8fe4b0; background: rgba(46,204,113,.08); }
 
 /* ─── Game logs ────────────────────────────────────────────────────── */
 .bmLogs { display: flex; flex-direction: column; gap: 10px; }

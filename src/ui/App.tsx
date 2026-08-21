@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Navigate, Route, Routes } from 'react-router-dom';
 import { ReplayToolPage } from './pages/ReplayToolPage';
+import { AntiCheatPage } from './pages/AntiCheatPage';
 import { AdminManagerPage } from './pages/AdminManagerPage';
 import { BattleMetricsPage as ModerationPage } from './pages/BattleMetricsPage';
 import { PlayerProfilePage } from './pages/PlayerProfilePage';
@@ -43,6 +44,7 @@ export function App() {
           }
         >
           <Route path="/replay" element={<ReplayToolPage />} />
+          <Route path="/players" element={<AntiCheatPage />} />
           <Route path="/admins" element={<AdminManagerPage />} />
           <Route path="/moderation" element={<ModerationPage />} />
           {/* Back-compat for any bookmark or in-app link still using /battlemetrics */}

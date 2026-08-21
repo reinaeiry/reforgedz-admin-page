@@ -6,6 +6,7 @@ type NavItem = { to: string; label: string; visible: () => boolean; group: 'mode
 
 const NAV_ITEMS: NavItem[] = [
   { to: '/replay', label: 'Replay', visible: () => hasToolAccess('replay'), group: 'moderation' },
+  { to: '/players', label: 'Anti-Cheat', visible: () => hasToolAccess('players'), group: 'moderation' },
   { to: '/moderation', label: 'Moderation', visible: () => hasToolAccess('moderation'), group: 'moderation' },
   { to: '/tickets', label: 'Tickets', visible: () => hasToolAccess('tickets'), group: 'moderation' },
   { to: '/admins', label: 'GM Management', visible: () => hasToolAccess('gmManagement'), group: 'management' },

@@ -16,6 +16,7 @@ import * as bmClient from './lib/battlemetrics.js';
 import { buildBmRouter } from './routes/bm.js';
 import bmWebhookRouter from './routes/bm-webhook.js';
 import { buildTicketsRouter } from './routes/tickets.js';
+import { buildPlayersRouter } from './routes/players.js';
 import * as ticketEventRelay from './lib/ticketEventRelay.js';
 import { buildBmSseRouter } from './routes/bm-sse.js';
 import { postAuditEvent, ctxFromReq } from './lib/bmAudit.js';
@@ -1679,6 +1680,9 @@ app.use('/api/bm', bmRouter);
 
 const ticketsRouter = buildTicketsRouter({ requireAuth, asyncRoute });
 app.use('/api/tickets', ticketsRouter);
+
+const playersRouter = buildPlayersRouter({ asyncRoute, DATA_DIR, listAllServers, sanitizeServerId, readJsonOrNull, path });
+app.use('/api/players', requireAuth, requireTool('players'), playersRouter);
 
 // Tail the ticket-bot's SSE stream so events flow into our shared eventBus
 // (which bmSseRouter pipes to admin SPA clients over /api/bm/events).

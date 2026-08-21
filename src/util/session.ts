@@ -12,6 +12,7 @@ export type AdminPerms = {
   moderation: boolean;
   tickets: boolean;
   dev: boolean;
+  players: boolean;
 };
 
 export type TranscriptPerms = { read: boolean; stats: boolean; restricted: boolean };

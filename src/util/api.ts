@@ -21,6 +21,52 @@ export async function listServers(): Promise<ServerInfo[]> {
   return jsonOk<ServerInfo[]>(res, 'Failed to list servers');
 }
 
+// ─── Anti-cheat incidents (server/lib/anticheat.js) ────────────────────────
+
+export type IncidentSeverity = 'low' | 'medium' | 'high';
+
+export type Incident = {
+  category: string;
+  severity: IncidentSeverity;
+  label: string;
+  confidence: number;
+  serverId: string;
+  identityId: string;
+  tsMs: number;
+  summary: string;
+  evidence: Record<string, unknown>;
+};
+
+export async function getServerIncidents(opts: {
+  serverId: string;
+  identityId?: string;
+  category?: string;
+  minConfidence?: number;
+  limit?: number;
+}): Promise<{ serverId: string; incidents: Incident[]; total: number }> {
+  const params = new URLSearchParams({ serverId: opts.serverId });
+  if (opts.identityId) params.set('identityId', opts.identityId);
+  if (opts.category) params.set('category', opts.category);
+  if (opts.minConfidence) params.set('minConfidence', String(opts.minConfidence));
+  if (opts.limit) params.set('limit', String(opts.limit));
+  const res = await fetch(`${requireApiBaseUrl()}/api/players/incidents?${params.toString()}`, { credentials: 'include' });
+  return jsonOk(res, 'Failed to load incidents');
+}
+
+export type PlayerSearchResult = {
+  identityId: string;
+  displayName: string;
+  alsoKnownAs: string[];
+  lastSeen: number | null;
+  servers: ServerInfo[];
+};
+
+export async function searchPlayers(query: string, limit = 25): Promise<{ results: PlayerSearchResult[] }> {
+  const params = new URLSearchParams({ q: query, limit: String(limit) });
+  const res = await fetch(`${requireApiBaseUrl()}/api/players/search?${params.toString()}`, { credentials: 'include' });
+  return jsonOk(res, 'Failed to search players');
+}
+
 // ─── Replay ─────────────────────────────────────────────────────────────────
 
 export type ReplayStatus = {
