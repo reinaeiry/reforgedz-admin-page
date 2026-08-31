@@ -256,11 +256,79 @@ export function buildBmRouter({ requirePerm, getPteroServers, asyncRoute }) {
     });
     publish({ type: 'ban.create', payload: { by: req.rzUser.username, playerId, reason } });
 
-    // Dual-write to game-server config is a TODO that mirrors the existing
-    // admin-config SSH path used by GM Management. We leave it as a marker
-    // in the audit log for now; concrete implementation lives with the
-    // adminmgr code path.
-    res.json({ ban: created, dualWritten: false });
+    // A BattleMetrics ban is only a record. It reaches a Reforger server over
+    // RCON, which has been dead for us since 1.8, so on its own it keeps nobody
+    // out. Enforce through the ipban controller, which writes the identity ban
+    // into every server's ReforgedZBans.json.
+    let enforced = { ok: false, reason: 'controller_not_configured' };
+    if (ipBans.isEnabled()) {
+      try {
+        const guid = await resolveReforgerGuid({ playerId, guid: req.body?.guid });
+        if (!guid) {
+          enforced = { ok: false, reason: 'no_reforger_guid' };
+        } else {
+          await ipBans.accountBan({
+            uid: guid,
+            name: req.body?.playerName || '',
+            reason: reason || 'Banned from admin site',
+            banned_by: req.rzUser.username,
+            origin_server: 'admin.reforgedz.net'
+          });
+          enforced = { ok: true, guid };
+        }
+      } catch (err) {
+        // Never fail the request over this - the BM ban already succeeded and
+        // the admin needs to see that. Surface it instead so they know the ban
+        // is recorded but not yet enforced.
+        console.warn('[bm] central enforcement failed:', err.message);
+        enforced = { ok: false, reason: String(err.message).slice(0, 200) };
+      }
+    }
+
+    postAuditEvent({
+      actorUsername: req.rzUser.username,
+      action: 'rz.ban.enforce',
+      detail: { playerId, enforced },
+      ctx: ctxFromReq(req)
+    });
+
+    res.json({ ban: created, dualWritten: enforced.ok, enforced });
+  }));
+
+  // Resolve a player's Reforger UUID, which is what our ban system keys on.
+  // BM's `identifiers` in a ban request are BM identifier IDs, not the GUID, so
+  // when the caller has not supplied one we read it off the player record.
+  async function resolveReforgerGuid({ playerId, guid }) {
+    if (guid && /^[0-9a-f-]{36}$/i.test(guid)) return guid.toLowerCase();
+    if (!playerId) return null;
+    const player = await bm.getPlayer(playerId, { include: 'identifier' });
+    const ids = (player?.included || []).filter((i) => i?.type === 'identifier');
+    const match = ids
+      .filter((i) => i?.attributes?.type === 'reforgerUUID')
+      .sort((a, b) => String(b?.attributes?.lastSeen || '').localeCompare(String(a?.attributes?.lastSeen || '')))[0];
+    return match?.attributes?.identifier?.toLowerCase() || null;
+  }
+
+  // Lift our identity ban. Keyed on the Reforger GUID because that is what the
+  // ban files hold; the BM ban is deleted separately via DELETE /bans/:id.
+  router.post('/account-unban', requirePerm('ban'), asyncRoute(async (req, res) => {
+    if (!ipBans.isEnabled()) {
+      return res.status(503).json({ error: 'ipban_controller_not_configured' });
+    }
+    const { guid, playerId, playerName } = req.body || {};
+    const uid = await resolveReforgerGuid({ playerId, guid });
+    if (!uid) return res.status(400).json({ error: 'no_reforger_guid' });
+
+    await ipBans.accountUnban({ uid, name: playerName || '', by: req.rzUser.username });
+    postAuditEvent({
+      actorUsername: req.rzUser.username,
+      action: 'rz.ban.lift',
+      detail: { uid, playerId: playerId || null },
+      ctx: ctxFromReq(req)
+    });
+    publish({ type: 'ban.lift', payload: { by: req.rzUser.username, uid } });
+    // Takes effect on each server at its next restart, up to 4 hours away.
+    res.json({ ok: true, uid, appliesAt: 'next server restart' });
   }));
 
   // Pull a numeric HTTP status off our `bm <code>: ...` error messages.

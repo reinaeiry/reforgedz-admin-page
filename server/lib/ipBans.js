@@ -80,3 +80,26 @@ export async function addBan({ ip, username, be_guid, reason, banned_by }) {
 export async function removeBan(ip) {
   return send('DELETE', `/api/admin/ipbans/${encodeURIComponent(ip)}`);
 }
+
+// ─── Account (identity) bans ──────────────────────────────────────────────
+// These are what actually keep a player out of the game. A BattleMetrics ban
+// only reaches a Reforger server over RCON, which we have not had since 1.8,
+// so BM is a record and the controller is the enforcement.
+
+export async function accountBan({ uid, name, reason, banned_by, origin_server }) {
+  return send('POST', '/api/admin/account-bans', {
+    uid, name, reason, banned_by, origin_server
+  });
+}
+
+// Deliberately NOT a DELETE on /account-bans. That endpoint only stops the ban
+// being re-synced; the entry already written into every server's ban file stays
+// and the player is still locked out. This one records an unban the listeners
+// act on, which is the half that actually frees them.
+export async function accountUnban({ uid, name, by }) {
+  return send('POST', '/api/admin/account-unbans', { uid, name, by });
+}
+
+export async function listAccountBans() {
+  return get('/api/admin/account-bans');
+}
