@@ -261,7 +261,15 @@ export function buildBmRouter({ requirePerm, getPteroServers, asyncRoute }) {
     // out. Enforce through the ipban controller, which writes the identity ban
     // into every server's ReforgedZBans.json.
     let enforced = { ok: false, reason: 'controller_not_configured' };
-    if (ipBans.isEnabled()) {
+    if (expires) {
+      // Our identity bans have no duration: account_bans stores none, ban_writer
+      // hardcodes "duration": 0, and upgrade_temporary actively converts a local
+      // temporary entry to permanent. So enforcing a timed ban centrally would make
+      // it permanent on all six servers and it would never lift - exactly what an
+      // earlier BattleMetrics import did to strafe* and Benja_. Refuse, and say so,
+      // rather than silently turning a 24h ban into a forever ban.
+      enforced = { ok: false, reason: 'temporary_ban_not_enforceable_centrally' };
+    } else if (ipBans.isEnabled()) {
       try {
         const guid = await resolveReforgerGuid({ playerId, guid: req.body?.guid });
         if (!guid) {
