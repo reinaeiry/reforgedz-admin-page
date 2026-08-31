@@ -138,9 +138,23 @@ export type CreateBanBody = {
   orgWide?: boolean;
   serverIds?: string[];
   dualWrite?: boolean;
+  /** Sent so the ban lands in the game ban files under a real name, not "Unknown". */
+  playerName?: string;
+  /** Reforger UUID when the caller already knows it; the server resolves it otherwise. */
+  guid?: string;
 };
 
-export async function createBan(body: CreateBanBody): Promise<{ ban: any; dualWritten: boolean }> {
+/**
+ * A BattleMetrics ban is only a record - it reaches a Reforger server over RCON, which we
+ * have not had since 1.8. `enforced` reports whether the ban also went through our
+ * controller, which is the thing that actually keeps a player out. Never treat a 2xx here
+ * as "the player is banned"; check `enforced.ok`.
+ */
+export type EnforcedResult = { ok: boolean; reason?: string; guid?: string };
+
+export async function createBan(
+  body: CreateBanBody,
+): Promise<{ ban: any; dualWritten: boolean; enforced?: EnforcedResult }> {
   const res = await fetch(`${base()}/api/bm/bans`, {
     method: 'POST',
     credentials: 'include',
@@ -163,6 +177,26 @@ export async function updateBan(id: string, body: Partial<CreateBanBody>): Promi
 export async function deleteBan(id: string): Promise<{ ok: true }> {
   const res = await fetch(`${base()}/api/bm/bans/${encodeURIComponent(id)}`, { method: 'DELETE', credentials: 'include' });
   return jsonOk(res, 'Failed to delete ban');
+}
+
+/**
+ * Lift the identity ban on our game servers. This is the half that actually frees a
+ * player: deleteBan() above only removes the BattleMetrics record, leaving the controller
+ * entry that keeps them out of all six servers. Takes effect at each server's next
+ * restart, up to 4 hours away - it is not immediate.
+ */
+export async function accountUnban(body: {
+  guid?: string;
+  playerId?: string;
+  playerName?: string;
+}): Promise<{ ok: true; uid: string; appliesAt: string }> {
+  const res = await fetch(`${base()}/api/bm/account-unban`, {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  return jsonOk(res, 'Failed to lift the game-server ban');
 }
 
 // ─── Kick ──────────────────────────────────────────────────────────────────

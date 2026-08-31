@@ -16,6 +16,30 @@ const DURATIONS = [
   { label: '30 days', ms: 30 * 24 * 60 * 60 * 1000 },
 ];
 
+/**
+ * Turn the server's `enforced.reason` into something an admin can act on. Every one of
+ * these means the same thing operationally: BattleMetrics has a record, the game servers
+ * do not, so the player can still play.
+ */
+function explainNotEnforced(reason?: string): string {
+  switch (reason) {
+    case 'temporary_ban_not_enforceable_centrally':
+      return 'Recorded in BattleMetrics ONLY. Timed bans cannot be enforced on the game '
+        + 'servers - our ban list has no expiry, so enforcing it would make it permanent. '
+        + 'For a ban that actually applies in game, make it permanent.';
+    case 'no_reforger_guid':
+      return 'Recorded in BattleMetrics ONLY. We could not find a Reforger UUID for this '
+        + 'player, so there is nothing to ban on the game servers. They can still play.';
+    case 'controller_not_configured':
+      return 'Recorded in BattleMetrics ONLY - the ban controller is not configured here, '
+        + 'so nothing reached the game servers. Tell a systems dev.';
+    default:
+      return 'Recorded in BattleMetrics ONLY - it did NOT reach the game servers'
+        + (reason ? ` (${reason})` : '') + '. The player can still play. Use `.ban <uuid>` '
+        + 'in Discord, or retry.';
+  }
+}
+
 export function BMBanForm({ player, servers, onClose, onCreated }: Props) {
   const [reason, setReason] = useState('');
   const [note, setNote] = useState('');
@@ -40,7 +64,7 @@ export function BMBanForm({ player, servers, onClose, onCreated }: Props) {
   const summary = useMemo(() => {
     const scope = orgWide ? 'all servers' : `${serverIds.length} of ${servers.length} servers`;
     const dur = expiresIso ? `until ${new Date(expiresIso).toLocaleString()}` : 'permanent';
-    return `Ban ${player.name || '(unknown)'} ${dur} (${scope})${dualWrite ? ', dual-write to game-server config' : ''}.`;
+    return `Ban ${player.name || '(unknown)'} ${dur} (${scope}).`;
   }, [orgWide, serverIds, servers.length, expiresIso, dualWrite, player.name]);
 
   function toggleServer(id: string) {
@@ -51,8 +75,12 @@ export function BMBanForm({ player, servers, onClose, onCreated }: Props) {
     setBusy(true);
     setErr(null);
     try {
-      await createBan({
+      const out = await createBan({
         playerId: player.bmPlayerId,
+        // Without this the ban lands in every game ban file as "Unknown", losing the
+        // audit trail on exactly the bans that matter most.
+        playerName: player.name || undefined,
+        guid: player.guid || undefined,
         reason: reason.trim(),
         note: note.trim() || undefined,
         expires: expiresIso,
@@ -60,6 +88,16 @@ export function BMBanForm({ player, servers, onClose, onCreated }: Props) {
         serverIds: orgWide ? undefined : serverIds,
         dualWrite,
       });
+
+      // A 2xx means BattleMetrics recorded it, NOT that the player is banned. BM reaches
+      // a Reforger server over RCON, which we have not had since 1.8. Only `enforced.ok`
+      // says the ban went through the controller that actually keeps them out. Stay open
+      // and say so rather than closing on a green result.
+      if (out && out.enforced && !out.enforced.ok) {
+        setErr(explainNotEnforced(out.enforced.reason));
+        onCreated?.();
+        return;
+      }
       onCreated?.();
       onClose();
     } catch (e: any) {

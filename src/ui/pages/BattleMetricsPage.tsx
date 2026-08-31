@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { hasBmPerm } from '../../util/session';
-import { addIpBan, type BmDashServer, deleteBan, type IpBanInfo, listBans, listBmServers, listIpBans, removeIpBan, updateBan } from '../../util/bmApi';
+import { accountUnban, addIpBan, type BmDashServer, deleteBan, type IpBanInfo, listBans, listBmServers, listIpBans, removeIpBan, updateBan } from '../../util/bmApi';
 import { renderBanReason } from '../../util/banFormat';
 import { ConfirmModal } from '../components/ConfirmModal';
 import { load as loadFilter, save as saveFilter } from '../../util/serverFilter';
@@ -273,6 +273,9 @@ function BansTab({ servers, serverIds }: { servers: BmDashServer[]; serverIds: s
   const [bans, setBans] = useState<any[]>([]);
   const [includeExpired, setIncludeExpired] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  // Success needs its own line: the one thing admins consistently get wrong is that a
+  // lifted ban is not immediate, so say when it actually applies.
+  const [notice, setNotice] = useState<string | null>(null);
   const [banFor, setBanFor] = useState<{ bmPlayerId: string; name: string; guid?: string | null } | null>(null);
   const [showSearch, setShowSearch] = useState(false);
   const [editing, setEditing] = useState<any | null>(null);
@@ -295,8 +298,33 @@ function BansTab({ servers, serverIds }: { servers: BmDashServer[]; serverIds: s
   async function doUnban() {
     if (!unbanConfirm) return;
     setBusy(true);
+    setNotice(null);
     try {
+      // Two halves. deleteBan clears the BattleMetrics record; on its own that frees
+      // nobody, because the entry keeping them out of all six servers lives in our
+      // controller. Lift that too, and report honestly if we cannot.
       await deleteBan(unbanConfirm.id);
+      let liftNote = '';
+      try {
+        const out = await accountUnban({
+          playerId: unbanConfirm.playerId,
+          playerName: unbanConfirm.playerName,
+        });
+        liftNote = out?.appliesAt ? ` Game-server ban lifted; applies ${out.appliesAt}.` : '';
+      } catch (e: any) {
+        // The BM record is already gone, so do not fail the whole action - say what is
+        // still true, which is that the player remains banned in game.
+        setErr(
+          `BattleMetrics record removed, but the game-server ban could NOT be lifted: ` +
+          `${e?.message || 'unknown error'}. The player is still banned on every server. ` +
+          `Use .unban <uuid> in Discord.`,
+        );
+        setUnbanConfirm(null);
+        await load();
+        return;
+      }
+      setErr(null);
+      setNotice(`Ban removed.${liftNote}`);
       setUnbanConfirm(null);
       await load();
     } catch (e: any) {
@@ -317,6 +345,7 @@ function BansTab({ servers, serverIds }: { servers: BmDashServer[]; serverIds: s
         {canBan ? <button className="btn btn-primary" onClick={() => setShowSearch(true)}>+ New ban</button> : null}
       </div>
       {err ? <div className="bmError">{err}</div> : null}
+      {notice ? <div className="bmNotice">{notice}</div> : null}
       <table className="bmTable">
         <thead>
           <tr><th>Player</th><th>Reason</th><th>Expires</th><th>Created</th><th></th></tr>
@@ -347,7 +376,7 @@ function BansTab({ servers, serverIds }: { servers: BmDashServer[]; serverIds: s
                   {canBan ? (
                     <>
                       <button className="btn btn-sm" onClick={() => setEditing(b)}>Edit</button>
-                      <button className="btn btn-sm btn-danger" onClick={() => setUnbanConfirm({ id: b.id, playerName })}>Remove</button>
+                      <button className="btn btn-sm btn-danger" onClick={() => setUnbanConfirm({ id: b.id, playerName, playerId: b.player?.id })}>Remove</button>
                     </>
                   ) : null}
                 </td>
@@ -401,7 +430,7 @@ function BansTab({ servers, serverIds }: { servers: BmDashServer[]; serverIds: s
           danger
           busy={busy}
           confirmLabel="Remove"
-          body={<p>Remove the ban on <strong>{unbanConfirm.playerName}</strong>? They'll be able to rejoin immediately.</p>}
+          body={<p>Remove the ban on <strong>{unbanConfirm.playerName}</strong>? This clears the BattleMetrics record <em>and</em> lifts the ban on the game servers. It takes effect at each server&apos;s next restart &mdash; up to 4 hours away, not immediately.</p>}
           onConfirm={doUnban}
           onCancel={() => setUnbanConfirm(null)}
         />
