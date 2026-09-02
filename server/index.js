@@ -15,7 +15,7 @@ import { createRetention, DEFAULT_RETENTION_MS } from './lib/retention.js';
 import * as bmClient from './lib/battlemetrics.js';
 import * as ipBans from './lib/ipBans.js';
 import { ingameOutcome } from './lib/ingameOutcome.js';
-import { parseRoster, redactRoster } from './lib/ingameRoster.js';
+import { parseRoster } from './lib/ingameRoster.js';
 import { buildBmRouter } from './routes/bm.js';
 import bmWebhookRouter from './routes/bm-webhook.js';
 import { buildTicketsRouter } from './routes/tickets.js';
@@ -4426,14 +4426,13 @@ function mountIngameBansMutes(app, { requireAuth, requireBmPerm: _bm, asyncRoute
   app.get('/api/ingame/online', requireAuth, requireBmPerm('viewServers'),
     asyncRoute(async (req, res) => {
       const servers = await loadIngameServers();
-      // Addresses are stripped unconditionally. Nothing renders them - this panel answers
-      // "who is on", and a live roster is not the place to sprinkle PII. Keeping them off
-      // the wire entirely means no viewer, log or browser cache ever holds them. If a
-      // future caller genuinely needs them, gate that on viewIps then.
+      // The roster carries no addresses at all now - it is built from the authenticated
+      // player line, which has the guid and name but no IP. Nothing to redact, and nothing
+      // for a viewer, log or browser cache to hold.
       const results = await Promise.all(servers.map(async (srv) => {
         try {
           const r = await rosterForServer(srv);
-          return { ...r, players: redactRoster(r.players, false), ok: true };
+          return { ...r, ok: true };
         } catch (err) {
           // One unreachable box must not blank the whole tab, and it must not look
           // like an empty server either - say which one failed and why.
@@ -4679,7 +4678,7 @@ async function readRosterLines(server) {
     `D=$(ls -1d ${adminMgrShellEscape(dir)}/logs_* 2>/dev/null | sort | tail -1)`,
     `if [ -n "$D" ] && [ -f "$D/console.log" ]; then`,
     `  echo OK`,
-    `  grep -aE "BattlEye Server: .?Player #|slots=[0-9]+/" "$D/console.log" 2>/dev/null | base64`,
+    `  grep -aE "Authenticated player: rplIdentity=|BattlEye Server: Disconnect player identity=|ServerImpl event: disconnected|slots=[0-9]+/" "$D/console.log" 2>/dev/null | base64`,
     `else echo NOLOG; fi`,
     `exit 0`,
   ].join('\n');

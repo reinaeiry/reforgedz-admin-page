@@ -5,64 +5,61 @@
 // dashboard showed "No players online." on servers with 45 people on them, which is worse
 // than showing nothing: an admin reasonably concludes the server is empty.
 //
-// The log does carry it. BattlEye prints a line per join and leave:
+// Everything here keys on rplIdentity and carries the player's GUID. Names are display
+// only and are never used to identify anyone - four separate accounts are called "six",
+// so a name-based link eventually sends an admin to the wrong person, and there is no way
+// to notice when it does.
 //
-//   DEFAULT : BattlEye Server: 'Player #34 Goodfight (1.2.3.4:56789) connected'
-//   DEFAULT : BattlEye Server: 'Player #34 Goodfight disconnected'
+// The engine writes the whole lifecycle against one rplIdentity:
 //
-// Replaying those gives the current roster, and the engine's own `slots=15/100` on
-// ServerImpl events is a free check that the replay is right.
+//   RPL      : ServerImpl event: authenticating (identity=0x15, address=..., slots=22/100)
+//   BACKEND  : Authenticated player: rplIdentity=0x15 identityId=<guid> name=Inflaris
+//   RPL      : ServerImpl event: connected (identity=0x15)
+//   DEFAULT  : BattlEye Server: Adding player identity=0x15, name='Inflaris'
+//   ...
+//   DEFAULT  : BattlEye Server: Disconnect player identity=0x15
+//   RPL      : ServerImpl event: disconnected (identity=0x15, slots=21/100)
 //
-// The address is part of the connect line, so a roster is PII. Callers must strip it for
-// anyone without `viewIps` - see redactRoster().
+// rplIdentity is reused as players cycle - 0x15 belonged to two different people within a
+// minute in a real log - so authenticate overwrites and disconnect clears that key only.
+//
+// `slots=N/M` is the engine's own count, used as a free check that the replay is right.
 
-const RE_BE = /BattlEye Server: '?Player #(\d+) (.+?) (connected|disconnected)/;
+const RE_AUTHED = /Authenticated player: rplIdentity=(0x[0-9A-Fa-f]+) identityId=([0-9a-fA-F-]{36}) name=(.*?)\s*$/;
+const RE_BE_DISCONNECT = /BattlEye Server: Disconnect player identity=(0x[0-9A-Fa-f]+)/;
+const RE_RPL_DISCONNECT = /ServerImpl event: disconnected \(identity=(0x[0-9A-Fa-f]+)/;
 const RE_SLOTS = /slots=(\d+)\/(\d+)/;
-// "Name (1.2.3.4:56789)" - the address is only present on the connect line.
-const RE_ADDR = /^(.*?)\s*\((\d{1,3}(?:\.\d{1,3}){3}):(\d+)\)\s*$/;
-
-function splitNameAddr(raw) {
-  const m = RE_ADDR.exec(raw || '');
-  if (!m) return { name: (raw || '').trim(), ip: null, port: null };
-  return { name: m[1].trim(), ip: m[2], port: m[3] };
-}
 
 /**
  * Replay one console.log into the roster it implies.
  *
- * Slot numbers are reused as players cycle through, so a disconnect must only clear the
- * slot it names - keying on the slot and overwriting on connect handles that naturally.
- *
- * @returns {{players: Array, slots: {used:number,max:number}|null, consistent: boolean}}
+ * @returns {{players: Array<{identity:string,guid:string,name:string}>,
+ *            slots: {used:number,max:number}|null, consistent: boolean}}
  *   `consistent` compares the replay against the engine's own last slots figure. False
- *   means the log was truncated or rotated mid-session and the roster is a best effort.
+ *   means the log was rotated or truncated mid-session, so the roster is a best effort -
+ *   surfaced rather than hidden, because silently under-reporting who is online is the
+ *   exact failure this exists to fix.
  */
 export function parseRoster(text) {
   const roster = new Map();
   let slots = null;
   for (const line of String(text || '').split('\n')) {
-    const m = RE_BE.exec(line);
-    if (m) {
-      const [, slot, rawName, event] = m;
-      if (event === 'connected') {
-        roster.set(slot, { slot: Number(slot), ...splitNameAddr(rawName) });
-      } else {
-        roster.delete(slot);
-      }
+    const authed = RE_AUTHED.exec(line);
+    if (authed) {
+      const [, identity, guid, name] = authed;
+      roster.set(identity, { identity, guid: guid.toLowerCase(), name: name.trim() });
+    } else {
+      const gone = RE_BE_DISCONNECT.exec(line) || RE_RPL_DISCONNECT.exec(line);
+      if (gone) roster.delete(gone[1]);
     }
     const s = RE_SLOTS.exec(line);
     if (s) slots = { used: Number(s[1]), max: Number(s[2]) };
   }
-  const players = [...roster.values()].sort((a, b) => a.slot - b.slot);
+  const players = [...roster.values()].sort((a, b) =>
+    a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
   return {
     players,
     slots,
     consistent: slots ? players.length === slots.used : true,
   };
-}
-
-/** Drop addresses for viewers without the IP permission. */
-export function redactRoster(players, canSeeIps) {
-  if (canSeeIps) return players;
-  return (players || []).map((p) => ({ slot: p.slot, name: p.name, ip: null, port: null }));
 }

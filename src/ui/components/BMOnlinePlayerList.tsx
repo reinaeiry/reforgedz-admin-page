@@ -7,7 +7,7 @@ type Props = {
   pollMs?: number;
 };
 
-type Row = { key: string; name: string };
+type Row = { key: string; name: string; guid: string };
 
 /**
  * Who is on this server.
@@ -21,8 +21,9 @@ type Row = { key: string; name: string };
  * join and leave. The engine's own slot count is returned alongside so a disagreement is
  * shown rather than silently under-reporting.
  *
- * Addresses are deliberately not shown here. This panel answers "who is on", and a live
- * roster is not the place to sprinkle PII - the IP Bans tab and the player profile are.
+ * Every row carries the player's GUID, taken from the authenticated-player line at login,
+ * and every link uses it. Names are display only: they are not unique, so navigating by
+ * name eventually opens the wrong person's profile with nothing to signal it.
  *
  * Kick is deliberately gone. It created a 10-second BattleMetrics ban, which reaches the
  * game over the same dead RCON - so the button never removed anyone. Showing a control
@@ -58,8 +59,9 @@ export function BMOnlinePlayerList({ server, pollMs = 30_000 }: Props) {
   }, [server.tag, pollMs]);
 
   const rows: Row[] = (entry?.players || []).map((p) => ({
-    key: `${p.slot}:${p.name}`,
+    key: p.guid || p.identity,
     name: p.name || '(unknown)',
+    guid: p.guid,
   }));
 
   // Distinguish the three states that all used to render as "No players online.":
@@ -96,9 +98,10 @@ export function BMOnlinePlayerList({ server, pollMs = 30_000 }: Props) {
               <tr key={r.key}>
                 <td>
                   <div className="bmOnlinePlayerCell">
-                    {/* by-name is the established route for "I only have a name" - it
-                        resolves to the canonical profile. /players?q= is not a thing. */}
-                    <Link className="name" to={`/player/by-name/${encodeURIComponent(r.name)}`}>
+                    {/* Always by guid. The log gives us the guid at login, so there is
+                        never a reason to navigate by name - and a name cannot identify
+                        anyone: four separate accounts are called "six". */}
+                    <Link className="name" to={`/player/${encodeURIComponent(r.guid)}`}>
                       {r.name}
                     </Link>
                   </div>

@@ -49,7 +49,9 @@ export async function listBmServers(opts?: { refresh?: boolean }): Promise<{ ser
   return jsonOk(res, 'Failed to load servers');
 }
 
-export type OnlinePlayer = { slot: number; name: string; ip: string | null; port: string | null };
+// The guid is the identity. The name is display only - four accounts are called
+// "six", so anything that navigates by name eventually opens the wrong player.
+export type OnlinePlayer = { identity: string; guid: string; name: string };
 export type OnlineServer = {
   server: string;
   name: string;
