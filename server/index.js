@@ -4664,7 +4664,10 @@ const rosterCache = new Map();
 async function readRosterLines(server) {
   const { conn, wrap } = adminMgrConnAndWrap(server);
   if (!conn?.host) throw new Error('ssh_host_not_configured');
-  const dir = `${ADMIN_MGR_VOLUMES_ROOT}/${server.pteroId}/profile/logs`;
+  // volumeUuid, not pteroId - they are different fields, and every other reader here
+  // (adminMgrConfigPath, the ban index) uses volumeUuid. Using pteroId built a path
+  // that does not exist, which came back as NOLOG for every server.
+  const dir = `${ADMIN_MGR_VOLUMES_ROOT}/${server.volumeUuid}/profile/logs`;
   // sshExecCapture rejects on ANY non-zero exit, so this must always exit 0 - an
   // `[ -n "$D" ] && ...` that finds no log directory returns 1 and surfaces as
   // "ssh_exit_1: no stderr", which says nothing about what actually happened. Print an
@@ -4682,7 +4685,12 @@ async function readRosterLines(server) {
   const text = String(stdout || '');
   const nl = text.indexOf('\n');
   const marker = (nl === -1 ? text : text.slice(0, nl)).trim();
-  if (marker === 'NOLOG') throw new Error('no_console_log_for_this_server');
+  if (marker === 'NOLOG') {
+    // Log the path: the UI must not leak server paths, but a silent NOLOG is
+    // indistinguishable from a wrong path, which is how this shipped broken once.
+    console.warn(`[roster] no console.log under ${dir} for ${server.tag || server.volumeUuid}`);
+    throw new Error('no_console_log_for_this_server');
+  }
   if (marker !== 'OK') throw new Error(`unexpected_roster_reply: ${marker.slice(0, 60) || 'empty'}`);
   const payload = nl === -1 ? '' : text.slice(nl + 1).trim();
   if (!payload) return '';
