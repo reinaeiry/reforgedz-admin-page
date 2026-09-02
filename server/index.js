@@ -13,6 +13,8 @@ import { Client as SshClient } from 'ssh2';
 import { createRzAuth } from './lib/rz-auth.js';
 import { createRetention, DEFAULT_RETENTION_MS } from './lib/retention.js';
 import * as bmClient from './lib/battlemetrics.js';
+import * as ipBans from './lib/ipBans.js';
+import { ingameOutcome } from './lib/ingameOutcome.js';
 import { buildBmRouter } from './routes/bm.js';
 import bmWebhookRouter from './routes/bm-webhook.js';
 import { buildTicketsRouter } from './routes/tickets.js';
@@ -4545,7 +4547,7 @@ function mountIngameBansMutes(app, { requireAuth, requireBmPerm: _bm, asyncRoute
         detail: { uid, patch, servers: targets.map((s) => s.tag) },
         ctx: ctxFromReq(req)
       });
-      res.json({ ok: true, results });
+      return ingameOutcome(res, results);
     }));
 
     // DELETE /api/ingame/{bans|mutes}/:uid?servers=eu1,eu2 (no servers = all)
@@ -4581,13 +4583,37 @@ function mountIngameBansMutes(app, { requireAuth, requireBmPerm: _bm, asyncRoute
           results.push({ server: server.tag, ok: false, error: String(err?.message || err) });
         }
       }
+      // Removing a ban from the files is not an unban. The controller re-adds any uid
+      // still in account_bans within 5 minutes, so this used to look like it worked and
+      // silently revert. Tell the controller too - but only when every server was
+      // targeted, because a per-server unban is not a thing the sync model can express.
+      let central = null;
+      if (kind === 'bans') {
+        const removedSomewhere = results.some((r) => r.ok && r.removed);
+        const allTargeted = targets.length === allServers.length;
+        if (!ipBans.isEnabled()) {
+          central = { ok: false, reason: 'controller_not_configured' };
+        } else if (!allTargeted) {
+          central = { ok: false, reason: 'per_server_unban_not_supported' };
+        } else if (removedSomewhere) {
+          try {
+            await ipBans.accountUnban({ uid, name: '', by: req.rzUser.username });
+            central = { ok: true, appliesAt: 'next server restart' };
+          } catch (err) {
+            central = { ok: false, reason: String(err?.message || err).slice(0, 200) };
+          }
+        } else {
+          central = { ok: true, note: 'nothing to remove' };
+        }
+      }
+
       postAuditEvent({
         actorUsername: req.rzUser.username,
         action: kind === 'mutes' ? 'ingame.mute.remove' : 'ingame.ban.remove',
-        detail: { uid, servers: targets.map((s) => s.tag) },
+        detail: { uid, servers: targets.map((s) => s.tag), central },
         ctx: ctxFromReq(req)
       });
-      res.json({ ok: true, results });
+      return ingameOutcome(res, results, central ? { central } : {});
     }));
   }
 }
