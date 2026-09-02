@@ -49,6 +49,32 @@ export async function listBmServers(opts?: { refresh?: boolean }): Promise<{ ser
   return jsonOk(res, 'Failed to load servers');
 }
 
+export type OnlinePlayer = { slot: number; name: string; ip: string | null; port: string | null };
+export type OnlineServer = {
+  server: string;
+  name: string;
+  ok: boolean;
+  error?: string;
+  players: OnlinePlayer[];
+  slots: { used: number; max: number } | null;
+  consistent: boolean;
+};
+
+/**
+ * Who is actually online, read from each game server's own console log.
+ *
+ * BattleMetrics cannot answer this: it has the player count but needs RCON to enumerate
+ * players, and RCON has been dead since 1.8 - so getServerPlayers() below returns an empty
+ * list for servers with dozens of people on them. Prefer this; fall back to BM only if it
+ * fails outright.
+ *
+ * Addresses are stripped server-side for anyone without viewIps.
+ */
+export async function getOnlinePlayers(): Promise<{ servers: OnlineServer[]; source: string }> {
+  const res = await fetch(`${base()}/api/ingame/online`, { credentials: 'include' });
+  return jsonOk(res, 'Failed to load online players');
+}
+
 export async function getServerPlayers(bmServerId: string): Promise<{ players: any[] }> {
   const res = await fetch(`${base()}/api/bm/servers/${encodeURIComponent(bmServerId)}/players`, { credentials: 'include' });
   return jsonOk(res, 'Failed to load online players');

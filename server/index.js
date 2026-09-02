@@ -15,6 +15,7 @@ import { createRetention, DEFAULT_RETENTION_MS } from './lib/retention.js';
 import * as bmClient from './lib/battlemetrics.js';
 import * as ipBans from './lib/ipBans.js';
 import { ingameOutcome } from './lib/ingameOutcome.js';
+import { parseRoster, redactRoster } from './lib/ingameRoster.js';
 import { buildBmRouter } from './routes/bm.js';
 import bmWebhookRouter from './routes/bm-webhook.js';
 import { buildTicketsRouter } from './routes/tickets.js';
@@ -22,7 +23,7 @@ import { buildPlayersRouter } from './routes/players.js';
 import { initPlayerIndex, recordEvent, getRiskConfidenceForIdentities, searchInventorySightings } from './lib/playerIndex.js';
 import * as ticketEventRelay from './lib/ticketEventRelay.js';
 import { buildBmSseRouter } from './routes/bm-sse.js';
-import { postAuditEvent, ctxFromReq } from './lib/bmAudit.js';
+import { postAuditEvent, ctxFromReq, auditView } from './lib/bmAudit.js';
 
 import { createCanvas, loadImage } from '@napi-rs/canvas';
 import gifenc from 'gifenc';
@@ -4419,6 +4420,36 @@ function mountIngameBansMutes(app, { requireAuth, requireBmPerm: _bm, asyncRoute
   // _bm is passed in for clarity but we use the closure-scoped requireBmPerm.
   const KINDS = ['bans', 'mutes'];
 
+  // GET /api/ingame/online - who is actually on each server, from the game log.
+  // BattleMetrics answers this with nothing (no RCON since 1.8), which is why the
+  // Servers tab claimed "No players online." on servers holding 45 people.
+  app.get('/api/ingame/online', requireAuth, requireBmPerm('viewServers'),
+    asyncRoute(async (req, res) => {
+      const servers = await loadIngameServers();
+      const mod = req.rzUser?.perms?.moderation || req.rzUser?.perms?.battlemetrics || {};
+      const canSeeIps = mod.viewIps === true;
+      const results = await Promise.all(servers.map(async (srv) => {
+        try {
+          const r = await rosterForServer(srv);
+          return { ...r, players: redactRoster(r.players, canSeeIps), ok: true };
+        } catch (err) {
+          // One unreachable box must not blank the whole tab, and it must not look
+          // like an empty server either - say which one failed and why.
+          return {
+            server: srv.tag,
+            name: srv.name || srv.tag,
+            ok: false,
+            error: String(err?.message || err).slice(0, 120),
+            players: [],
+            slots: null,
+            consistent: false,
+          };
+        }
+      }));
+      auditView(req, 'view.online', 'list');
+      res.json({ servers: results, source: 'game-log' });
+    }));
+
   for (const kind of KINDS) {
     const meta = ingameKindMeta(kind);
 
@@ -4616,6 +4647,55 @@ function mountIngameBansMutes(app, { requireAuth, requireBmPerm: _bm, asyncRoute
       return ingameOutcome(res, results, central ? { central } : {});
     }));
   }
+}
+
+// ─── Who is actually online ──────────────────────────────────────────────────
+//
+// BattleMetrics cannot tell us. It has the player COUNT from the game query protocol but
+// needs RCON to enumerate players, and RCON has been dead since 1.8 - so the dashboard
+// showed "No players online." on servers holding 45 people. The game's own console log
+// has it: BattlEye prints a line per join and leave. See lib/ingameRoster.js.
+//
+// Only the BattlEye and slots lines are shipped back, not the whole console log, which is
+// hundreds of megabytes over a session.
+const ROSTER_TTL_MS = 15_000;
+const rosterCache = new Map();
+
+async function readRosterLines(server) {
+  const { conn, wrap } = adminMgrConnAndWrap(server);
+  if (!conn?.host) throw new Error('ssh_host_not_configured');
+  const dir = `${ADMIN_MGR_VOLUMES_ROOT}/${server.pteroId}/profile/logs`;
+  const inner = [
+    `D=$(ls -1d ${adminMgrShellEscape(dir)}/logs_* 2>/dev/null | sort | tail -1)`,
+    `[ -n "$D" ] && grep -aE "BattlEye Server: .?Player #|slots=[0-9]+/" "$D/console.log" 2>/dev/null | base64`,
+  ].join('; ');
+  const stdout = await sshExecCapture(conn.host, conn.port, conn.user, wrap(inner));
+  if (!stdout || !stdout.trim()) return '';
+  try {
+    return Buffer.from(stdout, 'base64').toString('utf8');
+  } catch {
+    throw new Error('roster_b64_decode_failed');
+  }
+}
+
+async function rosterForServer(server) {
+  const key = server.pteroId;
+  const hit = rosterCache.get(key);
+  if (hit && hit.expiresAt > Date.now()) return hit.value;
+  const text = await readRosterLines(server);
+  const parsed = parseRoster(text);
+  const value = {
+    server: server.tag,
+    name: server.name || server.tag,
+    players: parsed.players,
+    slots: parsed.slots,
+    // False means the log was rotated or truncated mid-session, so the roster is a best
+    // effort. Surfaced rather than hidden - silently under-reporting who is online is the
+    // exact failure this endpoint exists to fix.
+    consistent: parsed.consistent,
+  };
+  rosterCache.set(key, { value, expiresAt: Date.now() + ROSTER_TTL_MS });
+  return value;
 }
 
 // Mount /api/ingame/* now that the helpers + consts above are initialised.
