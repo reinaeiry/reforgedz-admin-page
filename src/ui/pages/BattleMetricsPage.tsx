@@ -188,7 +188,7 @@ function BansAndMutesTab({ servers, serverIds }: { servers: BmDashServer[]; serv
     // BattleMetrics record is only where they happen to be listed.
     { key: 'bm', label: 'Bans', visible: hasBmPerm('viewBans') },
     { key: 'ingameBans', label: 'In-game Bans (read-only)', visible: hasBmPerm('viewIngameBans') },
-    { key: 'ingameMutes', label: 'In-game Mutes (read-only)', visible: hasBmPerm('viewIngameMutes') }
+    { key: 'ingameMutes', label: 'In-game Mutes', visible: hasBmPerm('viewIngameMutes') }
   ];
 
   const activeServerTag = useMemo(() => {

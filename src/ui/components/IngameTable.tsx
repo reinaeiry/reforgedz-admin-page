@@ -30,11 +30,15 @@ export function IngameTable({ kind, serverFilter }: Props) {
   const [removing, setRemoving] = useState<IngameRecord | null>(null);
   const [busy, setBusy] = useState(false);
 
-  // Read-only on purpose. These tables edit each server's ban/mute file directly over
-  // SSH without telling the ban controller, so a removal here is re-added by the sync
-  // within five minutes - the entry vanishes, the admin believes it worked, and it
-  // quietly comes back. Use the Bans tab, which lifts it in both places.
-  const canEdit = false;
+  // BANS are read-only: this table edits each server's ban file directly over SSH
+  // without telling the controller, so a removal is re-added by the sync within five
+  // minutes - it vanishes, the admin believes it worked, and it quietly comes back.
+  //
+  // MUTES are not. The ipban system has no mute handling at all - nothing syncs or
+  // reverts ReforgedZMutes.json - so editing here is the only way to manage a mute and
+  // it sticks. I had disabled both on the ban reasoning, which removed a working
+  // feature; corrected after Tobi pointed out mutes were working.
+  const canEdit = kind === 'mutes' ? hasBmPerm('editIngameMutes') : false;
 
   async function refresh() {
     setLoading(true);
@@ -66,11 +70,18 @@ export function IngameTable({ kind, serverFilter }: Props) {
 
   return (
     <div>
-      <div className="bmNotice" style={{ marginBottom: 10 }}>
-        Read-only. This is what each server currently holds on disk. To actually add or lift
-        a ban use the <strong>Bans</strong> tab — editing here is undone by the sync within
-        five minutes.
-      </div>
+      {kind === 'mutes' ? (
+        <div className="bmNotice" style={{ marginBottom: 10 }}>
+          Editable. Mutes are not synced by the ban controller, so changes here stick — they
+          apply on each server at its next restart, up to 4 hours away.
+        </div>
+      ) : (
+        <div className="bmNotice" style={{ marginBottom: 10 }}>
+          Read-only. This is what each server currently holds on disk. To add or lift a ban
+          use the <strong>Bans</strong> tab — editing here is undone by the sync within five
+          minutes.
+        </div>
+      )}
       {err ? <div className="bmError">{err}</div> : null}
       {loading && !rows.length ? <div className="muted">Loading…</div> : null}
       {!loading && !rows.length && !err ? (
