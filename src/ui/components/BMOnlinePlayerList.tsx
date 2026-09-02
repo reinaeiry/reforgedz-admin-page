@@ -96,7 +96,9 @@ export function BMOnlinePlayerList({ server, pollMs = 30_000 }: Props) {
               <tr key={r.key}>
                 <td>
                   <div className="bmOnlinePlayerCell">
-                    <Link className="name" to={`/players?q=${encodeURIComponent(r.name)}`}>
+                    {/* by-name is the established route for "I only have a name" - it
+                        resolves to the canonical profile. /players?q= is not a thing. */}
+                    <Link className="name" to={`/player/by-name/${encodeURIComponent(r.name)}`}>
                       {r.name}
                     </Link>
                   </div>

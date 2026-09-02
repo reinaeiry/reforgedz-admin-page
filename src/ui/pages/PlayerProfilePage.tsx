@@ -148,7 +148,13 @@ export function PlayerProfilePage() {
     return <div className="page" style={{ padding: 24 }}>Loading…</div>;
   }
 
-  const bmUrl = `https://www.battlemetrics.com/players/${player.bmPlayerId}`;
+  // Only build this when BattleMetrics actually knows the player. Unconditionally
+  // interpolating gave `/players/undefined` for anyone BM has never seen - a button
+  // that opens a page that does not exist. Reachable more often now that a profile
+  // can be opened by name from the online list.
+  const bmUrl = player.bmPlayerId
+    ? `https://www.battlemetrics.com/players/${player.bmPlayerId}`
+    : null;
   // Steam IDs, mobile device IDs, and hardware IDs are now part of viewPlayers
   // (basic). Only IPs are gated behind viewIps.
   const identifiersForPii = canViewIps
@@ -184,7 +190,13 @@ export function PlayerProfilePage() {
             ) : null}
           </div>
           <div className="bmProfile-actions">
-            <a className="btn" href={bmUrl} target="_blank" rel="noreferrer">View on BattleMetrics</a>
+            {bmUrl ? (
+              <a className="btn" href={bmUrl} target="_blank" rel="noreferrer">View on BattleMetrics</a>
+            ) : (
+              <span className="btn" aria-disabled="true" title="BattleMetrics has no record of this player" style={{ opacity: 0.5, cursor: 'default' }}>
+                Not on BattleMetrics
+              </span>
+            )}
             {canBan ? (
               <button className="btn btn-danger" onClick={() => setBanFormOpen(true)}>Ban</button>
             ) : null}
@@ -225,7 +237,7 @@ export function PlayerProfilePage() {
                       <td>{renderBanReason(a.reason, a.expires, a.createdAt)}</td>
                       <td>{a.expires ? new Date(a.expires).toLocaleString() : 'Permanent'}</td>
                       <td>{a.createdAt ? new Date(a.createdAt).toLocaleString() : ''}</td>
-                      <td><a className="btn btn-sm" target="_blank" rel="noreferrer" href={`https://www.battlemetrics.com/rcon/bans/${b.id}`}>View</a></td>
+                      <td><a className="btn btn-sm" target="_blank" rel="noreferrer" href={`https://www.battlemetrics.com/rcon/bans/edit/${b.id}`}>View</a></td>
                     </tr>
                   );
                 })}

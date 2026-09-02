@@ -371,7 +371,7 @@ function BansTab({ servers, serverIds }: { servers: BmDashServer[]; serverIds: s
                   {b.player?.id ? (
                     <button className="btn btn-sm" onClick={() => nav(`/player/by-bm/${b.player.id}`)}>View</button>
                   ) : (
-                    <a className="btn btn-sm" href={`https://www.battlemetrics.com/rcon/bans/${b.id}`} target="_blank" rel="noreferrer">BM</a>
+                    <a className="btn btn-sm" href={`https://www.battlemetrics.com/rcon/bans/edit/${b.id}`} target="_blank" rel="noreferrer">BM</a>
                   )}
                   {canBan ? (
                     <>
