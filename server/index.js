@@ -4426,12 +4426,14 @@ function mountIngameBansMutes(app, { requireAuth, requireBmPerm: _bm, asyncRoute
   app.get('/api/ingame/online', requireAuth, requireBmPerm('viewServers'),
     asyncRoute(async (req, res) => {
       const servers = await loadIngameServers();
-      const mod = req.rzUser?.perms?.moderation || req.rzUser?.perms?.battlemetrics || {};
-      const canSeeIps = mod.viewIps === true;
+      // Addresses are stripped unconditionally. Nothing renders them - this panel answers
+      // "who is on", and a live roster is not the place to sprinkle PII. Keeping them off
+      // the wire entirely means no viewer, log or browser cache ever holds them. If a
+      // future caller genuinely needs them, gate that on viewIps then.
       const results = await Promise.all(servers.map(async (srv) => {
         try {
           const r = await rosterForServer(srv);
-          return { ...r, players: redactRoster(r.players, canSeeIps), ok: true };
+          return { ...r, players: redactRoster(r.players, false), ok: true };
         } catch (err) {
           // One unreachable box must not blank the whole tab, and it must not look
           // like an empty server either - say which one failed and why.

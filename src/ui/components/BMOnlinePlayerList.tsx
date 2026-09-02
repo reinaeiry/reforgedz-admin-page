@@ -7,7 +7,7 @@ type Props = {
   pollMs?: number;
 };
 
-type Row = { key: string; name: string; ip: string | null };
+type Row = { key: string; name: string };
 
 /**
  * Who is on this server.
@@ -20,6 +20,9 @@ type Row = { key: string; name: string; ip: string | null };
  * The list now comes from each server's own console log, where BattlEye prints a line per
  * join and leave. The engine's own slot count is returned alongside so a disagreement is
  * shown rather than silently under-reporting.
+ *
+ * Addresses are deliberately not shown here. This panel answers "who is on", and a live
+ * roster is not the place to sprinkle PII - the IP Bans tab and the player profile are.
  *
  * Kick is deliberately gone. It created a 10-second BattleMetrics ban, which reaches the
  * game over the same dead RCON - so the button never removed anyone. Showing a control
@@ -57,7 +60,6 @@ export function BMOnlinePlayerList({ server, pollMs = 30_000 }: Props) {
   const rows: Row[] = (entry?.players || []).map((p) => ({
     key: `${p.slot}:${p.name}`,
     name: p.name || '(unknown)',
-    ip: p.ip,
   }));
 
   // Distinguish the three states that all used to render as "No players online.":
@@ -88,9 +90,7 @@ export function BMOnlinePlayerList({ server, pollMs = 30_000 }: Props) {
       {emptyNote}
       {rows.length > 0 ? (
         <table className="bmTable">
-          <thead>
-            <tr><th>Name</th>{rows.some((r) => r.ip) ? <th>Address</th> : null}</tr>
-          </thead>
+          <thead><tr><th>Name</th></tr></thead>
           <tbody>
             {rows.map((r) => (
               <tr key={r.key}>
@@ -101,7 +101,6 @@ export function BMOnlinePlayerList({ server, pollMs = 30_000 }: Props) {
                     </Link>
                   </div>
                 </td>
-                {rows.some((x) => x.ip) ? <td className="muted">{r.ip || '—'}</td> : null}
               </tr>
             ))}
           </tbody>
