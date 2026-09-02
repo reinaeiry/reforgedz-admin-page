@@ -4665,14 +4665,29 @@ async function readRosterLines(server) {
   const { conn, wrap } = adminMgrConnAndWrap(server);
   if (!conn?.host) throw new Error('ssh_host_not_configured');
   const dir = `${ADMIN_MGR_VOLUMES_ROOT}/${server.pteroId}/profile/logs`;
+  // sshExecCapture rejects on ANY non-zero exit, so this must always exit 0 - an
+  // `[ -n "$D" ] && ...` that finds no log directory returns 1 and surfaces as
+  // "ssh_exit_1: no stderr", which says nothing about what actually happened. Print an
+  // explicit marker instead, so "no log to read" and "log read, nobody on" stay
+  // distinguishable rather than both collapsing into an error or into a false empty.
   const inner = [
     `D=$(ls -1d ${adminMgrShellEscape(dir)}/logs_* 2>/dev/null | sort | tail -1)`,
-    `[ -n "$D" ] && grep -aE "BattlEye Server: .?Player #|slots=[0-9]+/" "$D/console.log" 2>/dev/null | base64`,
-  ].join('; ');
+    `if [ -n "$D" ] && [ -f "$D/console.log" ]; then`,
+    `  echo OK`,
+    `  grep -aE "BattlEye Server: .?Player #|slots=[0-9]+/" "$D/console.log" 2>/dev/null | base64`,
+    `else echo NOLOG; fi`,
+    `exit 0`,
+  ].join('\n');
   const stdout = await sshExecCapture(conn.host, conn.port, conn.user, wrap(inner));
-  if (!stdout || !stdout.trim()) return '';
+  const text = String(stdout || '');
+  const nl = text.indexOf('\n');
+  const marker = (nl === -1 ? text : text.slice(0, nl)).trim();
+  if (marker === 'NOLOG') throw new Error('no_console_log_for_this_server');
+  if (marker !== 'OK') throw new Error(`unexpected_roster_reply: ${marker.slice(0, 60) || 'empty'}`);
+  const payload = nl === -1 ? '' : text.slice(nl + 1).trim();
+  if (!payload) return '';
   try {
-    return Buffer.from(stdout, 'base64').toString('utf8');
+    return Buffer.from(payload, 'base64').toString('utf8');
   } catch {
     throw new Error('roster_b64_decode_failed');
   }
