@@ -358,13 +358,19 @@ function BansTab({ servers, serverIds }: { servers: BmDashServer[]; serverIds: s
           ) : bans.map((b) => {
             const a = b.attributes || {};
             const idName = a.identifiers?.find((i: any) => i.type === 'name')?.identifier;
+            // Prefer the Reforger guid the ban itself carries. A name cannot identify
+            // anyone - four separate accounts are called "six" - so by-name is only ever
+            // a last resort when neither a guid nor a BM player record exists.
+            const banGuid = a.identifiers?.find((i: any) => i.type === 'reforgerUUID')?.identifier;
             const playerName = b.player?.name || idName || a.note?.split('\n')[0] || '(unknown)';
             return (
               <tr key={b.id}>
                 <td>
-                  {b.player?.id
-                    ? <a href="#" onClick={(e) => { e.preventDefault(); nav(`/player/by-bm/${b.player.id}`); }}>{playerName}</a>
-                    : playerName}
+                  {banGuid
+                    ? <a href="#" onClick={(e) => { e.preventDefault(); nav(`/player/${encodeURIComponent(banGuid)}`); }}>{playerName}</a>
+                    : b.player?.id
+                      ? <a href="#" onClick={(e) => { e.preventDefault(); nav(`/player/by-bm/${b.player.id}`); }}>{playerName}</a>
+                      : playerName}
                 </td>
                 <td>{renderBanReason(a.reason, a.expires, a.createdAt)}</td>
                 <td>{a.expires ? new Date(a.expires).toLocaleString() : 'Permanent'}</td>
@@ -374,7 +380,9 @@ function BansTab({ servers, serverIds }: { servers: BmDashServer[]; serverIds: s
                       us since RCON went, and the link opened a page nobody can use. When
                       BM has no player record we still know the name, which by-name
                       resolves. */}
-                  {b.player?.id ? (
+                  {banGuid ? (
+                    <button className="btn btn-sm" onClick={() => nav(`/player/${encodeURIComponent(banGuid)}`)}>View</button>
+                  ) : b.player?.id ? (
                     <button className="btn btn-sm" onClick={() => nav(`/player/by-bm/${b.player.id}`)}>View</button>
                   ) : playerName && playerName !== '(unknown)' ? (
                     <button className="btn btn-sm" onClick={() => nav(`/player/by-name/${encodeURIComponent(playerName)}`)}>View</button>
