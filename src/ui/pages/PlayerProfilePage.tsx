@@ -228,7 +228,7 @@ export function PlayerProfilePage() {
           {bansErr ? <div className="bmError">Failed to load bans: {bansErr}</div> : null}
           {bans.length === 0 && !bansErr ? <div className="muted">No bans on record.</div> : (
             <table className="bmTable">
-              <thead><tr><th>Reason</th><th>Expires</th><th>Created</th></tr></thead>
+              <thead><tr><th>Reason</th><th>Expires</th><th>Created</th><th></th></tr></thead>
               <tbody>
                 {bans.map((b) => {
                   const a = b.attributes || {};
@@ -237,10 +237,15 @@ export function PlayerProfilePage() {
                       <td>{renderBanReason(a.reason, a.expires, a.createdAt)}</td>
                       <td>{a.expires ? new Date(a.expires).toLocaleString() : 'Permanent'}</td>
                       <td>{a.createdAt ? new Date(a.createdAt).toLocaleString() : ''}</td>
-                      {/* This used to open the ban on battlemetrics.com, which nobody can
-                          use since RCON went. There is nothing further to show - we are
-                          already on the player's profile - so the column is gone rather
-                          than left as a button to a dead page. */}
+                      {/* Was battlemetrics.com, which nobody can open since RCON went.
+                          Goes to this player's anti-cheat page instead - the deep link the
+                          page already supports, keyed on the Reforger guid (identityId in
+                          the player index is that guid; the ban index is keyed the same). */}
+                      <td>
+                        {player.guid ? (
+                          <Link className="btn btn-sm" to={`/players?identityId=${encodeURIComponent(player.guid)}`}>View</Link>
+                        ) : null}
+                      </td>
                     </tr>
                   );
                 })}
