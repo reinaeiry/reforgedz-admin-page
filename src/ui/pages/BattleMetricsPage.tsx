@@ -184,9 +184,11 @@ function BansAndMutesTab({ servers, serverIds }: { servers: BmDashServer[]; serv
   const [refreshKey, setRefreshKey] = useState(0);
 
   const sources: { key: BanSource; label: string; visible: boolean }[] = [
-    { key: 'bm', label: 'BattleMetrics Bans', visible: hasBmPerm('viewBans') },
-    { key: 'ingameBans', label: 'In-game Bans', visible: hasBmPerm('viewIngameBans') },
-    { key: 'ingameMutes', label: 'In-game Mutes', visible: hasBmPerm('viewIngameMutes') }
+    // Just "Bans". These are the bans that actually keep someone out - the
+    // BattleMetrics record is only where they happen to be listed.
+    { key: 'bm', label: 'Bans', visible: hasBmPerm('viewBans') },
+    { key: 'ingameBans', label: 'In-game Bans (read-only)', visible: hasBmPerm('viewIngameBans') },
+    { key: 'ingameMutes', label: 'In-game Mutes (read-only)', visible: hasBmPerm('viewIngameMutes') }
   ];
 
   const activeServerTag = useMemo(() => {
@@ -368,15 +370,19 @@ function BansTab({ servers, serverIds }: { servers: BmDashServer[]; serverIds: s
                 <td>{a.expires ? new Date(a.expires).toLocaleString() : 'Permanent'}</td>
                 <td>{a.createdAt ? new Date(a.createdAt).toLocaleString() : ''}</td>
                 <td className="bmBanActions">
+                  {/* Always our own profile, never battlemetrics.com - that tab is dead to
+                      us since RCON went, and the link opened a page nobody can use. When
+                      BM has no player record we still know the name, which by-name
+                      resolves. */}
                   {b.player?.id ? (
                     <button className="btn btn-sm" onClick={() => nav(`/player/by-bm/${b.player.id}`)}>View</button>
-                  ) : (
-                    <a className="btn btn-sm" href={`https://www.battlemetrics.com/rcon/bans/edit/${b.id}`} target="_blank" rel="noreferrer">BM</a>
-                  )}
+                  ) : playerName && playerName !== '(unknown)' ? (
+                    <button className="btn btn-sm" onClick={() => nav(`/player/by-name/${encodeURIComponent(playerName)}`)}>View</button>
+                  ) : null}
                   {canBan ? (
                     <>
                       <button className="btn btn-sm" onClick={() => setEditing(b)}>Edit</button>
-                      <button className="btn btn-sm btn-danger" onClick={() => setUnbanConfirm({ id: b.id, playerName, playerId: b.player?.id })}>Remove</button>
+                      <button className="btn btn-sm btn-danger" onClick={() => setUnbanConfirm({ id: b.id, playerName, playerId: b.player?.id, reason: a.reason, expires: a.expires, createdAt: a.createdAt })}>Remove</button>
                     </>
                   ) : null}
                 </td>
@@ -430,7 +436,30 @@ function BansTab({ servers, serverIds }: { servers: BmDashServer[]; serverIds: s
           danger
           busy={busy}
           confirmLabel="Remove"
-          body={<p>Remove the ban on <strong>{unbanConfirm.playerName}</strong>? This clears the BattleMetrics record <em>and</em> lifts the ban on the game servers. It takes effect at each server&apos;s next restart &mdash; up to 4 hours away, not immediately.</p>}
+          body={(
+            <div>
+              {/* Name alone is not enough to catch a mis-click: this list shows the same
+                  player on consecutive rows with different bans. Show what identifies
+                  the row as well. */}
+              <p>
+                Remove the ban on <strong>{unbanConfirm.playerName}</strong>?
+              </p>
+              <ul style={{ margin: '8px 0', paddingLeft: 18, fontSize: '.85rem' }}>
+                <li>Reason: <strong>{unbanConfirm.reason || '(none recorded)'}</strong></li>
+                <li>Expires: {unbanConfirm.expires
+                  ? new Date(unbanConfirm.expires).toLocaleString()
+                  : 'Permanent'}</li>
+                {unbanConfirm.createdAt ? (
+                  <li>Created: {new Date(unbanConfirm.createdAt).toLocaleString()}</li>
+                ) : null}
+              </ul>
+              <p>
+                This clears the BattleMetrics record <em>and</em> lifts the ban on the game
+                servers. It takes effect at each server&apos;s next restart &mdash; up to 4
+                hours away, not immediately.
+              </p>
+            </div>
+          )}
           onConfirm={doUnban}
           onCancel={() => setUnbanConfirm(null)}
         />

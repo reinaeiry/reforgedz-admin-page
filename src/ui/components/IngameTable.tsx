@@ -30,7 +30,11 @@ export function IngameTable({ kind, serverFilter }: Props) {
   const [removing, setRemoving] = useState<IngameRecord | null>(null);
   const [busy, setBusy] = useState(false);
 
-  const canEdit = kind === 'mutes' ? hasBmPerm('editIngameMutes') : hasBmPerm('editIngameBans');
+  // Read-only on purpose. These tables edit each server's ban/mute file directly over
+  // SSH without telling the ban controller, so a removal here is re-added by the sync
+  // within five minutes - the entry vanishes, the admin believes it worked, and it
+  // quietly comes back. Use the Bans tab, which lifts it in both places.
+  const canEdit = false;
 
   async function refresh() {
     setLoading(true);
@@ -62,6 +66,11 @@ export function IngameTable({ kind, serverFilter }: Props) {
 
   return (
     <div>
+      <div className="bmNotice" style={{ marginBottom: 10 }}>
+        Read-only. This is what each server currently holds on disk. To actually add or lift
+        a ban use the <strong>Bans</strong> tab — editing here is undone by the sync within
+        five minutes.
+      </div>
       {err ? <div className="bmError">{err}</div> : null}
       {loading && !rows.length ? <div className="muted">Loading…</div> : null}
       {!loading && !rows.length && !err ? (
