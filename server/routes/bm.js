@@ -10,6 +10,7 @@ import * as bm from '../lib/battlemetrics.js';
 import * as bmServers from '../lib/bmServers.js';
 import * as linkages from '../lib/linkages.js';
 import * as ipBans from '../lib/ipBans.js';
+import { parseLiftReason, shapeBanHistory } from '../lib/banLift.js';
 import * as gameLogs from '../lib/gameLogs.js';
 import { postAuditEvent, ctxFromReq, auditView } from '../lib/bmAudit.js';
 import { publish } from '../lib/eventBus.js';
@@ -324,14 +325,18 @@ export function buildBmRouter({ requirePerm, getPteroServers, asyncRoute }) {
       return res.status(503).json({ error: 'ipban_controller_not_configured' });
     }
     const { guid, playerId, playerName } = req.body || {};
+    // A lift is a judgement call, and without the why nobody can revisit it. Checked before
+    // the BattleMetrics lookup, so a refused request has no side effects at all.
+    const lift = parseLiftReason(req.body?.reason);
+    if (!lift.ok) return res.status(400).json({ error: lift.error, max: lift.max });
     const uid = await resolveReforgerGuid({ playerId, guid });
     if (!uid) return res.status(400).json({ error: 'no_reforger_guid' });
 
-    await ipBans.accountUnban({ uid, name: playerName || '', by: req.rzUser.username });
+    await ipBans.accountUnban({ uid, name: playerName || '', by: req.rzUser.username, reason: lift.reason });
     postAuditEvent({
       actorUsername: req.rzUser.username,
       action: 'rz.ban.lift',
-      detail: { uid, playerId: playerId || null },
+      detail: { uid, playerId: playerId || null, reason: lift.reason },
       ctx: ctxFromReq(req)
     });
     publish({ type: 'ban.lift', payload: { by: req.rzUser.username, uid } });
@@ -450,6 +455,24 @@ export function buildBmRouter({ requirePerm, getPteroServers, asyncRoute }) {
     res.json(out);
   }));
 
+  // Every lifted ban aimed at this player: what it was for, who lifted it and why. A released
+  // player keeps that record, so the next admin sees a decision rather than a clean account.
+  // IP addresses in it are PII and only reach viewIps holders.
+  router.get('/players/by-guid/:guid/ban-history', requirePerm('viewBans'), asyncRoute(async (req, res) => {
+    if (!ipBans.isEnabled()) return res.status(503).json({ error: 'ipban_controller_not_configured' });
+    const guid = String(req.params.guid || '').toLowerCase();
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(guid)) {
+      return res.status(400).json({ error: 'invalid_guid' });
+    }
+    const out = await ipBans.banHistory(guid);
+    // null means the controller did not answer. Saying "no lifted bans" then would be a
+    // confident wrong answer about exactly the record this exists to show.
+    if (!out) return res.status(502).json({ error: 'history_unavailable' });
+    const mod = (req.rzUser.perms && (req.rzUser.perms.moderation || req.rzUser.perms.battlemetrics)) || {};
+    auditView(req, 'view.banHistory', `guid:${guid}`);
+    res.json({ history: shapeBanHistory(out.history, mod.viewIps === true) });
+  }));
+
   router.get('/ipbans', requirePerm('viewIps'), asyncRoute(async (req, res) => {
     if (!ipBans.isEnabled()) return res.status(503).json({ error: 'ipban_controller_not_configured' });
     const out = await ipBans.listBans();
@@ -480,11 +503,14 @@ export function buildBmRouter({ requirePerm, getPteroServers, asyncRoute }) {
 
   router.delete('/ipbans/:ip', requirePerm('viewIps'), asyncRoute(async (req, res) => {
     if (!ipBans.isEnabled()) return res.status(503).json({ error: 'ipban_controller_not_configured' });
-    const out = await ipBans.removeBan(req.params.ip);
+    // Same rule as the account unban above, and as `.ipunban` in Discord.
+    const lift = parseLiftReason(req.query?.reason ?? req.body?.reason);
+    if (!lift.ok) return res.status(400).json({ error: lift.error, max: lift.max });
+    const out = await ipBans.removeBan(req.params.ip, { by: req.rzUser.username, reason: lift.reason });
     postAuditEvent({
       actorUsername: req.rzUser.username,
       action: 'ipban.remove',
-      detail: { ip: req.params.ip },
+      detail: { ip: req.params.ip, reason: lift.reason },
       ctx: ctxFromReq(req)
     });
     publish({ type: 'ipban.remove', payload: { by: req.rzUser.username, ip: req.params.ip } });

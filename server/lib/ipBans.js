@@ -77,8 +77,14 @@ export async function addBan({ ip, username, be_guid, reason, banned_by }) {
   return send('POST', '/api/admin/ipbans', { ip, username, be_guid, reason, banned_by });
 }
 
-export async function removeBan(ip) {
-  return send('DELETE', `/api/admin/ipbans/${encodeURIComponent(ip)}`);
+// Who lifted it and why travel in the query string - a DELETE has no body - and the controller
+// keeps both in ban_history. Without them every lift from this site was recorded as
+// "admin API", with no reason.
+export async function removeBan(ip, { by, reason } = {}) {
+  const q = [];
+  if (by) q.push(`by=${encodeURIComponent(by)}`);
+  if (reason) q.push(`reason=${encodeURIComponent(reason)}`);
+  return send('DELETE', `/api/admin/ipbans/${encodeURIComponent(ip)}${q.length ? `?${q.join('&')}` : ''}`);
 }
 
 // ─── Account (identity) bans ──────────────────────────────────────────────
@@ -95,11 +101,18 @@ export async function accountBan({ uid, name, reason, banned_by, origin_server }
 // Deliberately NOT a DELETE on /account-bans. That endpoint only stops the ban
 // being re-synced; the entry already written into every server's ban file stays
 // and the player is still locked out. This one records an unban the listeners
-// act on, which is the half that actually frees them.
-export async function accountUnban({ uid, name, by }) {
-  return send('POST', '/api/admin/account-unbans', { uid, name, by });
+// act on, which is the half that actually frees them. The reason is kept in the
+// ban's history, next to who lifted it.
+export async function accountUnban({ uid, name, by, reason }) {
+  return send('POST', '/api/admin/account-unbans', { uid, name, by, reason });
 }
 
 export async function listAccountBans() {
   return get('/api/admin/account-bans');
+}
+
+// Every lifted ban aimed at this account (account and IP), newest first.
+export async function banHistory(uid) {
+  if (!uid) return null;
+  return get(`/api/admin/ban-history?uid=${encodeURIComponent(uid)}`);
 }

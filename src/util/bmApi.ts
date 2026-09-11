@@ -217,6 +217,8 @@ export async function accountUnban(body: {
   guid?: string;
   playerId?: string;
   playerName?: string;
+  /** Why the ban is being lifted. Required - kept in the player's ban history. */
+  reason: string;
 }): Promise<{ ok: true; uid: string; appliesAt: string }> {
   const res = await fetch(`${base()}/api/bm/account-unban`, {
     method: 'POST',
@@ -333,12 +335,33 @@ export async function addIpBan(body: { ip: string; username?: string; be_guid?: 
   return jsonOk(res, 'Failed to add IP ban');
 }
 
-export async function removeIpBan(ip: string): Promise<{ ok: true }> {
-  const res = await fetch(`${base()}/api/bm/ipbans/${encodeURIComponent(ip)}`, {
+/** `reason` is required: the lift is kept in the ban history with who did it. */
+export async function removeIpBan(ip: string, reason: string): Promise<{ ok: true }> {
+  const res = await fetch(`${base()}/api/bm/ipbans/${encodeURIComponent(ip)}?reason=${encodeURIComponent(reason)}`, {
     method: 'DELETE',
     credentials: 'include'
   });
   return jsonOk(res, 'Failed to remove IP ban');
+}
+
+export type BanHistoryRow = {
+  id: number;
+  kind: 'account' | 'ip';
+  reason: string;
+  bannedBy: string;
+  liftedBy: string;
+  liftedAt: string;
+  note: string;
+  /** Only on IP rows, and only for viewers with moderation.viewIps. */
+  ip: string | null;
+};
+
+/** Every lifted ban aimed at this player - what it was for, who lifted it and why. */
+export async function getBanHistory(guid: string): Promise<{ history: BanHistoryRow[]; error?: string }> {
+  const res = await fetch(`${base()}/api/bm/players/by-guid/${encodeURIComponent(guid)}/ban-history`, { credentials: 'include' });
+  if (res.status === 403) return { history: [], error: 'forbidden' };
+  if (res.status === 503) return { history: [], error: 'ipban_controller_not_configured' };
+  return jsonOk(res, 'Failed to load ban history');
 }
 
 // ─── Game logs ─────────────────────────────────────────────────────────────

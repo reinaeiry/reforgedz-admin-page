@@ -7,11 +7,13 @@ type Props = {
   cancelLabel?: string;
   danger?: boolean;
   busy?: boolean;
+  /** Hold the confirm button until the body's required input is filled in. */
+  confirmDisabled?: boolean;
   onConfirm: () => void;
   onCancel: () => void;
 };
 
-export function ConfirmModal({ title, body, confirmLabel = 'Confirm', cancelLabel = 'Cancel', danger, busy, onConfirm, onCancel }: Props) {
+export function ConfirmModal({ title, body, confirmLabel = 'Confirm', cancelLabel = 'Cancel', danger, busy, confirmDisabled, onConfirm, onCancel }: Props) {
   return (
     <div className="modalBackdrop" onClick={(e) => { if (e.target === e.currentTarget) onCancel(); }}>
       <div className="modalCard">
@@ -22,7 +24,7 @@ export function ConfirmModal({ title, body, confirmLabel = 'Confirm', cancelLabe
           <button
             className={danger ? 'btn btn-danger' : 'btn btn-primary'}
             onClick={onConfirm}
-            disabled={busy}
+            disabled={busy || confirmDisabled}
           >
             {busy ? 'Working…' : confirmLabel}
           </button>

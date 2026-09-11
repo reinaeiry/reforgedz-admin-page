@@ -282,6 +282,7 @@ function BansTab({ servers, serverIds }: { servers: BmDashServer[]; serverIds: s
   const [showSearch, setShowSearch] = useState(false);
   const [editing, setEditing] = useState<any | null>(null);
   const [unbanConfirm, setUnbanConfirm] = useState<any | null>(null);
+  const [unbanReason, setUnbanReason] = useState('');
   const [busy, setBusy] = useState(false);
   const canBan = hasBmPerm('ban');
   const nav = useNavigate();
@@ -299,6 +300,13 @@ function BansTab({ servers, serverIds }: { servers: BmDashServer[]; serverIds: s
 
   async function doUnban() {
     if (!unbanConfirm) return;
+    // Checked before anything is touched. deleteBan below cannot be undone, so a refusal from
+    // the server after it would leave the BattleMetrics record gone and the game ban in place.
+    const reason = unbanReason.trim();
+    if (!reason) {
+      setErr('Say why this ban is being lifted. It is kept in the ban history.');
+      return;
+    }
     setBusy(true);
     setNotice(null);
     try {
@@ -311,6 +319,7 @@ function BansTab({ servers, serverIds }: { servers: BmDashServer[]; serverIds: s
         const out = await accountUnban({
           playerId: unbanConfirm.playerId,
           playerName: unbanConfirm.playerName,
+          reason,
         });
         liftNote = out?.appliesAt ? ` Game-server ban lifted; applies ${out.appliesAt}.` : '';
       } catch (e: any) {
@@ -319,7 +328,7 @@ function BansTab({ servers, serverIds }: { servers: BmDashServer[]; serverIds: s
         setErr(
           `BattleMetrics record removed, but the game-server ban could NOT be lifted: ` +
           `${e?.message || 'unknown error'}. The player is still banned on every server. ` +
-          `Use .unban <uuid> in Discord.`,
+          `Use .unban <uuid> <reason> in Discord.`,
         );
         setUnbanConfirm(null);
         await load();
@@ -390,7 +399,7 @@ function BansTab({ servers, serverIds }: { servers: BmDashServer[]; serverIds: s
                   {canBan ? (
                     <>
                       <button className="btn btn-sm" onClick={() => setEditing(b)}>Edit</button>
-                      <button className="btn btn-sm btn-danger" onClick={() => setUnbanConfirm({ id: b.id, playerName, playerId: b.player?.id, reason: a.reason, expires: a.expires, createdAt: a.createdAt })}>Remove</button>
+                      <button className="btn btn-sm btn-danger" onClick={() => { setUnbanReason(''); setUnbanConfirm({ id: b.id, playerName, playerId: b.player?.id, reason: a.reason, expires: a.expires, createdAt: a.createdAt }); }}>Remove</button>
                     </>
                   ) : null}
                 </td>
@@ -444,6 +453,7 @@ function BansTab({ servers, serverIds }: { servers: BmDashServer[]; serverIds: s
           danger
           busy={busy}
           confirmLabel="Remove"
+          confirmDisabled={!unbanReason.trim()}
           body={(
             <div>
               {/* Name alone is not enough to catch a mis-click: this list shows the same
@@ -466,6 +476,7 @@ function BansTab({ servers, serverIds }: { servers: BmDashServer[]; serverIds: s
                 servers. It takes effect at each server&apos;s next restart &mdash; up to 4
                 hours away, not immediately.
               </p>
+              <LiftReasonField value={unbanReason} onChange={setUnbanReason} />
             </div>
           )}
           onConfirm={doUnban}
@@ -473,6 +484,29 @@ function BansTab({ servers, serverIds }: { servers: BmDashServer[]; serverIds: s
         />
       ) : null}
     </section>
+  );
+}
+
+/**
+ * The why behind a lift. Required: it goes into the player's ban history next to the name of
+ * whoever lifted it, so the decision can be understood - or revisited - later.
+ */
+function LiftReasonField({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  return (
+    <div className="field" style={{ marginTop: 10 }}>
+      <label htmlFor="lift-reason">
+        Why is this being lifted? <span className="muted">(required &mdash; kept in the ban history)</span>
+      </label>
+      <textarea
+        id="lift-reason"
+        rows={2}
+        maxLength={500}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder="e.g. appeal accepted - the only link was a shared VPN address"
+        autoFocus
+      />
+    </div>
   );
 }
 
@@ -551,6 +585,7 @@ function IpBansTab() {
   const [showAdd, setShowAdd] = useState(false);
   const [busy, setBusy] = useState(false);
   const [removeConfirm, setRemoveConfirm] = useState<IpBanInfo | null>(null);
+  const [removeReason, setRemoveReason] = useState('');
   const canManage = hasBmPerm('viewIps');
 
   async function load() {
@@ -566,9 +601,14 @@ function IpBansTab() {
 
   async function doRemove() {
     if (!removeConfirm) return;
+    const reason = removeReason.trim();
+    if (!reason) {
+      setErr('Say why this IP ban is being lifted. It is kept in the ban history.');
+      return;
+    }
     setBusy(true);
     try {
-      await removeIpBan(removeConfirm.ip);
+      await removeIpBan(removeConfirm.ip, reason);
       setRemoveConfirm(null);
       await load();
     } catch (e: any) {
@@ -605,7 +645,7 @@ function IpBansTab() {
               <td>{b.banned_by || ''}</td>
               <td>{b.reason || ''}</td>
               <td className="bmBanActions">
-                {canManage ? <button className="btn btn-sm btn-danger" onClick={() => setRemoveConfirm(b)}>Remove</button> : null}
+                {canManage ? <button className="btn btn-sm btn-danger" onClick={() => { setRemoveReason(''); setRemoveConfirm(b); }}>Remove</button> : null}
               </td>
             </tr>
           ))}
@@ -623,12 +663,14 @@ function IpBansTab() {
           danger
           busy={busy}
           confirmLabel="Remove"
+          confirmDisabled={!removeReason.trim()}
           body={(
             <div>
               <p>Remove the IP ban on <code>{removeConfirm.ip}</code> ({removeConfirm.username || 'unknown'})?</p>
               <p className="muted" style={{ fontSize: '.78rem' }}>
                 The ipban-controller will queue an UNBAN action to every listener — the firewall rule will be removed from each game-server host on the next poll.
               </p>
+              <LiftReasonField value={removeReason} onChange={setRemoveReason} />
             </div>
           )}
           onConfirm={doRemove}

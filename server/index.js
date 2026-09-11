@@ -15,6 +15,7 @@ import { createRetention, DEFAULT_RETENTION_MS } from './lib/retention.js';
 import * as bmClient from './lib/battlemetrics.js';
 import * as ipBans from './lib/ipBans.js';
 import { ingameOutcome } from './lib/ingameOutcome.js';
+import { parseLiftReason } from './lib/banLift.js';
 import { parseRoster } from './lib/ingameRoster.js';
 import { buildBmRouter } from './routes/bm.js';
 import bmWebhookRouter from './routes/bm-webhook.js';
@@ -4586,6 +4587,14 @@ function mountIngameBansMutes(app, { requireAuth, requireBmPerm: _bm, asyncRoute
     app.delete(`/api/ingame/${kind}/:uid`, requireAuth, ingameRequireEdit(kind), asyncRoute(async (req, res) => {
       const uid = String(req.params.uid || '').toLowerCase();
       if (!adminMgrIsValidGuid(uid)) return res.status(400).json({ error: 'invalid_uid' });
+      // Removing a ban lifts it everywhere (see below), so it needs a reason like every other
+      // lift. Mutes are not bans and keep working without one.
+      let liftReason = '';
+      if (kind === 'bans') {
+        const lift = parseLiftReason(req.query.reason ?? req.body?.reason);
+        if (!lift.ok) return res.status(400).json({ error: lift.error, max: lift.max });
+        liftReason = lift.reason;
+      }
       const allServers = await loadIngameServers();
       const requested = typeof req.query.servers === 'string' && req.query.servers
         ? req.query.servers.split(',').map((s) => s.trim().toLowerCase()).filter(Boolean)
@@ -4629,7 +4638,7 @@ function mountIngameBansMutes(app, { requireAuth, requireBmPerm: _bm, asyncRoute
           central = { ok: false, reason: 'per_server_unban_not_supported' };
         } else if (removedSomewhere) {
           try {
-            await ipBans.accountUnban({ uid, name: '', by: req.rzUser.username });
+            await ipBans.accountUnban({ uid, name: '', by: req.rzUser.username, reason: liftReason });
             central = { ok: true, appliesAt: 'next server restart' };
           } catch (err) {
             central = { ok: false, reason: String(err?.message || err).slice(0, 200) };

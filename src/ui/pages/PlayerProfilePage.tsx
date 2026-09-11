@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import {
+  getBanHistory,
   getIpAlts,
   getPlayer,
   getPlayerBans,
@@ -8,6 +9,7 @@ import {
   linkageByDiscordId,
   linkageByGuid,
   listBmServers,
+  type BanHistoryRow,
   type BmDashServer,
   type IpAltsResponse,
   type Linkage,
@@ -30,6 +32,14 @@ type ResolvedPlayer = {
   identifiers: Array<{ type: string; identifier: string }>;
 };
 
+// The controller writes UTC as "YYYY-MM-DD HH:MM:SS" with no zone, which Date would read as
+// local time. Mark it as UTC so every admin sees the time in their own timezone.
+function formatControllerTime(value: string): string {
+  if (!value) return '';
+  const d = new Date(`${value.replace(' ', 'T')}Z`);
+  return Number.isNaN(d.getTime()) ? value : d.toLocaleString();
+}
+
 export function PlayerProfilePage() {
   const { guid: guidParam, bmId } = useParams();
   const [player, setPlayer] = useState<ResolvedPlayer | null>(null);
@@ -43,6 +53,8 @@ export function PlayerProfilePage() {
   const [banFormOpen, setBanFormOpen] = useState(false);
   const [ingameAction, setIngameAction] = useState<'bans' | 'mutes' | null>(null);
   const [ipAlts, setIpAlts] = useState<IpAltsResponse | null>(null);
+  const [banHistory, setBanHistory] = useState<BanHistoryRow[] | null>(null);
+  const [banHistoryErr, setBanHistoryErr] = useState<string | null>(null);
   const nav = useNavigate();
 
   // viewIps is the single PII gate now — covers BM IPs + in-game-log IPs +
@@ -127,6 +139,15 @@ export function PlayerProfilePage() {
         promises.push(listBmServers().then((s) => {
           if (alive) setServers(s.servers);
         }).catch(() => {}));
+        if (guid && canBans) {
+          promises.push(getBanHistory(guid).then((h) => {
+            if (!alive) return;
+            setBanHistory(h.history || []);
+            setBanHistoryErr(h.error || null);
+          }).catch((e: any) => {
+            if (alive) setBanHistoryErr(e?.message || 'Failed to load ban history');
+          }));
+        }
         if (guid && canViewAlts) {
           promises.push(getIpAlts(guid).then((a) => {
             if (alive) setIpAlts(a);
@@ -249,6 +270,44 @@ export function PlayerProfilePage() {
                     </tr>
                   );
                 })}
+              </tbody>
+            </table>
+          )}
+        </section>
+      ) : null}
+
+      {canBans && player.guid ? (
+        <section className="bmProfile-section">
+          <h2>Ban history ({banHistory?.length ?? 0})</h2>
+          {/* Bans that were lifted. A released player keeps what they were banned for, who
+              lifted it and why - so the next admin sees a decision they can revisit, not a
+              clean record. */}
+          {banHistoryErr === 'ipban_controller_not_configured' ? (
+            <div className="muted">The ban controller is not configured on this admin server.</div>
+          ) : banHistoryErr ? (
+            <div className="bmError">Failed to load ban history: {banHistoryErr}</div>
+          ) : banHistory === null ? (
+            <div className="muted">Loading…</div>
+          ) : banHistory.length === 0 ? (
+            <div className="muted">No lifted bans on record.</div>
+          ) : (
+            <table className="bmTable">
+              <thead>
+                <tr><th>Ban</th><th>Original reason</th><th>Set by</th><th>Lifted by</th><th>Why it was lifted</th></tr>
+              </thead>
+              <tbody>
+                {banHistory.map((h) => (
+                  <tr key={h.id}>
+                    <td>{h.kind === 'ip' ? (h.ip ? <>IP ban <code>{h.ip}</code></> : 'IP ban') : 'Account ban'}</td>
+                    <td>{h.reason || <span className="muted">(none recorded)</span>}</td>
+                    <td>{h.bannedBy || '?'}</td>
+                    <td>
+                      {h.liftedBy || '?'}
+                      {h.liftedAt ? <div className="muted">{formatControllerTime(h.liftedAt)}</div> : null}
+                    </td>
+                    <td>{h.note || <span className="muted">(no reason recorded)</span>}</td>
+                  </tr>
+                ))}
               </tbody>
             </table>
           )}
