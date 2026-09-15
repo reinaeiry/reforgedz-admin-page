@@ -16,6 +16,10 @@ import * as bmClient from './lib/battlemetrics.js';
 import * as ipBans from './lib/ipBans.js';
 import { ingameOutcome } from './lib/ingameOutcome.js';
 import { parseLiftReason } from './lib/banLift.js';
+import {
+  adminCeilingFrom, pqHoldersFromShop, holdersToJson, holdersFromJson, holdersOnServer,
+  serverCapacity, gmAddOverLimit, adminListFullMessage, pqMoveBody, reservedOnServer,
+} from './lib/adminList.js';
 import { parseRoster } from './lib/ingameRoster.js';
 import { buildBmRouter } from './routes/bm.js';
 import bmWebhookRouter from './routes/bm-webhook.js';
@@ -2700,10 +2704,10 @@ const ADMIN_MGR_STATE_PATH = path.join(DATA_DIR, 'adminManager.json');
 // outage doesn't cause every PQ buyer to leak into the admin list.
 const ADMIN_MGR_PQ_CACHE_PATH = path.join(DATA_DIR, 'adminManagerPqCache.json');
 const ADMIN_MGR_BM_TOKEN = process.env.BATTLEMETRICS_API_KEY || '';
-// Reforger errors on a config with more than this many entries in game.admins.
-// GMs and priority-queue holders share the same allowance. Mirrors ADMIN_CEILING
-// in the shop, which squeezes PQ stock so PQ + GMs can never exceed it.
-const ADMIN_MGR_SLOT_LIMIT = parseInt(process.env.ADMIN_CEILING || '50', 10);
+// The most entries a server's game.admins may hold. GMs and priority-queue holders
+// share the same allowance. Read from ADMIN_CEILING like the shop, which keeps its
+// priority queue stock inside it; the GM toggle refuses an add past it.
+const ADMIN_MGR_SLOT_LIMIT = adminCeilingFrom(process.env);
 const ADMIN_MGR_CACHE_TTL_MS = 5 * 60 * 1000;
 
 // NA box is not directly reachable; SSH connects to EU box and bounces over.
@@ -3271,16 +3275,28 @@ function applyCacheNameResolutions(updates) {
   bumpAdminsCacheVersion();
 }
 
-async function loadPqGuidCache() {
-  const obj = await readJsonOrNull(ADMIN_MGR_PQ_CACHE_PATH);
-  return obj && Array.isArray(obj.guids) ? obj.guids.filter((g) => typeof g === 'string') : [];
-}
-
-async function savePqGuidCache(guids) {
+// Priority queue holders from the shop: every holder's in-game ID, and per server the
+// IDs holding it THERE (pqHoldersFromShop). The last good answer is kept on disk and
+// reused while the shop is unreachable. Never throws; source is 'live', 'cached' or 'none'.
+async function fetchPqHolders() {
   try {
-    await writeJsonAtomic(ADMIN_MGR_PQ_CACHE_PATH, { guids, updatedAt: Date.now() });
+    const pq = await shopFetchProxy('/api/shop/admin/priority-queue', { signal: AbortSignal.timeout(15000) });
+    if (!(pq.status >= 200 && pq.status < 300)) throw new Error(`pq_http_${pq.status}`);
+    const holders = pqHoldersFromShop(pq.body);
+    try {
+      await writeJsonAtomic(ADMIN_MGR_PQ_CACHE_PATH, { ...holdersToJson(holders), updatedAt: Date.now() });
+    } catch (e) {
+      console.warn('[adminmgr] failed to persist PQ guid cache:', e.message);
+    }
+    return { ...holders, source: 'live' };
   } catch (e) {
-    console.warn('[adminmgr] failed to persist PQ guid cache:', e.message);
+    const cached = holdersFromJson(await readJsonOrNull(ADMIN_MGR_PQ_CACHE_PATH));
+    if (cached.guids.size) {
+      console.warn(`[adminmgr] priority-queue fetch failed; reusing ${cached.guids.size} cached PQ guids:`, e.message);
+      return { ...cached, source: 'cached' };
+    }
+    console.warn('[adminmgr] priority-queue fetch failed with no cache; counting every config entry as a GM:', e.message);
+    return { guids: new Set(), byTag: null, source: 'none' };
   }
 }
 
@@ -3299,31 +3315,10 @@ async function buildAdminsSnapshot() {
   //     who bought priority queue silently disappears from the list.
   //  2. On a shop/PQ fetch failure we reuse the last-known-good PQ set instead of
   //     showing an unfiltered list (which would dump every PQ buyer in as a fake
-  //     "admin"). With no cache at all we fail closed on unclassified entries.
-  let pqGuids = new Set();
-  let pqSource = 'live';
-  try {
-    const pq = await shopFetchProxy('/api/shop/admin/priority-queue');
-    if (pq.status >= 200 && pq.status < 300 && pq.body && Array.isArray(pq.body.entries)) {
-      for (const e of pq.body.entries) {
-        const g = typeof e?.guid === 'string' ? e.guid.toLowerCase() : '';
-        if (g) pqGuids.add(g);
-      }
-      await savePqGuidCache([...pqGuids]);
-    } else {
-      throw new Error(`pq_http_${pq.status}`);
-    }
-  } catch (e) {
-    const cached = await loadPqGuidCache();
-    if (cached.length) {
-      pqGuids = new Set(cached);
-      pqSource = 'cached';
-      console.warn(`[adminmgr] priority-queue fetch failed; reusing ${cached.length} cached PQ guids:`, e.message);
-    } else {
-      pqSource = 'none';
-      console.warn('[adminmgr] priority-queue fetch failed with no cache; hiding unclassified config entries:', e.message);
-    }
-  }
+  //     "admin").
+  const pqHolders = await fetchPqHolders();
+  const pqGuids = pqHolders.guids;
+  const pqSource = pqHolders.source;
 
   const isRegisteredGm = (guid) => (state.admins[guid] && state.admins[guid].source === 'manual');
   const hideAsPq = (guid) => {
@@ -3391,21 +3386,14 @@ async function buildAdminsSnapshot() {
     .map((r) => ({ pteroId: r.server.pteroId, tag: r.server.tag, error: r.error }));
 
   // Slot usage straight off each server's real game.admins array — GMs and PQ
-  // holders draw on the same allowance, so this is what actually fills up.
+  // holders draw on the same allowance, so this is what actually fills up. An entry
+  // counts as priority queue only where the shop says it holds priority queue on THAT
+  // server (serverCapacity), so a GM who bought priority queue elsewhere is a GM here.
   const capacity = {};
   for (const r of reads) {
-    if (!r.ok) { capacity[r.server.pteroId] = null; continue; }
-    const total = r.admins.length;
-    let pq = 0;
-    for (const g of r.admins) if (pqGuids.has(String(g).toLowerCase())) pq++;
-    capacity[r.server.pteroId] = {
-      tag: r.server.tag,
-      total,
-      pq,
-      gms: total - pq,
-      limit: ADMIN_MGR_SLOT_LIMIT,
-      remaining: Math.max(0, ADMIN_MGR_SLOT_LIMIT - total),
-    };
+    capacity[r.server.pteroId] = r.ok
+      ? serverCapacity({ tag: r.server.tag, admins: r.admins, holders: pqHolders, limit: ADMIN_MGR_SLOT_LIMIT })
+      : null;
   }
 
   return {
@@ -3620,6 +3608,15 @@ app.post('/api/adminmgr/toggle', requireAuth, requireTool('gmManagement'), async
   const conn = adminMgrSshHostForRegion(server.region);
   if (!conn?.host) { res.status(503).json({ error: 'ssh_host_not_configured' }); return; }
 
+  // Game masters and priority queue share this server's admin list. An add that would
+  // take it past ADMIN_MGR_SLOT_LIMIT is refused (gmAddOverLimit), counted against the
+  // file at the moment of writing plus the priority queue the shop holds for this
+  // server but has not written yet and the checkouts waiting at PayPal for it. Removing
+  // someone is never refused.
+  const pqHolders = present ? await fetchPqHolders() : null;
+  const pqHere = pqHolders ? holdersOnServer(pqHolders, server.tag) : null;
+  const reservedHere = pqHolders ? reservedOnServer(pqHolders, server.tag) : 0;
+
   // Optimistic cache update so revalidating clients see the change before SSH finishes.
   applyCacheToggle(pteroId, guid, present);
 
@@ -3636,7 +3633,12 @@ app.post('/api/adminmgr/toggle', requireAuth, requireTool('gmManagement'), async
 
         let nextList = list;
         let changed = false;
-        if (present && !has) { nextList = [...list, guid]; changed = true; }
+        if (present && !has) {
+          const full = gmAddOverLimit({ admins: list, guid, onServer: pqHere, reserved: reservedHere, limit: ADMIN_MGR_SLOT_LIMIT });
+          if (full) return { changed: false, present, count: list.length, full };
+          nextList = [...list, guid];
+          changed = true;
+        }
         else if (!present && has) { nextList = list.filter((g) => g !== guid); changed = true; }
 
         if (changed) adminMgrSetAtPath(cfg, ADMIN_MGR_CONFIG_FIELD, nextList);
@@ -3651,6 +3653,17 @@ app.post('/api/adminmgr/toggle', requireAuth, requireTool('gmManagement'), async
     applyCacheToggle(pteroId, guid, !present);
     throw e;
   }
+
+  if (result.full) {
+    // Nothing was written: put the cache back and register nobody.
+    applyCacheToggle(pteroId, guid, false);
+    const label = server.tag || server.name;
+    const f = result.full;
+    console.warn(`[adminmgr] refused a GM add on ${label}: admin list full (${f.total} in the file, ${f.waiting} waiting, ${f.reserved} at PayPal, limit ${f.limit})`);
+    res.status(409).json({ code: 'admin_list_full', error: adminListFullMessage(label, f), total: f.total, waiting: f.waiting, reserved: f.reserved, limit: f.limit });
+    return;
+  }
+  if (result.changed) requestShopSync(`a GM ${present ? 'add' : 'removal'} on ${server.tag || server.pteroId}`);
 
   // Granting a GM on a server registers them as a real GM ('manual'), so the
   // roster's PQ filter never hides them and the shop's periodic sync can't make
@@ -3753,6 +3766,7 @@ app.delete('/api/adminmgr/admin/:guid', requireAuth, requireTool('gmManagement')
   delete state.admins[guid];
   state.lastSyncAt = Date.now();
   await writeAdminMgrState(state);
+  if (removals.some((r) => r.removed)) requestShopSync('a GM delete');
 
   const summary = removals.map((r) => ({
     pteroId: r.server.pteroId,
@@ -3790,49 +3804,57 @@ async function shopFetchProxy(path, opts = {}) {
   return { status: r.status, body };
 }
 
+// The shop subtracts each server's game master count from its priority queue stock, and
+// learns that count from its own sync. After a GM change here it is asked to sync now,
+// so it does not sell or activate against the old count until its next pass. Best
+// effort: a failure only means the shop catches up at that pass.
+function requestShopSync(reason) {
+  if (!SHOP_ADMIN_API_KEY) return;
+  shopFetchProxy('/api/shop/admin/admins-sync/run', { method: 'POST', signal: AbortSignal.timeout(15000) })
+    .then(({ status }) => {
+      if (status < 200 || status >= 300) console.warn(`[adminmgr] shop sync request after ${reason} answered HTTP ${status}`);
+    })
+    .catch((e) => console.warn(`[adminmgr] shop sync request after ${reason} failed:`, e.message));
+}
+
+// The holder list: every in-game ID holding priority queue, from paid orders in the shop.
 app.get('/api/priority-queue', requireAuth, requireTool('gmManagement'), asyncRoute(async (req, res) => {
   const { status, body } = await shopFetchProxy('/api/shop/admin/priority-queue');
   res.status(status).json(body);
 }));
 
-app.post('/api/priority-queue', requireAuth, requireTool('gmManagement'), asyncRoute(async (req, res) => {
-  const { status, body } = await shopFetchProxy('/api/shop/admin/priority-queue', {
-    method: 'POST',
-    body: JSON.stringify(req.body || {})
+// Staff grants, per-server toggles, expiry changes and grant deletion are retired: the
+// shop answers 410 for them. Their old URLs here give the same answer without calling
+// the shop, so a page opened before this release gets a clear reason instead of a
+// missing route.
+function priorityQueueRetired(req, res) {
+  res.status(410).json({
+    code: 'retired',
+    error: 'Priority queue grants are retired: priority queue now comes only from a paid order. Reload this page. To put a paying player on another server, use move. To take priority queue away, revoke the order in the shop admin panel.',
   });
-  res.status(status).json(body);
-}));
+}
+app.post('/api/priority-queue', requireAuth, requireTool('gmManagement'), priorityQueueRetired);
+app.post('/api/priority-queue/toggle', requireAuth, requireTool('gmManagement'), priorityQueueRetired);
+app.post('/api/priority-queue/extend', requireAuth, requireTool('gmManagement'), priorityQueueRetired);
+app.delete('/api/priority-queue/:guid', requireAuth, requireTool('gmManagement'), priorityQueueRetired);
 
-app.post('/api/priority-queue/toggle', requireAuth, requireTool('gmManagement'), asyncRoute(async (req, res) => {
-  const { status, body } = await shopFetchProxy('/api/shop/admin/priority-queue/toggle', {
-    method: 'POST',
-    body: JSON.stringify(req.body || {})
-  });
-  res.status(status).json(body);
-}));
-
-// Atomic server move (deny old + grant new in one shop-side transaction) — the
-// supported path for "bought priority queue on X, switch me to Y".
+// Move a paying holder's priority queue to another server. The shop changes the order's
+// server on every payment row of its subscription. It refuses a full destination, a
+// lapsed or refunded order, and an in-game ID with several orders but no orderId, and
+// its { code, error } answer is passed through as it is. The shop sees only this page's
+// shared key, so pqMoveBody puts the staff member's name in front of the reason.
+// A move always names its order. A page opened before orders were listed sends none, and a
+// shop from before this release would answer that with the retired grant-and-block move,
+// so such a request never reaches the shop.
 app.post('/api/priority-queue/switch', requireAuth, requireTool('gmManagement'), asyncRoute(async (req, res) => {
+  const moveBody = pqMoveBody(req.body, req.user?.sub);
+  if (moveBody.orderId === undefined) {
+    res.status(400).json({ code: 'needs_order', error: 'Reload this page: a move now names the order to move.' });
+    return;
+  }
   const { status, body } = await shopFetchProxy('/api/shop/admin/priority-queue/switch', {
     method: 'POST',
-    body: JSON.stringify(req.body || {})
-  });
-  res.status(status).json(body);
-}));
-
-app.delete('/api/priority-queue/:guid', requireAuth, requireTool('gmManagement'), asyncRoute(async (req, res) => {
-  const guid = encodeURIComponent(req.params.guid);
-  const { status, body } = await shopFetchProxy(`/api/shop/admin/priority-queue/${guid}`, {
-    method: 'DELETE'
-  });
-  res.status(status).json(body);
-}));
-
-app.post('/api/priority-queue/extend', requireAuth, requireTool('gmManagement'), asyncRoute(async (req, res) => {
-  const { status, body } = await shopFetchProxy('/api/shop/admin/priority-queue/extend', {
-    method: 'POST',
-    body: JSON.stringify(req.body || {})
+    body: JSON.stringify(moveBody),
   });
   res.status(status).json(body);
 }));

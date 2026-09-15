@@ -12,6 +12,41 @@ async function jsonOk<T>(res: Response, what: string): Promise<T> {
   return (await res.json()) as T;
 }
 
+// A refusal carrying the server's own words. Routes that answer { code, error } (the
+// shop's priority queue move, a GM add on a full admin list) throw this, so the page
+// shows the error text and can act on the code.
+export class ApiError extends Error {
+  readonly status: number;
+  readonly code: string | null;
+  readonly body: Record<string, unknown> | null;
+
+  constructor(message: string, status: number, code: string | null, body: Record<string, unknown> | null) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+    this.code = code;
+    this.body = body;
+  }
+}
+
+async function jsonOrApiError<T>(res: Response, what: string): Promise<T> {
+  if (!res.ok) {
+    const text = await res.text();
+    let body: Record<string, unknown> | null = null;
+    try {
+      const parsed: unknown = text ? JSON.parse(text) : null;
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) body = parsed as Record<string, unknown>;
+    } catch {
+      body = null;
+    }
+    const err = body ? body.error : undefined;
+    const code = body ? body.code : undefined;
+    const message = typeof err === 'string' && err ? err : text || `${what} (${res.status})`;
+    throw new ApiError(message, res.status, typeof code === 'string' ? code : null, body);
+  }
+  return (await res.json()) as T;
+}
+
 // ─── Servers ────────────────────────────────────────────────────────────────
 
 export type ServerInfo = { id: string; name: string };
@@ -383,7 +418,14 @@ export type ServerCapacity = {
   total: number;
   gms: number;
   pq: number;
+  // Priority queue holders the shop has for this server that are not in the file yet
+  // (written at the shop's next sync). null when the shop's per-server list was
+  // unavailable; absent from a server older than this field.
+  pqWaiting?: number | null;
+  // Priority queue checkouts waiting at PayPal for this server.
+  pqReserved?: number;
   limit: number;
+  // Free entries, with the waiting priority queue holders and checkouts taken off.
   remaining: number;
 };
 
@@ -461,34 +503,61 @@ export async function toggleAdminOnServer(guid: string, pteroId: string, present
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ guid, pteroId, present }),
   });
-  return jsonOk<AdminToggleResult>(res, 'Failed to toggle admin');
+  // A GM add on a full admin list is refused with code 'admin_list_full'.
+  return jsonOrApiError<AdminToggleResult>(res, 'Failed to toggle admin');
 }
 
 // ─── Priority Queue (shop-backed) ───────────────────────────────────────────
+//
+// Priority queue comes only from a paid order in the shop. This page reads the
+// holder list and can move a paying holder's order to another server. Grants,
+// per-server toggles, expiry changes and grant deletion are retired.
 
-export type PriorityQueueServer = { id: string; label: string };
+export type PriorityQueueServer = {
+  id: string;
+  label: string;
+  // Whether the shop sells priority queue there, so it can be a move destination.
+  // A shop from before this field leaves it out: treat that as sellable.
+  sellable?: boolean;
+  // Priority queue checkouts waiting at PayPal for the server.
+  reserved?: number;
+};
 
+// Always 'purchase' now; 'manual' and 'both' came from the retired grants.
 export type PriorityQueueSource = 'purchase' | 'manual' | 'both' | null;
+
+// One live priority queue order behind a holder (for a subscription, its latest
+// paid cycle).
+export type PriorityQueueOrder = {
+  id: number;
+  // null for a product that covers every server: there is no server to move.
+  serverId: string | null;
+  // A PayPal subscription rather than a one-time purchase.
+  isSubscription: boolean;
+  // End of the paid period (unix seconds).
+  effectiveUntil: number;
+};
 
 export type PriorityQueueEntry = {
   guid: string;
   displayName: string;
+  // Servers this in-game ID holds priority queue on.
   presence: Record<string, boolean>;
   sources: Record<string, PriorityQueueSource>;
-  // Per-server expiry (unix seconds; null = permanent / not present). Optional so
-  // older cached snapshots still parse.
+  // Per-server end of the paid period (unix seconds; null = not held there).
   expiry?: Record<string, number | null>;
-  // Soonest dated expiry across servers held (null = all permanent / lifetime).
+  // The soonest end across the servers held. A subscription still billing keeps its
+  // slot for a few hours past it while PayPal takes the renewal.
   expiresAt?: number | null;
-  // When they last bought priority queue (unix seconds; null = manual grant only).
+  // When they last paid (unix seconds).
   purchasedAt?: number | null;
-  // When their most recent manual grant was made (unix seconds).
+  // Always null now that grants are retired.
   grantedAt?: number | null;
-  // False when no server is selected — they hold nothing right now, and expiresAt
-  // then describes the underlying entitlement rather than live access.
   assigned?: boolean;
-  // Whether any grant or order backs this holder at all.
   hasEntitlement?: boolean;
+  // Every live order behind the entry, so a move can name one. A shop from before
+  // this field leaves it out.
+  orders?: PriorityQueueOrder[];
 };
 
 export type PriorityQueueSnapshot = {
@@ -501,99 +570,38 @@ export async function getPriorityQueue(): Promise<PriorityQueueSnapshot> {
   return jsonOk<PriorityQueueSnapshot>(res, 'Failed to load priority queue');
 }
 
-export async function addManualPriorityQueue(
+export type PriorityQueueMoveResult = {
+  ok: true;
+  from: string;
+  to: string;
+  orderId?: number;
+  isSubscription?: boolean;
+  orderIds?: number[];
+  entry: PriorityQueueEntry;
+};
+
+// Move a paying holder's priority queue to another server. The shop changes the
+// order's server on every payment row of its subscription, so the paid time carries
+// over and renewals pay for the new server. A refusal throws ApiError with the shop's
+// own text and code: destination_full, not_live (lapsed or refunded), ambiguous (more
+// than one order and no orderId; body.orderIds lists them), already_on_destination,
+// not_on_source, same_server, bad_server and others. The admin page server puts the
+// staff member's name in front of the reason.
+export async function switchPriorityQueueServer(
   guid: string,
-  opts?: { displayName?: string; serverId?: string },
-): Promise<{ ok: true; entry: PriorityQueueEntry }> {
-  const body: Record<string, unknown> = { guid };
-  if (opts?.displayName) body.displayName = opts.displayName;
-  if (opts?.serverId) body.serverId = opts.serverId;
-  const res = await fetch(`${requireApiBaseUrl()}/api/priority-queue`, {
+  move: { to: string; from?: string | null; orderId?: number | null; reason?: string },
+): Promise<PriorityQueueMoveResult> {
+  const body: Record<string, unknown> = { guid, to: move.to };
+  if (move.from) body.from = move.from;
+  if (move.orderId != null) body.orderId = move.orderId;
+  if (move.reason && move.reason.trim()) body.reason = move.reason.trim();
+  const res = await fetch(`${requireApiBaseUrl()}/api/priority-queue/switch`, {
     method: 'POST',
     credentials: 'include',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
-  return jsonOk<{ ok: true; entry: PriorityQueueEntry }>(res, 'Failed to add to priority queue');
-}
-
-export async function togglePriorityQueueServer(
-  guid: string,
-  serverId: string,
-  present: boolean,
-  displayName?: string,
-): Promise<{ ok: true; entry: PriorityQueueEntry }> {
-  const res = await fetch(`${requireApiBaseUrl()}/api/priority-queue/toggle`, {
-    method: 'POST',
-    credentials: 'include',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ guid, serverId, present, displayName }),
-  });
-  return jsonOk<{ ok: true; entry: PriorityQueueEntry }>(res, 'Failed to toggle priority queue');
-}
-
-// Move a holder from one server to another in a single atomic call. The shop
-// grants `to` (seeded with the holder's real entitlement expiry) and denies
-// `from` in one transaction, so a mid-move failure can never strip them of the
-// old server without the new one. `from` may be null for a holder with no live
-// presence. Subscription renewals keep the moved grant alive on the shop side.
-export async function switchPriorityQueueServer(
-  guid: string,
-  to: string,
-  from?: string | null,
-  displayName?: string,
-): Promise<{ ok: true; from: string | null; to: string; entry: PriorityQueueEntry }> {
-  const res = await fetch(`${requireApiBaseUrl()}/api/priority-queue/switch`, {
-    method: 'POST',
-    credentials: 'include',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ guid, to, from: from || undefined, displayName }),
-  });
-  return jsonOk<{ ok: true; from: string | null; to: string; entry: PriorityQueueEntry }>(
-    res,
-    'Failed to switch server',
-  );
-}
-
-export async function extendPriorityQueue(
-  guid: string,
-  days: number,
-): Promise<{ ok: true; days: number; purchaseChanges: number; manualChanges: number; entry: PriorityQueueEntry | null }> {
-  const res = await fetch(`${requireApiBaseUrl()}/api/priority-queue/extend`, {
-    method: 'POST',
-    credentials: 'include',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ guid, days }),
-  });
-  return jsonOk<{ ok: true; days: number; purchaseChanges: number; manualChanges: number; entry: PriorityQueueEntry | null }>(
-    res,
-    'Failed to extend priority queue',
-  );
-}
-
-// Set a holder's priority-queue expiry to an absolute date (unix seconds) — from the calendar picker.
-export async function setPriorityQueueExpiry(
-  guid: string,
-  until: number,
-): Promise<{ ok: true; until: number; purchaseChanges: number; manualChanges: number; entry: PriorityQueueEntry | null }> {
-  const res = await fetch(`${requireApiBaseUrl()}/api/priority-queue/extend`, {
-    method: 'POST',
-    credentials: 'include',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ guid, until }),
-  });
-  return jsonOk<{ ok: true; until: number; purchaseChanges: number; manualChanges: number; entry: PriorityQueueEntry | null }>(
-    res,
-    'Failed to set priority queue expiry',
-  );
-}
-
-export async function deletePriorityQueue(guid: string): Promise<{ ok: true; removed: number }> {
-  const res = await fetch(`${requireApiBaseUrl()}/api/priority-queue/${encodeURIComponent(guid)}`, {
-    method: 'DELETE',
-    credentials: 'include',
-  });
-  return jsonOk<{ ok: true; removed: number }>(res, 'Failed to delete priority queue entry');
+  return jsonOrApiError<PriorityQueueMoveResult>(res, 'Failed to move priority queue');
 }
 
 // ─── Developer settings (Discord webhook + server ingest keys) ───────────────

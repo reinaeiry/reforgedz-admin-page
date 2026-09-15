@@ -1,24 +1,21 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  ApiError,
   type AdminEntry,
   type AdminManagerSnapshot,
   type PriorityQueueEntry,
+  type PriorityQueueOrder,
   type PriorityQueueServer,
   type PriorityQueueSnapshot,
-  type PriorityQueueSource,
   type ReforgerServer,
   type ServerCapacity,
   addAdminToCache,
-  addManualPriorityQueue,
   deleteAdmin,
-  deletePriorityQueue,
   getAdminManagerSnapshot,
   getPriorityQueue,
   renameAdmin,
-  setPriorityQueueExpiry,
   switchPriorityQueueServer,
   toggleAdminOnServer,
-  togglePriorityQueueServer,
 } from '../../util/api';
 
 const GUID_RE = /^[0-9a-fA-F-]{36}$/;
@@ -27,27 +24,22 @@ const REVALIDATE_INTERVAL_MS = 30 * 1000;
 const PQ_SESSION_KEY = 'pq.snapshot.v1';
 const PQ_REVALIDATE_INTERVAL_MS = 30 * 1000;
 
-// Format a priority-queue expiry (unix seconds). null = permanent, undefined = unknown.
-function fmtPqExpiry(
-  ts: number | null | undefined,
-  opts?: { assigned?: boolean; hasEntitlement?: boolean },
-): { text: string; soon: boolean; note: string } {
-  // No server selected means they hold nothing right now, so a null date is "no
-  // access" rather than "permanent" — saying Permanent there reads as the opposite
-  // of the truth.
-  const unassigned = opts?.assigned === false;
-  const note = unassigned ? 'No server selected — this holder currently has no priority queue' : '';
-  if (ts === undefined) return { text: '—', soon: false, note };
-  if (ts === null) {
-    if (unassigned) return { text: opts?.hasEntitlement ? 'Permanent' : '—', soon: false, note };
-    return { text: 'Permanent', soon: false, note };
+// The end of a holder's paid period (unix seconds). A subscription still billing keeps
+// its slot for a few hours past that date while PayPal takes the renewal, so a listed
+// holder with a date in the past has a renewal due.
+function fmtPqExpiry(ts: number | null | undefined): { text: string; color: string; title: string } {
+  if (ts == null) return { text: '-', color: 'var(--text-dim)', title: '' };
+  const ms = ts * 1000;
+  const date = new Date(ms).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' });
+  if (ms <= Date.now()) {
+    return {
+      text: `${date}, renewal due`,
+      color: '#e6a23c',
+      title: 'The paid period has ended. The subscription keeps its slot for a few hours while PayPal takes the renewal, and loses it if no payment arrives.',
+    };
   }
-  const days = Math.ceil((ts * 1000 - Date.now()) / 86400000);
-  return {
-    text: new Date(ts * 1000).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' }),
-    soon: days <= 7,
-    note,
-  };
+  const soon = Math.ceil((ms - Date.now()) / 86400000) <= 7;
+  return { text: date, color: soon ? 'var(--danger, #e66)' : 'var(--text-dim)', title: `Paid until ${new Date(ms).toLocaleString()}` };
 }
 
 // Short server tag for column headers / count chips: drop anything after a "(" or a dash
@@ -56,14 +48,12 @@ function shortServer(label: string): string {
   return (label || '').split(/\s+[—–-]\s+|\s*\(/)[0].trim() || label;
 }
 
-// When they bought / were granted priority queue. Falls back to the manual-grant
-// date so entries with no purchase behind them still show something useful.
-function fmtPqPurchased(e: { purchasedAt?: number | null; grantedAt?: number | null }): { text: string; title: string } {
-  const ts = e.purchasedAt ?? e.grantedAt ?? null;
-  if (ts == null) return { text: '—', title: 'No purchase or grant date recorded' };
+// When they last paid for priority queue (the newest live order).
+function fmtPqPurchased(e: { purchasedAt?: number | null }): { text: string; title: string } {
+  const ts = e.purchasedAt ?? null;
+  if (ts == null) return { text: '-', title: 'No purchase date recorded' };
   const text = new Date(ts * 1000).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' });
-  const kind = e.purchasedAt != null ? 'Purchased' : 'Manually granted';
-  return { text, title: `${kind} ${new Date(ts * 1000).toLocaleString()}` };
+  return { text, title: `Latest paid order ${new Date(ts * 1000).toLocaleString()}` };
 }
 
 // Total slots used per server, against the game.admins limit. GMs and queue
@@ -101,13 +91,18 @@ function SlotChips({ capacity }: { capacity?: Record<string, ServerCapacity | nu
   return (
     <div className="pq-stats">
       {servers.map((c) => {
-        const pct = c.limit > 0 ? c.total / c.limit : 0;
+        // Priority queue the shop has sold for the server but not written yet takes a place too.
+        const waiting = c.pqWaiting || 0;
+        const pct = c.limit > 0 ? (c.total + waiting) / c.limit : 0;
         const color = pct >= 1 ? 'var(--danger, #e66)' : pct >= 0.9 ? '#e6a23c' : undefined;
+        const title = `${c.tag}: ${c.gms} GM + ${c.pq} priority queue = ${c.total} of ${c.limit} slots`
+          + (waiting ? `, plus ${waiting} priority queue added at the shop's next sync` : '')
+          + ` · ${c.remaining} free`;
         return (
           <span
             key={c.tag}
             className="pq-stat"
-            title={`${c.tag}: ${c.gms} GM + ${c.pq} priority queue = ${c.total} of ${c.limit} slots · ${c.remaining} free`}
+            title={title}
           >
             {c.tag} <b style={color ? { color } : undefined}>{c.total}/{c.limit}</b>
           </span>
@@ -115,14 +110,6 @@ function SlotChips({ capacity }: { capacity?: Record<string, ServerCapacity | nu
       })}
     </div>
   );
-}
-
-// Unix seconds -> "YYYY-MM-DD" (local) for <input type="date">.
-function toYMD(tsSeconds: number): string {
-  const d = new Date(tsSeconds * 1000);
-  const mm = String(d.getMonth() + 1).padStart(2, '0');
-  const dd = String(d.getDate()).padStart(2, '0');
-  return `${d.getFullYear()}-${mm}-${dd}`;
 }
 
 type AdminTab = 'gms' | 'priorityQueue';
@@ -375,21 +362,24 @@ function GmsTab() {
   }
 
   function onToggle(guid: string, pteroId: string, present: boolean): void {
-    setSnapshot((prev) => {
+    const setPresence = (value: boolean) => setSnapshot((prev) => {
       if (!prev) return prev;
       return {
         ...prev,
         admins: prev.admins.map((a) =>
-          a.guid === guid ? { ...a, presence: { ...a.presence, [pteroId]: present } } : a,
+          a.guid === guid ? { ...a, presence: { ...a.presence, [pteroId]: value } } : a,
         ),
       };
     });
+    setPresence(present);
     void (async () => {
       try {
         await toggleAdminOnServer(guid, pteroId, present);
       } catch (e) {
         setError(e instanceof Error ? e.message : 'Failed to update server');
-        await revalidate(true);
+        // A full admin list changed nothing on the server, so only the dot goes back.
+        if (e instanceof ApiError && e.code === 'admin_list_full') setPresence(!present);
+        else await revalidate(true);
       }
     })();
   }
@@ -550,6 +540,14 @@ function GmsTab() {
                   {orderedServers.map((s) => {
                     const on = !!a.presence[s.pteroId];
                     const region = regionByPteroId[s.pteroId] || 'unknown';
+                    // A hint only: the server checks the list as it is when the dot is clicked.
+                    const cap = snapshot?.capacity?.[s.pteroId];
+                    const full = !on && cap ? cap.total + (cap.pqWaiting || 0) >= cap.limit : false;
+                    const title = on
+                      ? `Click to remove from ${s.tag}`
+                      : full && cap
+                        ? `${s.tag}'s admin list is full (${cap.total} of ${cap.limit}). Remove a game master there first.`
+                        : `Click to grant on ${s.tag}`;
                     return (
                       <td key={s.pteroId} className={`gm-col-server ${region.toLowerCase()}`}>
                         <button
@@ -558,7 +556,7 @@ function GmsTab() {
                           disabled={!s.sshConfigured}
                           onClick={() => onToggle(a.guid, s.pteroId, !on)}
                           aria-label={on ? `Remove ${a.displayName} from ${s.tag}` : `Grant ${a.displayName} access on ${s.tag}`}
-                          title={on ? `Click to remove from ${s.tag}` : `Click to grant on ${s.tag}`}
+                          title={title}
                         />
                       </td>
                     );
@@ -591,9 +589,10 @@ function GmsTab() {
 }
 
 // ────────────────────────────────────────────────────────────────────────────
-// Priority Queue tab — manages who has priority queue on each game server.
-// Data lives in reforgedz-dotnet (the shop). Purchase-driven dots are locked;
-// manual dots can be toggled.
+// Priority Queue tab: who holds priority queue on each game server, read from the
+// shop. Priority queue comes only from a paid order, so the list is read-only apart
+// from moving a paying holder's order to another server. Taking priority queue away
+// is a revoke in the shop's admin panel.
 // ────────────────────────────────────────────────────────────────────────────
 
 function pqRegion(serverId: string): 'EU' | 'NA' | 'unknown' {
@@ -603,16 +602,40 @@ function pqRegion(serverId: string): 'EU' | 'NA' | 'unknown' {
   return 'unknown';
 }
 
+// Orders that can move: priority queue for one server. A product that covers every
+// server has no server to move.
+function movableOrders(entry: PriorityQueueEntry): PriorityQueueOrder[] {
+  return (entry.orders || []).filter((o) => !!o.serverId);
+}
+
+function pqServerName(servers: PriorityQueueServer[], id: string | null | undefined): string {
+  if (!id) return 'no server';
+  const s = servers.find((x) => x.id === id);
+  return s ? shortServer(s.label) : id.toUpperCase();
+}
+
+function pqOrderLabel(o: PriorityQueueOrder, servers: PriorityQueueServer[]): string {
+  const until = new Date(o.effectiveUntil * 1000).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' });
+  return `#${o.id} · ${pqServerName(servers, o.serverId)} · ${o.isSubscription ? 'subscription' : 'one-time'} · paid to ${until}`;
+}
+
+type PqMove = {
+  guid: string;
+  // The order to move; null until staff pick one when the ID has several.
+  orderId: number | null;
+  from: string;
+  to: string;
+  reason: string;
+  busy: boolean;
+};
+
 function PriorityQueueTab() {
   const cached = loadCachedPq();
   const [snapshot, setSnapshot] = useState<PriorityQueueSnapshot | null>(cached);
   const [error, setError] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
   const [search, setSearch] = useState('');
-  const [showAdd, setShowAdd] = useState(false);
-  const [newGuid, setNewGuid] = useState('');
-  const [newName, setNewName] = useState('');
-  const [newServerId, setNewServerId] = useState<string>('');
+  const [move, setMove] = useState<PqMove | null>(null);
   // Slot usage lives on the GM snapshot (it is read from each server's real
   // game.admins), but the same allowance is what the queue eats into.
   const [capacity, setCapacity] = useState<Record<string, ServerCapacity | null> | undefined>(
@@ -663,18 +686,12 @@ function PriorityQueueTab() {
     return counts;
   }, [snapshot, servers]);
 
-  const newGuidValid = GUID_RE.test(newGuid.trim());
-
   function applyEntry(entry: PriorityQueueEntry): void {
     setSnapshot((prev) => {
       if (!prev) return { servers, entries: [entry] };
       const idx = prev.entries.findIndex((x) => x.guid === entry.guid);
-      // Keep zero-presence holders visible when they still have an entitlement —
-      // the server list includes them (so admins can pick their server), and
-      // splicing them out here made a holder vanish mid-edit whenever a toggle
-      // response came back without presence.
       const stillListed = Object.values(entry.presence).some(Boolean) || entry.hasEntitlement === true;
-      let next = prev.entries.slice();
+      const next = prev.entries.slice();
       if (idx >= 0) {
         if (!stillListed) next.splice(idx, 1);
         else next[idx] = entry;
@@ -687,143 +704,59 @@ function PriorityQueueTab() {
     });
   }
 
-  function onAdd(): void {
-    if (!newGuidValid) {
-      setError('GUID must be 36 chars with hyphens, e.g. fa3dab9d-f22a-44e4-959d-a4afd597acbc');
-      return;
-    }
-    if (!newServerId) {
-      setError('Pick a server to grant on.');
-      return;
-    }
-    setError(null);
-    const guid = newGuid.trim().toLowerCase();
-    const name = newName.trim();
-    setNewGuid('');
-    setNewName('');
-    setShowAdd(false);
-    setInfo(`Granting priority queue on ${newServerId.toUpperCase()}…`);
-    void (async () => {
-      try {
-        const r = await addManualPriorityQueue(guid, { displayName: name || undefined, serverId: newServerId });
-        applyEntry(r.entry);
-        setInfo('Granted. Restart the affected server for it to take effect in-game.');
-      } catch (e) {
-        setError(e instanceof Error ? e.message : 'Failed to add');
-        await revalidate();
-      }
-    })();
-  }
-
-  function onToggle(entry: PriorityQueueEntry, serverId: string): void {
-    const source = entry.sources[serverId];
-    const present = !!entry.presence[serverId];
-    // Any server is togglable for anyone — toggling a purchase-driven server off records a
-    // "deny" on the backend (hides queue access there) without touching their order.
-    setError(null);
-    const nextPresent = !present;
-    // Optimistic update
-    const optimistic: PriorityQueueEntry = {
-      ...entry,
-      presence: { ...entry.presence, [serverId]: nextPresent },
-      sources: {
-        ...entry.sources,
-        [serverId]: nextPresent
-          ? source === 'purchase' ? 'both' : 'manual'
-          : source === 'both' ? 'purchase' : null,
-      },
-    };
-    applyEntry(optimistic);
-    void (async () => {
-      try {
-        const r = await togglePriorityQueueServer(entry.guid, serverId, nextPresent, entry.displayName || undefined);
-        applyEntry(r.entry);
-      } catch (e) {
-        setError(e instanceof Error ? e.message : 'Failed to toggle');
-        await revalidate();
-      }
-    })();
-  }
-
-  function onDelete(entry: PriorityQueueEntry): void {
-    const sources = Object.values(entry.sources);
-    const manualCount = sources.filter((s) => s === 'manual' || s === 'both').length;
-    // Only refuse when the entry is genuinely purchase-only. A holder with no
-    // server selected has no sources at all, yet still has rows worth clearing —
-    // refusing there left them undeletable.
-    if (manualCount === 0 && sources.some((s) => s === 'purchase')) {
-      setError("This entry only exists from purchases. Revoke the order in the shop's admin panel.");
-      return;
-    }
-    const what = manualCount > 0
-      ? `all ${manualCount} manual priority queue grant${manualCount === 1 ? '' : 's'}`
-      : 'the leftover priority queue rows';
-    const ok = window.confirm(
-      `Remove ${what} for ${entry.displayName || entry.guid}? Any purchase-driven slots will remain.`,
-    );
-    if (!ok) return;
-    setError(null);
-    void (async () => {
-      try {
-        const r = await deletePriorityQueue(entry.guid);
-        await revalidate();
-        setInfo(r.removed > 0 ? `Removed ${r.removed} row${r.removed === 1 ? '' : 's'}.` : 'Nothing left to remove.');
-      } catch (e) {
-        setError(e instanceof Error ? e.message : 'Failed to delete');
-        await revalidate();
-      }
-    })();
-  }
-
-  // Server-move state: which holder is being moved, and the chosen from/to.
-  // A move is ONE atomic backend call (grant new + deny old in a transaction),
-  // built for "bought priority queue on X, please switch me to Y" tickets —
-  // unlike two dot-toggles, it can't half-apply, and the new server inherits
-  // the holder's real entitlement expiry so renewals keep it alive.
-  const [move, setMove] = useState<{ guid: string; from: string; to: string } | null>(null);
-
   function onStartMove(entry: PriorityQueueEntry): void {
-    const present = servers.filter((s) => !!entry.presence[s.id]).map((s) => s.id);
     setError(null);
-    setMove({ guid: entry.guid, from: present[0] || '', to: '' });
+    setInfo(null);
+    if (!entry.orders) {
+      // A shop from before order details would move by writing a grant and a block,
+      // which the owner has retired, so there is no move until the shop is updated.
+      setMove(null);
+      setError('The shop needs updating before orders can be moved.');
+      return;
+    }
+    const orders = movableOrders(entry);
+    if (orders.length === 0) {
+      setMove(null);
+      setError(`${entry.displayName || entry.guid} has priority queue from a product that covers every server, so there is no server to move.`);
+      return;
+    }
+    const only = orders.length === 1 ? orders[0] : null;
+    setMove({ guid: entry.guid, orderId: only ? only.id : null, from: only?.serverId || '', to: '', reason: '', busy: false });
   }
 
   function onApplyMove(entry: PriorityQueueEntry): void {
-    if (!move || !move.to) return;
+    if (!move || move.busy || !move.to || move.to === move.from) return;
+    if (move.orderId == null) {
+      setError('Pick which order to move.');
+      return;
+    }
     const label = entry.displayName || entry.guid;
-    const fromLabel = move.from ? move.from.toUpperCase() : 'no server';
-    setMove(null);
-    setInfo(`Moving ${label} from ${fromLabel} to ${move.to.toUpperCase()}…`);
-    void (async () => {
-      try {
-        const r = await switchPriorityQueueServer(entry.guid, move.to, move.from || null, entry.displayName || undefined);
-        applyEntry(r.entry);
-        setInfo(`Moved ${label} to ${move.to.toUpperCase()}. Restart the affected servers for it to take effect in-game.`);
-      } catch (e) {
-        setError(e instanceof Error ? e.message : 'Failed to switch server');
-        await revalidate();
-      }
-    })();
-  }
-
-  const expiryRefs = useRef<Record<string, HTMLInputElement | null>>({});
-
-  function onSetExpiry(entry: PriorityQueueEntry, ymd: string): void {
-    if (!ymd) return;
-    const until = Math.floor(new Date(`${ymd}T23:59:59`).getTime() / 1000);
-    if (!Number.isFinite(until)) return;
-    const label = entry.displayName || entry.guid;
-    const nice = new Date(until * 1000).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' });
+    const request = { to: move.to, from: move.from || null, orderId: move.orderId, reason: move.reason };
+    setMove({ ...move, busy: true });
     setError(null);
-    setInfo(`Setting ${label} to expire ${nice}…`);
+    setInfo(`Moving ${label} to ${pqServerName(servers, move.to)}…`);
     void (async () => {
       try {
-        await setPriorityQueueExpiry(entry.guid, until);
-        await revalidate();
-        setInfo(`${label} now expires ${nice}.`);
+        const r = await switchPriorityQueueServer(entry.guid, request);
+        applyEntry(r.entry);
+        setMove(null);
+        const rows = Array.isArray(r.orderIds) ? r.orderIds.length : 0;
+        setInfo(
+          `Moved ${label} from ${pqServerName(servers, r.from)} to ${pqServerName(servers, r.to)}`
+          + (r.orderId ? ` (order #${r.orderId}${rows > 1 ? `, ${rows} payment rows of the subscription` : ''})` : '')
+          + '. Each server applies it at its next restart.',
+        );
+        void revalidate();
       } catch (e) {
-        setError(e instanceof Error ? e.message : 'Failed to set expiry');
-        await revalidate();
+        setInfo(null);
+        setError(e instanceof Error ? e.message : 'Failed to move priority queue');
+        if (e instanceof ApiError && e.code === 'ambiguous') {
+          // The list on screen was older than the shop's: reload it so every order can be picked.
+          setMove((m) => (m ? { ...m, orderId: null, busy: false } : m));
+          await revalidate();
+          return;
+        }
+        setMove((m) => (m ? { ...m, busy: false } : m));
       }
     })();
   }
@@ -849,96 +782,88 @@ function PriorityQueueTab() {
             </span>
           </div>
         )}
-        <span className="spacer" />
-        <button className="button" onClick={() => setShowAdd((v) => !v)}>
-          {showAdd ? 'Cancel' : '+ Grant priority queue'}
-        </button>
       </div>
 
       <div className="gm-banner">
-        Buying the Priority Queue product in the shop automatically grants this. Use this tab to grant manually
-        without a purchase, or to toggle which servers anyone has it on — including purchases (that only changes
-        queue access here, it never touches their order). Restart the affected server for game.admins changes to apply in-game.
+        Priority queue comes only from a paid order in the shop, so this list is read-only. Use move to put a paying
+        holder&apos;s order on another server. To take priority queue away, revoke the order in the shop&apos;s admin panel.
+        Game servers read the admin list at start, so every change applies at each server&apos;s next restart.
       </div>
 
       {error ? <div className="error">{error}</div> : null}
       {info ? <div className="card" style={{ fontSize: 12, color: 'var(--text-dim)' }}>{info}</div> : null}
 
-      {showAdd ? (
-        <div className="card">
-          <div className="stack" style={{ gap: 10 }}>
-            <div style={{ fontWeight: 700, color: 'var(--text-bright)' }}>Grant priority queue</div>
-            <div className="row" style={{ gap: 10 }}>
-              <div style={{ flex: 2 }}>
-                <div className="label">GUID</div>
-                <input className="input" value={newGuid} onChange={(e) => setNewGuid(e.target.value)} placeholder="fa3dab9d-f22a-44e4-959d-a4afd597acbc" />
-              </div>
-              <div style={{ flex: 1 }}>
-                <div className="label">Display name (optional)</div>
-                <input className="input" value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="NattiKitten" />
-              </div>
-              <div style={{ minWidth: 120 }}>
-                <div className="label">Server</div>
-                <select className="input" value={newServerId} onChange={(e) => setNewServerId(e.target.value)}>
-                  <option value="">Pick…</option>
-                  {servers.map((s) => (
-                    <option key={s.id} value={s.id}>{s.label}</option>
-                  ))}
-                </select>
-              </div>
-              <div style={{ alignSelf: 'end' }}>
-                <button className="buttonPrimary button" onClick={onAdd} disabled={!newGuidValid || !newServerId}>Grant</button>
-              </div>
-            </div>
-            <div style={{ fontSize: 11, color: 'var(--text-dim)' }}>
-              The GUID will be added to that server's <code>game.admins</code> array and written into the shop's <code>purchases.json</code>. Use the dots in the table to add this person to additional servers afterwards.
-            </div>
-          </div>
-        </div>
-      ) : null}
-
       {(() => {
         if (!move) return null;
         const entry = snapshot?.entries.find((x) => x.guid === move.guid);
         if (!entry) return null;
-        const presentIds = servers.filter((s) => !!entry.presence[s.id]).map((s) => s.id);
+        const orders = movableOrders(entry);
+        // A server the shop does not sell (the dev server) cannot take a move.
+        const destinations = servers.filter((s) => s.sellable !== false && s.id !== move.from);
+        const needsOrder = move.orderId == null;
         return (
           <div className="card">
             <div className="stack" style={{ gap: 10 }}>
               <div style={{ fontWeight: 700, color: 'var(--text-bright)' }}>
-                Switch server — {entry.displayName || entry.guid}
+                Move priority queue: {entry.displayName || entry.guid}
               </div>
-              <div className="row" style={{ gap: 10 }}>
-                <div style={{ minWidth: 140 }}>
-                  <div className="label">From</div>
-                  <select className="input" value={move.from} onChange={(e) => setMove({ ...move, from: e.target.value })}>
-                    <option value="">None (grant only)</option>
-                    {servers.filter((s) => presentIds.includes(s.id)).map((s) => (
-                      <option key={s.id} value={s.id}>{s.label}</option>
+              <div className="row" style={{ gap: 10, flexWrap: 'wrap' }}>
+                <div style={{ minWidth: 260 }}>
+                  <div className="label">Order</div>
+                  <select
+                    className="input"
+                    value={move.orderId == null ? '' : String(move.orderId)}
+                    disabled={move.busy || (orders.length < 2 && move.orderId != null)}
+                    onChange={(ev) => {
+                      const o = orders.find((x) => String(x.id) === ev.target.value) || null;
+                      const from = o?.serverId || '';
+                      setMove({ ...move, orderId: o ? o.id : null, from, to: move.to === from ? '' : move.to });
+                    }}
+                  >
+                    {orders.length > 1 || move.orderId == null ? <option value="">Pick which order…</option> : null}
+                    {orders.map((o) => (
+                      <option key={o.id} value={String(o.id)}>{pqOrderLabel(o, servers)}</option>
                     ))}
                   </select>
                 </div>
                 <div style={{ minWidth: 140 }}>
                   <div className="label">To</div>
-                  <select className="input" value={move.to} onChange={(e) => setMove({ ...move, to: e.target.value })}>
+                  <select className="input" value={move.to} disabled={move.busy} onChange={(ev) => setMove({ ...move, to: ev.target.value })}>
                     <option value="">Pick…</option>
-                    {servers.filter((s) => s.id !== move.from).map((s) => (
+                    {destinations.map((s) => (
                       <option key={s.id} value={s.id}>{s.label}</option>
                     ))}
                   </select>
                 </div>
+                <div style={{ flex: 1, minWidth: 220 }}>
+                  <div className="label">Reason</div>
+                  <input
+                    className="input"
+                    value={move.reason}
+                    maxLength={400}
+                    disabled={move.busy}
+                    onChange={(ev) => setMove({ ...move, reason: ev.target.value })}
+                    placeholder="Ticket number, and what the player asked for"
+                  />
+                </div>
                 <div style={{ alignSelf: 'end' }}>
-                  <button className="buttonPrimary button" onClick={() => onApplyMove(entry)} disabled={!move.to || move.to === move.from}>
-                    Switch
+                  <button
+                    className="buttonPrimary button"
+                    onClick={() => onApplyMove(entry)}
+                    disabled={move.busy || needsOrder || !move.to || move.to === move.from}
+                  >
+                    {move.busy ? 'Moving…' : 'Move'}
                   </button>
                 </div>
                 <div style={{ alignSelf: 'end' }}>
-                  <button className="button" onClick={() => setMove(null)}>Cancel</button>
+                  <button className="button" onClick={() => setMove(null)} disabled={move.busy}>Cancel</button>
                 </div>
               </div>
               <div style={{ fontSize: 11, color: 'var(--text-dim)' }}>
-                One atomic move: the new server is granted with this holder's current expiry and the old one is hidden.
-                Works for purchases and subscriptions — their order is never touched, and renewals keep the new server active.
+                This changes the order itself: every payment of the subscription moves to the new server, so the paid time
+                carries over and renewals pay for the new server. The shop refuses a server with no free slot, an order that
+                has lapsed or was refunded, and a server this ID already has priority queue on. Your name and the reason go
+                into the shop&apos;s audit record and onto the staff card.
               </div>
             </div>
           </div>
@@ -970,7 +895,7 @@ function PriorityQueueTab() {
                 );
               })}
               <th>Purchased</th>
-              <th>Expires</th>
+              <th>Paid until</th>
               <th />
             </tr>
           </thead>
@@ -978,11 +903,13 @@ function PriorityQueueTab() {
             {filtered.length === 0 ? (
               <tr>
                 <td colSpan={5 + servers.length} className="gm-empty">
-                  {snapshot ? 'Nobody has priority queue yet.' : 'Loading...'}
+                  {snapshot ? 'Nobody holds priority queue right now.' : 'Loading...'}
                 </td>
               </tr>
             ) : null}
             {filtered.map((e) => {
+              const p = fmtPqPurchased(e);
+              const x = fmtPqExpiry(e.expiresAt);
               return (
                 <tr key={e.guid}>
                   <td className="gm-sticky">
@@ -993,73 +920,28 @@ function PriorityQueueTab() {
                   <td><span className="gm-guid">{e.guid}</span></td>
                   {servers.map((s) => {
                     const on = !!e.presence[s.id];
-                    const source: PriorityQueueSource = e.sources[s.id];
                     const region = pqRegion(s.id);
-                    const title = on
-                      ? `Click to remove from ${s.label}${source === 'purchase' ? ' (hides it without changing their order)' : ''}`
-                      : `Click to grant on ${s.label}`;
+                    const title = on ? `Paid priority queue on ${s.label}` : `No priority queue on ${s.label}`;
                     return (
                       <td key={s.id} className={`gm-col-server ${region.toLowerCase()}`}>
-                        <button
-                          type="button"
-                          className={`gm-dot ${on ? 'on' : ''}`}
-                          onClick={() => onToggle(e, s.id)}
-                          aria-label={title}
-                          title={title}
-                        />
+                        <span className={`gm-dot gm-dot--readonly ${on ? 'on' : ''}`} role="img" aria-label={title} title={title} />
                       </td>
                     );
                   })}
                   <td>
-                    {(() => {
-                      const p = fmtPqPurchased(e);
-                      return <span className="pq-purchased" title={p.title} style={{ color: 'var(--text-dim)' }}>{p.text}</span>;
-                    })()}
+                    <span className="pq-purchased" title={p.title} style={{ color: 'var(--text-dim)' }}>{p.text}</span>
                   </td>
                   <td>
-                    {(() => {
-                      const x = fmtPqExpiry(e.expiresAt, { assigned: e.assigned, hasEntitlement: e.hasEntitlement });
-                      return (
-                        <span className="pq-expiry" title={x.note || undefined}>
-                          <button
-                            type="button"
-                            className="pq-date-btn"
-                            style={{ color: x.soon ? 'var(--danger, #e66)' : 'var(--text-dim)' }}
-                            onClick={() => {
-                              const el = expiryRefs.current[e.guid];
-                              if (el?.showPicker) el.showPicker();
-                              else el?.focus();
-                            }}
-                            title="Click to pick an expiry date"
-                          >
-                            {x.text}<span className="pq-cal" aria-hidden="true">📅</span>
-                          </button>
-                          <input
-                            ref={(el) => { expiryRefs.current[e.guid] = el; }}
-                            type="date"
-                            className="pq-date-input"
-                            min={toYMD(Date.now() / 1000)}
-                            defaultValue={e.expiresAt != null ? toYMD(e.expiresAt) : ''}
-                            onChange={(ev) => onSetExpiry(e, ev.target.value)}
-                          />
-                        </span>
-                      );
-                    })()}
+                    <span title={x.title || undefined} style={{ color: x.color, whiteSpace: 'nowrap' }}>{x.text}</span>
                   </td>
                   <td>
                     <div className="gm-actions">
                       <button
                         className="gm-icon-btn"
                         onClick={() => onStartMove(e)}
-                        title="Switch this holder to a different server (atomic move — safe for subscriptions)"
+                        title="Move this holder's order to another server"
                       >
                         move
-                      </button>
-                      <button
-                        className="gm-icon-btn danger"
-                        onClick={() => onDelete(e)}
-                      >
-                        delete
                       </button>
                     </div>
                   </td>

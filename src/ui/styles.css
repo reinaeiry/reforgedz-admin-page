@@ -535,36 +535,6 @@ select.input option { background: var(--surface); color: var(--text); }
 .pq-stat.na b { color: var(--orange); }
 .pq-stat.total b { color: var(--green); }
 
-/* Expiry date picker — click the date to open the native calendar */
-.pq-expiry { position: relative; display: inline-flex; align-items: center; }
-.pq-date-btn {
-  background: none;
-  border: none;
-  cursor: pointer;
-  font: inherit;
-  font-size: 12.5px;
-  white-space: nowrap;
-  padding: 3px 6px;
-  border-radius: 4px;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-}
-.pq-date-btn:hover { background: var(--bg-raised); }
-.pq-cal { font-size: 11px; opacity: 0.55; }
-/* The native date input drives the calendar popup but stays visually hidden. */
-.pq-date-input {
-  position: absolute;
-  left: 8px;
-  bottom: -4px;
-  width: 1px;
-  height: 1px;
-  opacity: 0;
-  border: 0;
-  padding: 0;
-  pointer-events: none;
-}
-
 .gm-dryrun {
   font-size: 10px;
   font-weight: 700;
@@ -772,6 +742,10 @@ select.input option { background: var(--surface); color: var(--text); }
 .gm-dot.on:hover:not(:disabled) { box-shadow: 0 0 12px rgba(74, 222, 128, 0.45); }
 .gm-dot.pending { opacity: 0.35; pointer-events: none; }
 .gm-dot:disabled { cursor: not-allowed; opacity: 0.25; }
+/* A status dot that is not a control (the priority queue list is read-only). */
+.gm-dot.gm-dot--readonly { cursor: default; }
+.gm-dot.gm-dot--readonly:hover { transform: none; border-color: var(--border-strong); }
+.gm-dot.gm-dot--readonly.on:hover { border-color: var(--green); box-shadow: 0 0 8px var(--green-dim); }
 
 /* Row actions */
 .gm-actions {
