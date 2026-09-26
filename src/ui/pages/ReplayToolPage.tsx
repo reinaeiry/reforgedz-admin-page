@@ -3640,7 +3640,7 @@ export function ReplayToolPage() {
 
               {attachedPlayerId !== null && attachedPlayerName ? (
                 <div style={{ position: 'absolute', left: 12, right: 12, bottom: panelBottom + 8, display: 'flex', justifyContent: 'center', pointerEvents: 'none', zIndex: 12 }}>
-                  <div className="card" style={{ padding: '8px 12px', background: 'rgba(0,0,0,0.55)', border: '1px solid rgba(255,255,255,0.14)' }}>
+                  <div className="card replayOverlay-card" style={{ padding: '8px 12px' }}>
                     <div style={{ fontWeight: 800, fontSize: 12 }}>
                       Attached to {attachedPlayerName}, press F to unattach
                     </div>
@@ -3657,8 +3657,8 @@ export function ReplayToolPage() {
                       pointerEvents: 'none',
                       padding: '10px 12px',
                       borderRadius: 10,
-                      background: 'rgba(0,0,0,0.55)',
-                      border: '1px solid rgba(255,255,255,0.14)',
+                      background: 'rgba(10,12,16,0.92)',
+                      border: '1px solid rgba(255,255,255,0.16)',
                       opacity: t.visible ? 1 : 0,
                       transform: t.visible ? 'translateY(0px)' : 'translateY(-6px)',
                       transition: 'opacity 250ms ease, transform 250ms ease',
@@ -3693,7 +3693,7 @@ export function ReplayToolPage() {
               <div
                 className={`replayPanel replayPanel--players${isNarrow && mobilePanel !== 'players' ? ' is-hidden' : ''}`}
                 style={{ position: 'absolute', top: 12, left: 12, bottom: panelBottom, width: 300, display: 'flex', flexDirection: 'column' }}>
-                <div className="card" style={{ padding: 10, background: 'rgba(0,0,0,0.55)', border: '1px solid rgba(255,255,255,0.14)', display: 'flex', flexDirection: 'column', overflow: 'hidden', maxHeight: '100%' }}>
+                <div className="card replayPanel-card">
                   <ReplayPlayersPanel
                     players={filteredPlayers}
                     totalPlayers={playersAtTime.length}
@@ -3896,7 +3896,7 @@ export function ReplayToolPage() {
               <div
                 className={`replayPanel replayPanel--events${isNarrow && mobilePanel !== 'events' ? ' is-hidden' : ''}`}
                 style={{ position: 'absolute', top: 12, right: 12, bottom: panelBottom, width: 280, display: 'flex', flexDirection: 'column' }}>
-                <div className="card" style={{ padding: 10, background: 'rgba(0,0,0,0.55)', border: '1px solid rgba(255,255,255,0.14)', display: 'flex', flexDirection: 'column', overflow: 'hidden', maxHeight: '100%' }}>
+                <div className="card replayPanel-card">
                   <ReplayEventsPanel
                     events={allParsedEvents}
                     players={playersAtTime}
@@ -3970,7 +3970,7 @@ export function ReplayToolPage() {
                 <div
                   className={`replayPanel replayPanel--vehicles${isNarrow && mobilePanel !== 'vehicles' ? ' is-hidden' : ''}`}
                   style={{ position: 'absolute', top: 12, left: playersPanelOpen ? 320 : 64, width: 280, bottom: panelBottom, display: 'flex', flexDirection: 'column' }}>
-                  <div className="card" style={{ padding: 10, background: 'rgba(0,0,0,0.55)', border: '1px solid rgba(255,255,255,0.14)', display: 'flex', flexDirection: 'column', overflow: 'hidden', maxHeight: '100%' }}>
+                  <div className="card replayPanel-card">
                     <div className="row" style={{ flexShrink: 0, justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
                       <div style={{ fontWeight: 800, fontSize: 12 }}>Vehicles ({vehicleIndex.length})</div>
                       <button className="button" style={{ padding: '2px 8px', fontSize: 10 }} onClick={() => setVehiclePanelOpen(false)}>Hide</button>

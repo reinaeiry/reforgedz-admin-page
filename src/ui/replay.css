@@ -666,3 +666,39 @@
   .replayTimeline.is-compact { padding-top: 8px; }
   .replayTimeline.is-compact .replayTimeline-clock { font-size: 15px; }
 }
+
+/* ═══ Floating panels have to be readable over a satellite map ═════════════
+   They were rgba(0,0,0,0.55) — tolerable over a dark desktop map, unreadable
+   over Chernarus terrain on a phone, where the labels and the panel text sat
+   on top of each other. */
+.replayPanel-card {
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  max-height: 100%;          /* content-sized, capped — as before */
+  background: rgba(10, 12, 16, 0.94);
+  backdrop-filter: blur(10px);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+}
+.replayOverlay-card {
+  background: rgba(10, 12, 16, 0.92);
+  backdrop-filter: blur(10px);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+}
+.replayPanelTabs button { background: rgba(10, 12, 16, 0.97); }
+
+@media (max-width: 900px) {
+  /* No translucency at all on a phone: the map behind is busy and the panel is
+     the thing being read. */
+  .replayPanel-card,
+  .replayOverlay-card {
+    background: #0c0f14;
+    backdrop-filter: none;
+  }
+  .replayPanel-card { box-shadow: 0 10px 30px rgba(0, 0, 0, 0.6); }
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .replayPanel-card, .replayOverlay-card { background: #0c0f14; backdrop-filter: none; }
+}
