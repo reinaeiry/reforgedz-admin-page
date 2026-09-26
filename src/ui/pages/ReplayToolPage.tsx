@@ -850,6 +850,14 @@ export function ReplayToolPage() {
 
     let raf = 0;
     let last = performance.now();
+    let lastCommit = 0;
+
+    // The playhead ref advances every frame, but committing it to React state
+    // every frame re-rendered this whole page (59 useState hooks, 14 useMemos
+    // keyed on currentTsMs, 200 event cards) at 60Hz. State is committed at
+    // ~20Hz at normal speed instead, and the interval shrinks as playback speeds
+    // up so fast playback stays smooth - at 4x that is still every frame.
+    const commitEveryMs = 50 / Math.max(1, playbackSpeed);
 
     function tick(now: number) {
       const dtMs = Math.min(250, Math.max(0, now - last));
@@ -859,12 +867,19 @@ export function ReplayToolPage() {
       if (typeof cur === 'number') {
         const max = range.maxTsMs as number;
         let next = cur + dtMs * playbackSpeed;
+        let ended = false;
         if (next >= max) {
           next = max;
+          ended = true;
           setIsPlaying(false);
         }
         currentTsMsRef.current = next;
-        setCurrentTsMs(next);
+        // Always commit the frame that ends playback, so the playhead lands
+        // exactly on the last instant rather than wherever the throttle left it.
+        if (ended || now - lastCommit >= commitEveryMs) {
+          lastCommit = now;
+          setCurrentTsMs(next);
+        }
       }
 
       raf = window.requestAnimationFrame(tick);
