@@ -1,68 +1,119 @@
-/* Replay tool - new timeline (replaces the old inline-styled scrubber bar)
-   and layout-repositioning styles. Reuses the root custom properties from
-   styles.css (--bg, --surface, --border, --text-dim, --red/--orange/--yellow/
-   --green + their -dim variants) rather than inventing a parallel palette. */
+/* Replay tool - timeline, transport and layout styles. Reuses the root custom
+   properties from styles.css (--bg, --surface, --border, --text-dim, --red/
+   --orange/--yellow/--green + their -dim variants) rather than inventing a
+   parallel palette.
+
+   Touch rules that matter: every draggable canvas sets `touch-action: none`,
+   without which the browser scrolls/zooms the page instead of letting the
+   scrub gesture through, and controls are sized to the 44px minimum target. */
+
+/* ─── Dock: where the timeline sits over the map ─── */
+.replayTimeline-dock {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: 12px;
+  display: flex;
+  justify-content: center;
+  pointer-events: none;           /* the dock is a positioning shell only */
+}
+.replayTimeline-dock > * { pointer-events: auto; }
 
 .replayTimeline {
-  background: rgba(0, 0, 0, 0.45);
+  background: rgba(10, 12, 16, 0.86);
+  backdrop-filter: blur(6px);
   border: 1px solid rgba(255, 255, 255, 0.14);
   border-radius: var(--r, 8px);
-  padding: 10px;
-  width: min(980px, 100%);
+  padding: 10px 12px;
+  width: min(1100px, 100%);
+  box-sizing: border-box;
 }
 
+/* ─── Header: readout + transport ─── */
 .replayTimeline-header {
   display: flex;
   justify-content: space-between;
-  align-items: center;
+  align-items: flex-start;
   gap: 12px;
   flex-wrap: wrap;
 }
-
-.replayTimeline-dayStrip {
-  display: flex;
-  gap: 2px;
-  margin-top: 8px;
-  padding-top: 8px;
-  border-top: 1px solid rgba(255, 255, 255, 0.10);
-  overflow-x: auto;
+.replayTimeline-readout { min-width: 0; }
+.replayTimeline-clock {
+  font-size: 18px;
+  font-weight: 800;
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.3px;
+}
+.replayTimeline-elapsed {
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
 }
 
-.replayTimeline-dayCell {
-  flex: 1 0 auto;
-  min-width: 64px;
+.replayTimeline-transport {
   display: flex;
-  flex-direction: column;
   align-items: center;
-  gap: 2px;
-  padding: 4px 8px;
-  border-radius: 6px;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.replayTimeline-btn {
+  min-height: 36px;
+  min-width: 36px;
+  padding: 6px 10px;
+  border-radius: 8px;
   border: 1px solid var(--border);
   background: var(--surface);
-  color: var(--text-dim);
-  font-size: 11px;
-  cursor: pointer;
-}
-.replayTimeline-dayCell:hover:not(:disabled) {
-  border-color: var(--red);
-  color: var(--text-bright);
-}
-.replayTimeline-dayCell:disabled {
-  opacity: 0.4;
-  cursor: default;
-}
-.replayTimeline-dayCount {
-  font-size: 9px;
+  color: var(--text-bright, #fff);
+  font-size: 13px;
   font-weight: 700;
-  color: var(--text-bright);
-  background: rgba(255, 255, 255, 0.08);
-  border-radius: 999px;
-  padding: 0 5px;
+  line-height: 1;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+.replayTimeline-btn:hover:not(:disabled) { border-color: rgba(255, 255, 255, 0.4); }
+.replayTimeline-btn:disabled { opacity: 0.4; cursor: default; }
+.replayTimeline-btn:focus-visible { outline: 2px solid var(--green, #4ade80); outline-offset: 2px; }
+.replayTimeline-btn-primary { background: rgba(255, 255, 255, 0.14); }
+.replayTimeline-btn-sm { min-height: 30px; min-width: 30px; padding: 4px 8px; font-size: 12px; }
+
+.replayTimeline-live { color: var(--text-dim); letter-spacing: 0.4px; font-size: 11px; }
+.replayTimeline-live.is-on {
+  color: #fff;
+  border-color: rgba(120, 200, 255, 0.8);
+  background: rgba(120, 200, 255, 0.18);
 }
 
+.replayTimeline-select {
+  min-height: 36px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: inherit;
+  font-size: 13px;
+}
+
+/* ─── Tools row: filters + zoom ─── */
+.replayTimeline-tools {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin: 8px 0 6px;
+}
+.replayTimeline-chips { display: flex; gap: 6px; flex-wrap: wrap; flex: 1; min-width: 0; }
+
 .replayTimeline-chip {
-  font-size: 10px;
-  padding: 2px 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 30px;
+  font-size: 11px;
+  padding: 4px 10px;
   border-radius: 999px;
   border: 1px solid var(--border);
   background: transparent;
@@ -70,58 +121,137 @@
   cursor: pointer;
   opacity: 0.55;
 }
-.replayTimeline-chip-on {
-  opacity: 1;
-  color: var(--text-bright);
+.replayTimeline-chip-on { opacity: 1; color: var(--text-bright, #fff); }
+.replayTimeline-chipDot { width: 8px; height: 8px; border-radius: 999px; flex: 0 0 auto; }
+
+.replayTimeline-zoomGroup { display: flex; align-items: center; gap: 4px; }
+.replayTimeline-zoomLabel {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-dim);
+  min-width: 52px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
 }
 
-.replayTimeline-track {
-  position: relative;
-  height: 28px;
-  margin-bottom: 4px;
-}
-.replayTimeline-track::before {
-  content: '';
-  position: absolute;
-  left: 0;
-  right: 0;
-  top: 13px;
-  height: 2px;
-  background: rgba(255, 255, 255, 0.10);
+.replayTimeline-goto { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; flex-wrap: wrap; }
+.replayTimeline-gotoInput {
+  min-height: 36px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: inherit;
+  font-size: 13px;
 }
 
-.replayTimeline-pip {
+/* ─── Canvases ─── */
+.replayTimeline-overview {
+  display: block;
+  width: 100%;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  cursor: grab;
+  touch-action: none;
+}
+.replayTimeline-overview:active { cursor: grabbing; }
+
+.replayTimeline-detailWrap { position: relative; margin-top: 6px; }
+
+.replayTimeline-detail {
+  display: block;
+  width: 100%;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  cursor: crosshair;
+  touch-action: none;             /* the gesture belongs to the scrubber */
+  -webkit-user-select: none;
+  user-select: none;
+}
+.replayTimeline-detail:focus-visible { outline: 2px solid var(--green, #4ade80); outline-offset: 2px; }
+
+/* Readouts float above the track; the drag one sits higher so a fingertip
+   never covers the value being placed. */
+.replayTimeline-scrubReadout,
+.replayTimeline-hoverReadout {
   position: absolute;
-  top: 9px;
-  border-radius: 999px;
-  padding: 0;
-  border: 1px solid rgba(0, 0, 0, 0.35);
+  transform: translateX(-50%);
+  pointer-events: none;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  border-radius: 8px;
+  z-index: 12;
+}
+.replayTimeline-hoverReadout {
+  top: -26px;
+  padding: 3px 7px;
+  font-size: 11px;
+  background: rgba(20, 24, 30, 0.95);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  color: var(--text-dim);
+}
+.replayTimeline-scrubReadout {
+  top: -46px;
+  padding: 6px 10px;
+  font-size: 14px;
+  font-weight: 800;
+  background: rgba(255, 255, 255, 0.95);
+  color: #11151b;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+}
+
+.replayTimeline-popover {
+  position: absolute;
+  bottom: calc(100% + 10px);
+  transform: translateX(-50%);
+  z-index: 20;
+  min-width: 220px;
+  max-width: min(360px, 86vw);
+  background: rgba(16, 19, 24, 0.98);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 10px;
+  padding: 6px;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.5);
+}
+.replayTimeline-popoverHead {
   display: flex;
   align-items: center;
-  justify-content: center;
+  justify-content: space-between;
+  font-size: 11px;
+  font-weight: 800;
+  color: var(--text-dim);
+  padding: 2px 4px 6px;
+}
+.replayTimeline-popoverRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 36px;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  font-size: 12px;
+  text-align: left;
   cursor: pointer;
 }
-.replayTimeline-pipCount {
-  font-size: 8px;
-  font-weight: 800;
-  color: rgba(0, 0, 0, 0.75);
-  line-height: 1;
-}
-
-.replayTimeline-tooltip {
-  position: absolute;
-  top: 0;
-  transform: translate(-50%, -110%);
-  z-index: 10;
-  pointer-events: none;
-  max-width: 320px;
-  white-space: nowrap;
+.replayTimeline-popoverRow:hover { background: rgba(255, 255, 255, 0.08); }
+.replayTimeline-popoverTitle {
+  flex: 1;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid rgba(255, 255, 255, 0.10);
-  border-radius: 10px;
-  padding: 6px 8px;
+  white-space: nowrap;
+}
+
+.replayTimeline-hint {
+  font-size: 10px;
+  margin-top: 6px;
+  opacity: 0.75;
 }
 
 /* ─── Layout: collapsible side panels (low-risk repositioning - reclaim map
@@ -170,4 +300,64 @@
 }
 .replayInvSearch-row-jumpable {
   border-left-color: var(--green, #4ade80);
+}
+
+/* ─── Phones and small tablets ───────────────────────────────────────────
+   The timeline stops floating over the map and becomes a bottom sheet: full
+   width, above the home indicator, with 44px controls. */
+@media (max-width: 760px) {
+  .replayTimeline-dock {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 30;
+  }
+  .replayTimeline {
+    width: 100%;
+    border-radius: 12px 12px 0 0;
+    border-left: 0;
+    border-right: 0;
+    border-bottom: 0;
+    padding: 10px 12px calc(10px + env(safe-area-inset-bottom, 0px));
+    max-height: 62vh;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+  .replayTimeline-header { align-items: center; }
+  .replayTimeline-clock { font-size: 16px; }
+  .replayTimeline-transport { width: 100%; justify-content: space-between; }
+  .replayTimeline-btn { min-height: 44px; min-width: 44px; font-size: 15px; }
+  .replayTimeline-btn-sm { min-height: 38px; min-width: 38px; }
+  .replayTimeline-select { min-height: 44px; font-size: 15px; }
+  .replayTimeline-chip { min-height: 36px; font-size: 12px; padding: 6px 12px; }
+  .replayTimeline-gotoInput { min-height: 44px; width: 100%; }
+  .replayTimeline-zoomGroup { width: 100%; justify-content: space-between; }
+  /* Pointer-hover readouts and mouse-only hints are noise on a touch screen. */
+  .replayTimeline-hint { display: none; }
+}
+
+@media (hover: none) {
+  .replayTimeline-hoverReadout { display: none; }
+  .replayTimeline-hint { display: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .replayTimeline { backdrop-filter: none; }
+}
+
+/* ─── Collapsed: just the clock, the transport and the scrub track, so the map
+   underneath stays visible (matters most on a phone). ─── */
+.replayTimeline.is-compact .replayTimeline-tools,
+.replayTimeline.is-compact .replayTimeline-goto,
+.replayTimeline.is-compact .replayTimeline-overview,
+.replayTimeline.is-compact .replayTimeline-hint,
+.replayTimeline.is-compact .replayTimeline-elapsed {
+  display: none;
+}
+.replayTimeline.is-compact { padding-bottom: 8px; }
+.replayTimeline.is-compact .replayTimeline-detailWrap { margin-top: 4px; }
+.replayTimeline-btn-accent {
+  border-color: rgba(120, 200, 255, 0.8);
+  background: rgba(120, 200, 255, 0.18);
 }

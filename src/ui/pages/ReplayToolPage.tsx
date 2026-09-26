@@ -436,7 +436,7 @@ export function ReplayToolPage() {
   useEffect(() => {
     try { localStorage.setItem('replay.myIngameName', myIngameName); } catch { /* ignore */ }
   }, [myIngameName]);
-  const [scrubberZoom, setScrubberZoom] = useState(1); // 1 = full range, higher = zoomed in
+  // (zoom now lives inside ReplayTimeline as an independent view window)
   const [enableTrails, setEnableTrails] = useState(true);
   const [trailSeconds, setTrailSeconds] = useState(20);
   const [toasts, setToasts] = useState<Array<{ id: string; kind: 'kill' | 'event'; title: string; subtitle: string; visible: boolean }>>([]);
@@ -2504,6 +2504,12 @@ export function ReplayToolPage() {
     return { mapId: def ? def.id : null, world };
   }, [events, terrain]);
 
+  // Always the ABSOLUTE loaded range. Zoom used to be folded in here (window =
+  // currentTsMs +/- half), which had two consequences: the window re-centred on
+  // the playhead so dragging sprang back to the middle, and jumpToEventTs below
+  // clamps to these bounds - so while zoomed, clicking an event outside the
+  // window silently landed you on the window edge instead of the event. The
+  // timeline owns its own view window now; these stay absolute.
   const scrubber = useMemo(() => {
     const absMin = range.minTsMs;
     const absMax = range.maxTsMs;
@@ -2514,22 +2520,8 @@ export function ReplayToolPage() {
     if (absMax <= absMin) {
       return { min: absMin, max: absMin + 1, value: absMin, disabled: false };
     }
-
-    // Apply zoom: narrow the visible range around the current position
-    if (scrubberZoom > 1) {
-      const totalSpan = absMax - absMin;
-      const windowSpan = totalSpan / scrubberZoom;
-      const halfWindow = windowSpan / 2;
-      let zMin = cur - halfWindow;
-      let zMax = cur + halfWindow;
-      // Clamp to absolute range
-      if (zMin < absMin) { zMin = absMin; zMax = Math.min(absMax, absMin + windowSpan); }
-      if (zMax > absMax) { zMax = absMax; zMin = Math.max(absMin, absMax - windowSpan); }
-      return { min: zMin, max: zMax, value: Math.min(Math.max(cur, zMin), zMax), disabled: false };
-    }
-
     return { min: absMin, max: absMax, value: Math.min(Math.max(cur, absMin), absMax), disabled: false };
-  }, [currentTsMs, range.maxTsMs, range.minTsMs, scrubberZoom]);
+  }, [currentTsMs, range.maxTsMs, range.minTsMs]);
 
   const wallClockAnchor = useMemo(() => {
     let bestTs = -Infinity;
@@ -4111,8 +4103,10 @@ export function ReplayToolPage() {
                 </div>
               ) : null}
 
-              {/* Timeline (day strip + marker track + prev/next-event, ReplayTimeline.tsx) */}
-              <div style={{ position: 'absolute', left: 12, right: 12, bottom: 12, display: 'flex', justifyContent: 'center' }}>
+              {/* Timeline (overview + zoomable detail track, ReplayTimeline.tsx).
+                  The dock is a class, not inline styles, so it can become a
+                  bottom sheet on phones (replay.css). */}
+              <div className="replayTimeline-dock">
                 <ReplayTimeline
                   scrubber={scrubber}
                   range={range}
@@ -4122,8 +4116,6 @@ export function ReplayToolPage() {
                   setPlaybackSpeed={setPlaybackSpeed}
                   live={live}
                   setLive={setLive}
-                  scrubberZoom={scrubberZoom}
-                  setScrubberZoom={setScrubberZoom}
                   setCurrentTsMs={setCurrentTsMs}
                   allEvents={allParsedEvents}
                   eventDots={eventDots}
