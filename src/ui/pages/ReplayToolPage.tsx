@@ -2796,6 +2796,25 @@ export function ReplayToolPage() {
   }, [selectedPlayerId, attachedPlayerId, playersAtTime, knownPlayers]);
 
   // Who has a position on the map at this instant - the roster's status column.
+  // The floating panels have to stop above the timeline dock. That clearance used
+  // to be the constant 148, which was already wrong once the dock grew an
+  // overview strip - the panels' lower edge ended up behind it. Measure it.
+  const [dockHeight, setDockHeight] = useState(160);
+  const dockObserverRef = useRef<ResizeObserver | null>(null);
+  // A callback ref, not an effect: the dock only mounts once a server is picked,
+  // and this way the observer attaches exactly when the node appears and is torn
+  // down when it goes.
+  const dockRef = useCallback((el: HTMLDivElement | null) => {
+    dockObserverRef.current?.disconnect();
+    dockObserverRef.current = null;
+    if (!el) return;
+    const ro = new ResizeObserver(() => setDockHeight(el.offsetHeight));
+    ro.observe(el);
+    dockObserverRef.current = ro;
+    setDockHeight(el.offsetHeight);
+  }, []);
+  const panelBottom = dockHeight + 24;
+
   const placedPlayerIds = useMemo(
     () => new Set(playerMarkers.map((m) => m.playerId).filter((id): id is number => typeof id === 'number')),
     [playerMarkers],
@@ -3313,7 +3332,11 @@ export function ReplayToolPage() {
   }, [serverId, fetchingHistory, live]);
 
   return (
-    <div style={{ width: '100%', height: '100%', overflow: 'hidden', position: 'relative' }}>
+    // A flex column rather than a fixed height per child: the map box used to
+    // be calc(100vh - 104px), which assumes the toolbar is exactly one 52px
+    // row. On a phone it wraps to three or four, so toolbar + map exceeded the
+    // root and overflow:hidden silently clipped the bottom of the map.
+    <div style={{ width: '100%', height: '100%', overflow: 'hidden', position: 'relative', display: 'flex', flexDirection: 'column' }}>
       <div className="row" style={{ gap: 12, padding: 12, alignItems: 'center', flexShrink: 0 }}>
         <div style={{ minWidth: 240, maxWidth: 520, flex: 1 }}>
           <select
@@ -3427,7 +3450,8 @@ export function ReplayToolPage() {
         <div
           style={{
             width: '100%',
-            height: 'calc(100vh - 104px)',
+            flex: 1,
+            minHeight: 0,
             padding: 12,
             boxSizing: 'border-box',
           }}
@@ -3606,7 +3630,7 @@ export function ReplayToolPage() {
               ) : null}
 
               {attachedPlayerId !== null && attachedPlayerName ? (
-                <div style={{ position: 'absolute', left: 12, right: 12, bottom: 156, display: 'flex', justifyContent: 'center', pointerEvents: 'none', zIndex: 12 }}>
+                <div style={{ position: 'absolute', left: 12, right: 12, bottom: panelBottom + 8, display: 'flex', justifyContent: 'center', pointerEvents: 'none', zIndex: 12 }}>
                   <div className="card" style={{ padding: '8px 12px', background: 'rgba(0,0,0,0.55)', border: '1px solid rgba(255,255,255,0.14)' }}>
                     <div style={{ fontWeight: 800, fontSize: 12 }}>
                       Attached to {attachedPlayerName}, press F to unattach
@@ -3659,7 +3683,7 @@ export function ReplayToolPage() {
 
               <div
                 className={`replayPanel replayPanel--players${isNarrow && mobilePanel !== 'players' ? ' is-hidden' : ''}`}
-                style={{ position: 'absolute', top: 12, left: 12, bottom: 148, width: 300, display: 'flex', flexDirection: 'column' }}>
+                style={{ position: 'absolute', top: 12, left: 12, bottom: panelBottom, width: 300, display: 'flex', flexDirection: 'column' }}>
                 <div className="card" style={{ padding: 10, background: 'rgba(0,0,0,0.55)', border: '1px solid rgba(255,255,255,0.14)', display: 'flex', flexDirection: 'column', overflow: 'hidden', maxHeight: '100%' }}>
                   <ReplayPlayersPanel
                     players={filteredPlayers}
@@ -3861,7 +3885,7 @@ export function ReplayToolPage() {
               {/* Right panel — Events (ReplayEventsPanel.tsx) */}
               <div
                 className={`replayPanel replayPanel--events${isNarrow && mobilePanel !== 'events' ? ' is-hidden' : ''}`}
-                style={{ position: 'absolute', top: 12, right: 12, bottom: 148, width: 280, display: 'flex', flexDirection: 'column' }}>
+                style={{ position: 'absolute', top: 12, right: 12, bottom: panelBottom, width: 280, display: 'flex', flexDirection: 'column' }}>
                 <div className="card" style={{ padding: 10, background: 'rgba(0,0,0,0.55)', border: '1px solid rgba(255,255,255,0.14)', display: 'flex', flexDirection: 'column', overflow: 'hidden', maxHeight: '100%' }}>
                   <ReplayEventsPanel
                     events={allParsedEvents}
@@ -3935,7 +3959,7 @@ export function ReplayToolPage() {
               {showVehicleMarkers && (isNarrow ? mobilePanel === 'vehicles' : vehiclePanelOpen) ? (
                 <div
                   className={`replayPanel replayPanel--vehicles${isNarrow && mobilePanel !== 'vehicles' ? ' is-hidden' : ''}`}
-                  style={{ position: 'absolute', top: 12, left: playersPanelOpen ? 320 : 64, width: 280, bottom: 148, display: 'flex', flexDirection: 'column' }}>
+                  style={{ position: 'absolute', top: 12, left: playersPanelOpen ? 320 : 64, width: 280, bottom: panelBottom, display: 'flex', flexDirection: 'column' }}>
                   <div className="card" style={{ padding: 10, background: 'rgba(0,0,0,0.55)', border: '1px solid rgba(255,255,255,0.14)', display: 'flex', flexDirection: 'column', overflow: 'hidden', maxHeight: '100%' }}>
                     <div className="row" style={{ flexShrink: 0, justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
                       <div style={{ fontWeight: 800, fontSize: 12 }}>Vehicles ({vehicleIndex.length})</div>
@@ -4038,7 +4062,7 @@ export function ReplayToolPage() {
               {/* Timeline (overview + zoomable detail track, ReplayTimeline.tsx).
                   The dock is a class, not inline styles, so it can become a
                   bottom sheet on phones (replay.css). */}
-              <div className="replayTimeline-dock">
+              <div className="replayTimeline-dock" ref={dockRef}>
                 <ReplayTimeline
                   scrubber={scrubber}
                   range={range}
@@ -4070,7 +4094,7 @@ export function ReplayToolPage() {
       ) : null}
 
       {!serverId ? (
-        <div style={{ padding: 12, height: 'calc(100vh - 72px)', boxSizing: 'border-box', overflow: 'auto' }}>
+        <div style={{ padding: 12, flex: 1, minHeight: 0, boxSizing: 'border-box', overflow: 'auto' }}>
           <div className="card" style={{ marginBottom: 12 }}>
             <div style={{ fontWeight: 900, letterSpacing: 0.2 }}>Server overview</div>
             <div style={{ marginTop: 4, fontSize: 13 }}>
