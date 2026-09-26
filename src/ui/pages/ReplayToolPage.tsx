@@ -3337,7 +3337,7 @@ export function ReplayToolPage() {
     // row. On a phone it wraps to three or four, so toolbar + map exceeded the
     // root and overflow:hidden silently clipped the bottom of the map.
     <div style={{ width: '100%', height: '100%', overflow: 'hidden', position: 'relative', display: 'flex', flexDirection: 'column' }}>
-      <div className="row" style={{ gap: 12, padding: 12, alignItems: 'center', flexShrink: 0 }}>
+      <div className="row replayToolbar" style={{ gap: 12, padding: 12, alignItems: 'center', flexShrink: 0 }}>
         <div style={{ minWidth: 240, maxWidth: 520, flex: 1 }}>
           <select
             className="input"
@@ -3457,7 +3457,15 @@ export function ReplayToolPage() {
           }}
         >
           <div className="card" style={{ width: '100%', height: '100%', padding: 0, overflow: 'hidden' }}>
-            <div style={{ width: '100%', height: '100%', position: 'relative', overflow: 'hidden' }}>
+            {/* --rp-dock-h is the measured height of the timeline sheet. On a
+                phone the sheet is fixed to the bottom of the viewport, so the map
+                has to stop above it rather than sit underneath it, and the panel
+                tabs dock to it instead of covering the map. */}
+            <div
+              className="replayMapBox"
+              style={{ width: '100%', height: '100%', position: 'relative', overflow: 'hidden',
+                ['--rp-dock-h' as string]: `${dockHeight}px` }}
+            >
               <ReplayMap2D
                 players={playerMarkers}
                 focusTarget={focusTarget}

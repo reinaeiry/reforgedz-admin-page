@@ -19,6 +19,8 @@ function Harness() {
   const [live, setLive] = useState(false);
 
   const [dockHeight, setDockHeight] = useState(160);
+  // the real page shows at most one panel on a narrow screen, and none by default
+  const [panel, setPanel] = useState<'players' | 'events' | null>(null);
   const roRef = useRef<ResizeObserver | null>(null);
   const dockRef = useCallback((el: HTMLDivElement | null) => {
     roRef.current?.disconnect();
@@ -47,7 +49,7 @@ function Harness() {
   return (
     // the page's root: a flex column, so the map box takes what is left
     <div style={{ width: '100%', height: '100vh', overflow: 'hidden', position: 'relative', display: 'flex', flexDirection: 'column', background: '#0b0e13', color: '#e8ecf3' }}>
-      <div className="row" id="toolbar" style={{ gap: 12, padding: 12, alignItems: 'center', flexShrink: 0, flexWrap: 'wrap' }}>
+      <div className="row replayToolbar" id="toolbar" style={{ gap: 12, padding: 12, alignItems: 'center', flexShrink: 0 }}>
         <select className="input" style={{ minWidth: 240 }}><option>Official ReforgedZ Chernarus</option></select>
         <button className="button">Fetch whole history</button>
         <button className="button">Search item history</button>
@@ -57,17 +59,26 @@ function Harness() {
 
       <div style={{ width: '100%', flex: 1, minHeight: 0, padding: 12, boxSizing: 'border-box' }}>
         <div className="card" style={{ width: '100%', height: '100%', padding: 0, overflow: 'hidden' }}>
-          <div id="mapBox" style={{ width: '100%', height: '100%', position: 'relative', overflow: 'hidden',
-            background: 'repeating-linear-gradient(45deg, #11161f 0 20px, #0e131b 20px 40px)' }}>
+          <div id="mapBox" className="replayMapBox"
+            style={{ width: '100%', height: '100%', position: 'relative', overflow: 'hidden',
+              ['--rp-dock-h']: `${dockHeight}px`,
+              background: 'repeating-linear-gradient(45deg, #11161f 0 20px, #0e131b 20px 40px)' }}>
 
-            <div id="panelPlayers" className="replayPanel"
+            <div className="replayPanelTabs" id="panelTabs">
+              <button type="button" className={panel === 'players' ? 'is-on' : ''}
+                onClick={() => setPanel((v) => (v === 'players' ? null : 'players'))}>Players (28)</button>
+              <button type="button" className={panel === 'events' ? 'is-on' : ''}
+                onClick={() => setPanel((v) => (v === 'events' ? null : 'events'))}>Events</button>
+            </div>
+
+            <div id="panelPlayers" className={`replayPanel${panel === 'players' ? '' : ' is-hidden'}`}
               style={{ position: 'absolute', top: 12, left: 12, bottom: panelBottom, width: 300, display: 'flex', flexDirection: 'column' }}>
               <div className="card" style={{ padding: 10, background: 'rgba(0,0,0,0.55)', border: '1px solid rgba(255,255,255,0.14)', flex: 1, minHeight: 0 }}>
                 Players panel
               </div>
             </div>
 
-            <div id="panelEvents" className="replayPanel"
+            <div id="panelEvents" className={`replayPanel${panel === 'events' ? '' : ' is-hidden'}`}
               style={{ position: 'absolute', top: 12, right: 12, bottom: panelBottom, width: 280, display: 'flex', flexDirection: 'column' }}>
               <div className="card" style={{ padding: 10, background: 'rgba(0,0,0,0.55)', border: '1px solid rgba(255,255,255,0.14)', flex: 1, minHeight: 0 }}>
                 Events panel

@@ -87,8 +87,12 @@ export function ReplayTimeline({
   const [popover, setPopover] = useState<null | { px: number; events: TimelineEvent[] }>(null);
   const [goToOpen, setGoToOpen] = useState(false);
   // Collapsed = clock + transport + scrub track only. On a phone the full sheet
-  // covers most of the map, which is the thing being reviewed.
-  const [compact, setCompact] = useState(false);
+  // covers most of the map, which is the thing being reviewed - so a phone starts
+  // collapsed and the operator opens the filters and overview when they want them.
+  const [compact, setCompact] = useState(() => {
+    if (typeof window === 'undefined' || !window.matchMedia) return false;
+    return window.matchMedia('(max-width: 760px)').matches;
+  });
 
   const detailRef = useRef<HTMLCanvasElement | null>(null);
   const overviewRef = useRef<HTMLCanvasElement | null>(null);

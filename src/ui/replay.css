@@ -619,3 +619,44 @@
   font-weight: 800;
   vertical-align: middle;
 }
+
+/* ═══ Phone: the map is the point, so give it the screen ═══════════════════
+   Measured before this block on a 390x844 viewport: toolbar 182px, timeline
+   sheet 328px, and the sheet covered the map by 315px — leaving a sliver with
+   the panel tabs sitting on top of it. */
+@media (max-width: 760px) {
+  /* One scrolling row instead of four stacked ones. */
+  .replayToolbar {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+    gap: 8px;
+    padding: 8px 12px;
+  }
+  .replayToolbar > * { flex: 0 0 auto; }
+  /* the scrollbar itself costs ~15px of a phone screen and iOS never shows one */
+  .replayToolbar { scrollbar-width: none; }
+  .replayToolbar::-webkit-scrollbar { display: none; }
+  .replayToolbar select,
+  .replayToolbar .input { max-width: 52vw; }
+
+  /* The map stops above the fixed sheet rather than continuing behind it. */
+  .replayMapBox { padding-bottom: var(--rp-dock-h, 160px); box-sizing: border-box; }
+
+  /* Tabs dock just above the sheet: thumb-reachable, and off the map. */
+  .replayPanelTabs {
+    top: auto;
+    bottom: calc(var(--rp-dock-h, 160px) + 8px);
+  }
+
+  /* A panel sits between the tabs and the sheet, and never covers everything. */
+  .replayPanel {
+    top: 8px !important;
+    bottom: calc(var(--rp-dock-h, 160px) + 60px) !important;
+    max-height: none;
+  }
+
+  /* The collapsed sheet is the default here: clock, transport, scrub track. */
+  .replayTimeline.is-compact { padding-top: 8px; }
+  .replayTimeline.is-compact .replayTimeline-clock { font-size: 15px; }
+}
