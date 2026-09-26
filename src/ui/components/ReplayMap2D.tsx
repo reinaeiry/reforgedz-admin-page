@@ -243,7 +243,10 @@ export function ReplayMap2D(props: ReplayMap2DProps) {
     const drag = { active: false, lastX: 0, lastY: 0, moved: false };
     // Player drag-to-teleport state (screen-space).
     const playerDrag = { active: false, playerId: -1, ox: 0, oy: 0, sx: 0, sy: 0, moved: false };
-    let suppressClick = false;
+    // Timestamped rather than a boolean: mouseup is bound on window, so a drag
+    // released outside the canvas set the flag with no following click to clear
+    // it, and the next legitimate click on the map was swallowed. This expires.
+    let suppressClickAt = 0;
 
     let dpr = 1;
     let cssW = 0;
@@ -446,7 +449,7 @@ export function ReplayMap2D(props: ReplayMap2DProps) {
         const wx = screenToWorldX(e.clientX - rect.left);
         const wz = screenToWorldZ(e.clientY - rect.top);
         playerDrag.active = false;
-        suppressClick = true;
+        suppressClickAt = performance.now();
         canvasEl.style.cursor = 'grab';
         if (cb && wasMoved && pid >= 0) cb(pid, { x: wx, z: wz });
         return;
@@ -455,7 +458,7 @@ export function ReplayMap2D(props: ReplayMap2DProps) {
     }
 
     function onClick(e: MouseEvent) {
-      if (suppressClick) { suppressClick = false; return; }
+      if (performance.now() - suppressClickAt < 300) { suppressClickAt = 0; return; }
       if (drag.moved) return;
       const rect = canvasEl.getBoundingClientRect();
       const sx = e.clientX - rect.left;

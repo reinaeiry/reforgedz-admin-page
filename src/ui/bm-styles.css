@@ -269,8 +269,20 @@
 .btn-sm { font-size: .72rem; padding: 4px 10px; }
 
 /* ─── Toasts ──────────────────────────────────────────────────────── */
-.toastStack { position: fixed; right: 16px; bottom: 16px; display: flex; flex-direction: column; gap: 8px; z-index: 300; max-width: 360px; }
-.toast { background: var(--bg-raised); border: 1px solid var(--border-strong); padding: 10px 14px; border-radius: 6px; font-size: .85rem; color: var(--text); box-shadow: 0 6px 18px rgba(0,0,0,.4); animation: fadeUp .2s ease both; }
+.toastStack {
+  position: fixed; right: 16px; left: auto; bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+  display: flex; flex-direction: column; gap: 8px; z-index: 300;
+  width: max-content; max-width: min(360px, calc(100vw - 32px));
+  /* the stack spans a phone's full width, so it must not eat taps meant
+     for what is underneath it (the ticket composer's Send button) */
+  pointer-events: none;
+}
+.toast {
+  pointer-events: auto; cursor: pointer; text-align: left; font: inherit;
+  background: var(--bg-raised); border: 1px solid var(--border-strong);
+  padding: 10px 14px; min-height: 44px; border-radius: 6px; font-size: .85rem;
+  color: var(--text); box-shadow: 0 6px 18px rgba(0,0,0,.4); animation: fadeUp .2s ease both;
+}
 .toast-success { border-color: var(--green); }
 .toast-warn { border-color: var(--orange); }
 .toast-error { border-color: var(--cyan); }

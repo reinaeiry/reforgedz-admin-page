@@ -16,6 +16,10 @@
   --text: #c8d6e5;
   --text-bright: #eaf0f6;
   --text-dim: rgba(200, 214, 229, 0.45);
+  /* Used by .bmLogPos, .bmStat-sub and .ticketRow-meta in bm-styles.css but
+     never defined, so those colours were invalid and inherited full-contrast
+     text instead of reading as secondary. */
+  --text-ghost: rgba(200, 214, 229, 0.3);
   --cyan: #ef4444;
   --cyan-dim: rgba(239, 68, 68, 0.12);
   --cyan-glow: rgba(239, 68, 68, 0.25);
@@ -822,4 +826,46 @@ select.input option { background: var(--surface); color: var(--text); }
   .topBar { grid-row: 1; grid-column: 1; }
   .main { grid-row: 3; grid-column: 1; }
   .container { padding: 20px 16px; }
+}
+
+/* ============================================================
+   Touch and small screens (added 2026-09-26)
+   Nothing in the app previously reached a 44px target, every form control
+   computed under 16px, and `.main` clips horizontal overflow with no scroller,
+   so every table's right-hand action column was silently unreachable.
+   ============================================================ */
+@media (max-width: 900px) {
+  /* iOS Safari zooms the page whenever a focused control computes below 16px,
+     and never zooms back out - leaving the operator inside a magnified layout.
+     !important because several of these controls carry inline font sizes
+     (e.g. the replay page's 11px inputs), which a stylesheet cannot otherwise
+     beat. */
+  input, select, textarea, .input {
+    font-size: 16px !important;
+  }
+
+  /* Minimum comfortable target. Applied to the control classes rather than
+     bare `button` so inline text links keep their natural line box. */
+  .button, .btn, .btn-sm, .bmChip, .input, select, .gm-icon-btn, .ticketRow-star {
+    min-height: 44px;
+  }
+  .gm-dot {
+    min-width: 30px;
+    min-height: 30px;
+  }
+
+  /* Tables become their own horizontal scroller. Without this `.main`'s
+     overflow-x: hidden clips the last column - which is where Remove, Edit,
+     unban and the expand caret live. */
+  .bmTable, .gm-table {
+    display: block;
+    width: 100%;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  /* Fixed-position furniture must clear the home indicator. */
+  .modalBackdrop, .ticketComposer {
+    padding-bottom: calc(12px + env(safe-area-inset-bottom, 0px));
+  }
 }

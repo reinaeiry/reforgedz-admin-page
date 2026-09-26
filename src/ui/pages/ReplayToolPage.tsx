@@ -383,6 +383,11 @@ export function ReplayToolPage() {
   // The full-resolution window currently loaded around the scrub point (for buttery
   // playback + inventories), so we only refetch when scrubbing out of it.
   const fullResWindowRef = useRef<{ serverId: string; min: number; max: number } | null>(null);
+  // The window a debounced fetch is already on its way for, the timer itself, and
+  // a generation counter so a late response for an old server/live state is dropped.
+  const fullResPendingRef = useRef<{ serverId: string; min: number; max: number } | null>(null);
+  const fullResTimerRef = useRef<number | null>(null);
+  const fullResGenRef = useRef(0);
 
   const [nameTagsEnabled, setNameTagsEnabled] = useState(true);
   const [nameTagScale, setNameTagScale] = useState(1.0);
@@ -504,6 +509,10 @@ export function ReplayToolPage() {
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
       if (e.code !== 'KeyF') return;
+      // Without this, typing the letter f in any search box (players, go-to
+      // coords, spawn search, in-game name) silently detached the camera.
+      const t = e.target as HTMLElement | null;
+      if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
       if (attachedPlayerId === null) return;
       setAttachedPlayerId(null);
     }
@@ -699,14 +708,27 @@ export function ReplayToolPage() {
     const loaded = fullResWindowRef.current;
     if (loaded && loaded.serverId === serverId && cur >= loaded.min + FULLRES_REFETCH_MARGIN_MS && cur <= loaded.max - FULLRES_REFETCH_MARGIN_MS) return;
 
+    // A fetch already on its way that covers this instant is left alone. The
+    // effect used to clear its own 180ms debounce on every currentTsMs change,
+    // and during playback that is every frame - so once the playhead ran past
+    // the loaded window the fetch re-armed 60x/sec and never fired. Playback
+    // silently degraded to coarse samples and inventories went blank until you
+    // paused.
+    const pending = fullResPendingRef.current;
+    if (pending && pending.serverId === serverId
+      && cur >= pending.min + FULLRES_REFETCH_MARGIN_MS && cur <= pending.max - FULLRES_REFETCH_MARGIN_MS) return;
+
     const serverIdValue = serverId;
     const since = Math.max(0, cur - FULLRES_BACK_MS);
     const until = cur + FULLRES_FWD_MS;
-    let cancelled = false;
-    const t = window.setTimeout(() => {
+    const gen = (fullResGenRef.current += 1);
+    fullResPendingRef.current = { serverId: serverIdValue, min: since, max: until };
+    if (fullResTimerRef.current !== null) window.clearTimeout(fullResTimerRef.current);
+    fullResTimerRef.current = window.setTimeout(() => {
+      fullResTimerRef.current = null;
       getReplayEvents({ serverId: serverIdValue, sinceTsMs: since, untilTsMs: until, limit: 20000 })
         .then((windowItems) => {
-          if (cancelled || windowItems.length === 0) return;
+          if (gen !== fullResGenRef.current || windowItems.length === 0) return;
           fullResWindowRef.current = { serverId: serverIdValue, min: since, max: until };
           setEvents((prev) => {
             // Drop existing records inside the window and replace them with full-res.
@@ -719,10 +741,27 @@ export function ReplayToolPage() {
             return trimEventsToCap(merged, 250000, currentTsMsRef.current);
           });
         })
-        .catch(() => { /* ignore */ });
+        .catch(() => { /* ignore */ })
+        .finally(() => {
+          if (gen === fullResGenRef.current) fullResPendingRef.current = null;
+        });
     }, 180);
-    return () => { cancelled = true; window.clearTimeout(t); };
+    // Deliberately no cleanup here: the debounce must survive currentTsMs
+    // changing. It is cancelled when the server or live state changes, below.
   }, [live, serverId, currentTsMs]);
+
+  // Cancel any in-flight full-res window when the server or live state changes,
+  // and on unmount. Bumping the generation also makes a late response a no-op.
+  useEffect(() => {
+    return () => {
+      fullResGenRef.current += 1;
+      fullResPendingRef.current = null;
+      if (fullResTimerRef.current !== null) {
+        window.clearTimeout(fullResTimerRef.current);
+        fullResTimerRef.current = null;
+      }
+    };
+  }, [serverId, live]);
 
   useEffect(() => {
     if (!serverId) return;
@@ -3237,9 +3276,13 @@ export function ReplayToolPage() {
     const sid = serverId;
     setFetchingHistory(true);
     if (live) setLive(false);
-    slimHistoryLoadedRef.current = sid;
     getReplayEvents({ serverId: sid, limit: 200000, tail: true, sampleIntervalMs: OVERVIEW_SAMPLE_MS, slim: true })
       .then((all) => {
+        // Marked as loaded only once it actually arrived. Setting it before the
+        // request meant a failed fetch permanently suppressed the automatic 24h
+        // load for that server (the lazy-load effect reads this ref), leaving
+        // the operator with an empty timeline and no way back but toggling live.
+        slimHistoryLoadedRef.current = sid;
         if (all.length === 0) return;
         setEvents((prev) => {
           const seen = new Set<string>();
