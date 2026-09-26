@@ -65,13 +65,17 @@ function Harness() {
   // ?n=50000 to stress the windowing and the 5,000-row cap
   const eventCount = useMemo(() => {
     const raw = Number(new URLSearchParams(window.location.search).get('n'));
-    return Number.isFinite(raw) && raw > 0 ? Math.min(200000, Math.floor(raw)) : 4000;
+    return Number.isFinite(raw) && raw >= 0 ? Math.min(200000, Math.floor(raw)) : 4000;
   }, []);
   const events = useMemo(() => makeEvents(eventCount), [eventCount]);
   const eventKeyOf = (ev: { tsMs: number; type: string; title: string; subtitle?: string }) =>
     `${ev.tsMs}|${ev.type}|${ev.title}|${ev.subtitle || ''}`;
 
-  const players: ReplayPlayer[] = useMemo(() => NAMES.map((name, i) => ({
+  const playerCount = useMemo(() => {
+    const raw = Number(new URLSearchParams(window.location.search).get('p'));
+    return Number.isFinite(raw) && raw >= 0 ? Math.min(NAMES.length, Math.floor(raw)) : NAMES.length;
+  }, []);
+  const players: ReplayPlayer[] = useMemo(() => NAMES.slice(0, playerCount).map((name, i) => ({
     playerId: i,
     name,
     identityId: `id-${i}`,
@@ -79,7 +83,7 @@ function Harness() {
     confidence: (i * 7) % 100,
     highestSeverity: i % 4 === 0 ? 'high' : i % 3 === 0 ? 'medium' : i % 5 === 0 ? 'low' : null,
     flaggedCount: i % 4 === 0 ? i : 0,
-  })), []);
+  })), [playerCount]);
   const filteredPlayers = useMemo(() => {
     const q = playerSearch.trim().toLowerCase();
     if (!q) return players;
