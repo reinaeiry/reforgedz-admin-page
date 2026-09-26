@@ -73,16 +73,12 @@ function Harness() {
 
             <div id="panelPlayers" className={`replayPanel${panel === 'players' ? '' : ' is-hidden'}`}
               style={{ position: 'absolute', top: 12, left: 12, bottom: panelBottom, width: 300, display: 'flex', flexDirection: 'column' }}>
-              <div className="card" style={{ padding: 10, background: 'rgba(0,0,0,0.55)', border: '1px solid rgba(255,255,255,0.14)', flex: 1, minHeight: 0 }}>
-                Players panel
-              </div>
+              <div className="card replayPanel-card">Players panel — roster, search, sort</div>
             </div>
 
             <div id="panelEvents" className={`replayPanel${panel === 'events' ? '' : ' is-hidden'}`}
               style={{ position: 'absolute', top: 12, right: 12, bottom: panelBottom, width: 280, display: 'flex', flexDirection: 'column' }}>
-              <div className="card" style={{ padding: 10, background: 'rgba(0,0,0,0.55)', border: '1px solid rgba(255,255,255,0.14)', flex: 1, minHeight: 0 }}>
-                Events panel
-              </div>
+              <div className="card replayPanel-card">Events panel — feed, filters</div>
             </div>
 
             <div className="replayTimeline-dock" ref={dockRef}>

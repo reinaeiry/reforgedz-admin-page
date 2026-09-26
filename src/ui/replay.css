@@ -655,11 +655,24 @@
     bottom: calc(var(--rp-dock-h, 160px) + 8px);
   }
 
-  /* A panel sits between the tabs and the sheet, and never covers everything. */
+  /* An open panel is a bottom SHEET, not a full-height overlay: it rises from
+     the tabs and takes half the screen, so the map stays visible above it.
+     Covering the whole map to read a roster defeats the point of a replay. */
   .replayPanel {
-    top: 8px !important;
+    /* Anchored from the TOP as a share of the map box, not in vh: Safari's
+       chrome changes the viewport height as you scroll, and a vh-sized sheet
+       grows or shrinks under your thumb. The map box already excludes the
+       toolbar and the timeline sheet, so a percentage of it is stable. */
+    top: 30% !important;
     bottom: calc(var(--rp-dock-h, 160px) + 60px) !important;
+    height: auto;
+    min-height: 200px;
+  }
+  .replayPanel .replayPanel-card {
+    flex: 1;
+    min-height: 0;
     max-height: none;
+    border-radius: 12px;
   }
 
   /* The collapsed sheet is the default here: clock, transport, scrub track. */
