@@ -3,7 +3,7 @@
 import assert from 'node:assert/strict';
 import {
   bestScore, bucketOf, buildFeedRows, chooseBucketMs, formatSince, indexNearestTs,
-  matchScore, windowSlice, buildOffsets, variableWindowSlice,
+  matchScore, windowSlice, buildOffsets, variableWindowSlice, keyDisambiguator, baseKeyOf,
 } from '../src/ui/components/replay/panelUtils.ts';
 
 let passed = 0;
@@ -146,6 +146,24 @@ test('variable windowing clamps past the end and handles empty', () => {
     variableWindowSlice(buildOffsets([]), 0, 400),
     { start: 0, end: 0, padTop: 0, padBottom: 0 },
   );
+});
+
+test('row keys are unique even when two events are identical', () => {
+  const next = keyDisambiguator();
+  const base = '123|kill|A killed B|100, 200';
+  const keys = [next(base), next(base), next(base), next('other')];
+  assert.equal(new Set(keys).size, 4, 'keys collided');
+  assert.equal(keys[0], base, 'the first occurrence keeps the page key unchanged');
+  for (const k of keys.slice(0, 3)) assert.equal(baseKeyOf(k), base, 'base key not recoverable');
+  assert.equal(baseKeyOf('other'), 'other');
+});
+
+test('the separator cannot be produced by ordinary text', () => {
+  const next = keyDisambiguator();
+  // titles with pipes, hashes and unicode must still round-trip
+  const odd = '9|gmPing|GM ping by #1 | "x" • ü|0, 0';
+  assert.equal(baseKeyOf(next(odd)), odd);
+  assert.equal(baseKeyOf(next(odd)), odd);
 });
 
 console.log(`\n${passed} passed${process.exitCode ? ' (with failures)' : ''}`);

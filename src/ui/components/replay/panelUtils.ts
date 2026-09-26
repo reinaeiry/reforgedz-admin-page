@@ -185,3 +185,28 @@ export function variableWindowSlice(
     padBottom: Math.max(0, offsets[total] - offsets[end]),
   };
 }
+
+// ── row keys ──────────────────────────────────────────────────────────────
+
+/** Separator for the occurrence suffix: a control character, so it cannot occur
+ *  inside an event title or subtitle. */
+export const KEY_SEP = String.fromCharCode(31);
+
+/**
+ * Two events can share a timestamp, type, title AND subtitle, so the composite
+ * key the page builds is not unique - React then duplicates or drops rows.
+ * Returns a stateful function that appends an occurrence suffix to repeats.
+ */
+export function keyDisambiguator(): (base: string) => string {
+  const seen = new Map<string, number>();
+  return (base: string) => {
+    const n = seen.get(base) || 0;
+    seen.set(base, n + 1);
+    return n === 0 ? base : `${base}${KEY_SEP}${n}`;
+  };
+}
+
+/** The page's key, recovered from a disambiguated row key. */
+export function baseKeyOf(key: string): string {
+  return key.split(KEY_SEP)[0];
+}

@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
-  bestScore, buildFeedRows, buildOffsets, chooseBucketMs, formatSince, variableWindowSlice,
-  type FeedRow,
+  baseKeyOf, bestScore, buildFeedRows, buildOffsets, chooseBucketMs, formatSince,
+  keyDisambiguator, variableWindowSlice, type FeedRow,
 } from './panelUtils';
 import type { TimelineEvent } from './ReplayTimeline';
 
@@ -58,6 +58,7 @@ const ROW_ITEM_SELECTED = 92;   // the selected row grows to hold its actions
 const ROW_GROUP = 26;
 const MAX_ROWS = 5000;
 
+
 // Rewritten 2026-09-26. The old feed listed only events BEFORE the playhead,
 // newest first, capped at 200 and rendered in full - so scrubbing backwards made
 // entries vanish, you could never see what was coming, there was no search, no
@@ -87,7 +88,7 @@ export function ReplayEventsPanel({
 
   // Filtering deliberately does NOT depend on the playhead: it would rebuild the
   // whole feed on every frame of playback.
-  const filtered = useMemo(() => {
+  const filteredResult = useMemo(() => {
     const q = query.trim();
     const out: TimelineEvent[] = [];
     for (const ev of events) {
@@ -100,20 +101,25 @@ export function ReplayEventsPanel({
       if (q && bestScore([ev.title, ev.subtitle], q) === null) continue;
       out.push(ev);
     }
-    return out.length > MAX_ROWS ? out.slice(out.length - MAX_ROWS) : out;
+    // The count has to come from here: out is sliced below, so subtracting the
+    // cap from the sliced length afterwards can only ever yield 0 - the note
+    // would never appear precisely when filters had trimmed the list.
+    const dropped = Math.max(0, out.length - MAX_ROWS);
+    return { items: dropped ? out.slice(out.length - MAX_ROWS) : out, dropped };
   }, [events, typeFilter, playerFilterId, query]);
 
-  const droppedForCap = Math.max(0, (query || typeFilter.size || playerFilterId !== null ? filtered.length : events.length) - MAX_ROWS);
+  const filtered = filteredResult.items;
+  const droppedForCap = filteredResult.dropped;
 
   const bucketMs = useMemo(() => {
     if (filtered.length < 2) return 60_000;
     return chooseBucketMs(filtered[filtered.length - 1].tsMs - filtered[0].tsMs);
   }, [filtered]);
 
-  const rows = useMemo(
-    () => buildFeedRows(filtered, (e) => e.tsMs, (e) => eventKeyOf(e), bucketMs, true),
-    [filtered, bucketMs, eventKeyOf],
-  );
+  const rows = useMemo(() => {
+    const nextKey = keyDisambiguator();
+    return buildFeedRows(filtered, (e) => e.tsMs, (e) => nextKey(eventKeyOf(e)), bucketMs, true);
+  }, [filtered, bucketMs, eventKeyOf]);
 
   // Where "now" sits in a newest-first feed: the first row at or before the
   // playhead. Cheap to recompute, so it can follow the playhead every frame.
@@ -131,10 +137,24 @@ export function ReplayEventsPanel({
     return rows.length;
   }, [rows, nowSecond]);
 
+  // The page may hand us a base key (the timeline builds one without knowing
+  // about duplicates). Resolve it to exactly one row: an exact match wins,
+  // otherwise the first occurrence - so a selection never lights up nine rows.
+  const selectedRowKey = useMemo(() => {
+    if (!selectedKey) return null;
+    let firstBase: string | null = null;
+    for (const r of rows) {
+      if (r.kind !== 'item') continue;
+      if (r.key === selectedKey) return r.key;
+      if (firstBase === null && baseKeyOf(r.key) === selectedKey) firstBase = r.key;
+    }
+    return firstBase;
+  }, [rows, selectedKey]);
+
   const heights = useMemo(() => rows.map((r) => {
     if (r.kind === 'group') return ROW_GROUP;
-    return r.key === selectedKey ? ROW_ITEM_SELECTED : ROW_ITEM;
-  }), [rows, selectedKey]);
+    return r.key === selectedRowKey ? ROW_ITEM_SELECTED : ROW_ITEM;
+  }), [rows, selectedRowKey]);
   const offsets = useMemo(() => buildOffsets(heights), [heights]);
   const slice = useMemo(
     () => variableWindowSlice(offsets, scrollTop, viewportH, 6),
@@ -166,14 +186,14 @@ export function ReplayEventsPanel({
   useEffect(() => {
     if (!selectedKey || selectedKey === lastRevealedRef.current) return;
     lastRevealedRef.current = selectedKey;
-    const idx = rows.findIndex((r) => r.kind === 'item' && r.key === selectedKey);
+    const idx = rows.findIndex((r) => r.kind === 'item' && r.key === selectedRowKey);
     const el = scrollRef.current;
     if (idx < 0 || !el || idx >= offsets.length) return;
     const top = offsets[idx];
     if (top >= el.scrollTop && top <= el.scrollTop + el.clientHeight - ROW_ITEM) return;
     programmaticScrollRef.current = true;
     el.scrollTop = Math.max(0, top - el.clientHeight / 2);
-  }, [selectedKey, rows, offsets]);
+  }, [selectedKey, selectedRowKey, rows, offsets]);
 
   const onScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
     const el = e.currentTarget;
@@ -204,7 +224,7 @@ export function ReplayEventsPanel({
   function moveSelection(delta: 1 | -1) {
     if (!itemIndices.length) return;
     const currentPos = selectedKey
-      ? itemIndices.findIndex((i) => (rows[i] as { key: string }).key === selectedKey)
+      ? itemIndices.findIndex((i) => (rows[i] as { key: string }).key === selectedRowKey)
       : -1;
     const from = currentPos >= 0 ? currentPos : itemIndices.findIndex((i) => i >= nowIndex);
     const nextPos = Math.min(itemIndices.length - 1, Math.max(0, (from < 0 ? 0 : from) + delta));
@@ -376,7 +396,7 @@ export function ReplayEventsPanel({
                 <EventRow
                   key={row.key}
                   row={row}
-                  isSelected={row.key === selectedKey}
+                  isSelected={row.key === selectedRowKey}
                   isNow={absoluteIndex === nowIndex}
                   isFuture={typeof currentTsMs === 'number' && row.tsMs > currentTsMs}
                   currentTsMs={currentTsMs}

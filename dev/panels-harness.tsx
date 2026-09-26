@@ -62,7 +62,12 @@ function Harness() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
 
-  const events = useMemo(() => makeEvents(4000), []);
+  // ?n=50000 to stress the windowing and the 5,000-row cap
+  const eventCount = useMemo(() => {
+    const raw = Number(new URLSearchParams(window.location.search).get('n'));
+    return Number.isFinite(raw) && raw > 0 ? Math.min(200000, Math.floor(raw)) : 4000;
+  }, []);
+  const events = useMemo(() => makeEvents(eventCount), [eventCount]);
   const eventKeyOf = (ev: { tsMs: number; type: string; title: string; subtitle?: string }) =>
     `${ev.tsMs}|${ev.type}|${ev.title}|${ev.subtitle || ''}`;
 
