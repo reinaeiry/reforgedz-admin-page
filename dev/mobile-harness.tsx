@@ -7,6 +7,7 @@ import { createRoot } from 'react-dom/client';
 import { ToastProvider, useToast } from '../src/ui/components/Toast';
 import '../src/ui/styles.css';
 import '../src/ui/bm-styles.css';
+import '../src/ui/replay.css';
 
 function Demo() {
   const toast = useToast();
@@ -37,6 +38,23 @@ function Demo() {
                 ))}
               </tbody>
             </table>
+          </div>
+
+          {/* mock of the replay page's floating panels + the narrow-screen tab strip */}
+          <div id="mapBox" style={{ position: 'relative', height: 420, marginTop: 12, background: '#0e131b', borderRadius: 8 }}>
+            <div className="replayPanelTabs">
+              <button type="button" className="is-on" id="tabPlayers">Players (21)</button>
+              <button type="button" id="tabEvents">Events</button>
+              <button type="button" id="tabVehicles">Vehicles (7)</button>
+            </div>
+            <div id="panelPlayers" className="replayPanel replayPanel--players"
+              style={{ position: 'absolute', top: 12, left: 12, bottom: 148, width: 300, display: 'flex', flexDirection: 'column' }}>
+              <div className="card" style={{ padding: 10 }}>Players panel body</div>
+            </div>
+            <div id="panelEvents" className="replayPanel replayPanel--events is-hidden"
+              style={{ position: 'absolute', top: 12, right: 12, bottom: 148, width: 280, display: 'flex', flexDirection: 'column' }}>
+              <div className="card" style={{ padding: 10 }}>Events panel body</div>
+            </div>
           </div>
 
           <div className="card" style={{ marginTop: 12 }}>

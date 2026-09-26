@@ -361,3 +361,47 @@
   border-color: rgba(120, 200, 255, 0.8);
   background: rgba(120, 200, 255, 0.18);
 }
+
+/* ─── Narrow screens: the three floating panels become one tabbed sheet ───
+   They are 300 + 280 + 280px absolutes; below ~892px they overlapped each
+   other and covered the map entirely. On a narrow screen a tab strip picks
+   one, the rest are hidden, and the chosen one is full width under the tabs. */
+.replayPanelTabs {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  right: 8px;
+  display: flex;
+  gap: 6px;
+  z-index: 25;
+}
+.replayPanelTabs button {
+  flex: 1;
+  min-height: 44px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: rgba(10, 12, 16, 0.9);
+  color: var(--text-dim);
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.replayPanelTabs button.is-on {
+  color: var(--text-bright);
+  border-color: rgba(255, 255, 255, 0.45);
+  background: rgba(255, 255, 255, 0.14);
+}
+
+@media (max-width: 900px) {
+  .replayPanel {
+    top: 60px !important;          /* clear of the tab strip */
+    left: 8px !important;
+    right: 8px !important;
+    width: auto !important;
+    bottom: auto !important;
+    max-height: 42vh;
+    z-index: 24;
+  }
+  .replayPanel.is-hidden { display: none !important; }
+}

@@ -398,6 +398,11 @@ export function ReplayToolPage() {
   const [showVehicleMarkers, setShowVehicleMarkers] = useState(false);
   const [vehicleIndex, setVehicleIndex] = useState<VehicleIndexEntry[]>([]);
   const [vehiclePanelOpen, setVehiclePanelOpen] = useState(false);
+  // Below ~900px the three floating panels (300 + 280 + 280 px of fixed-width
+  // absolutes) overlapped each other and covered the whole map. On a narrow
+  // screen exactly one is shown at a time, chosen from a tab strip.
+  const [isNarrow, setIsNarrow] = useState(false);
+  const [mobilePanel, setMobilePanel] = useState<'players' | 'events' | 'vehicles' | null>(null);
   const [selectedVehicleId, setSelectedVehicleId] = useState<string | null>(null);
   const [vehicleDetailData, setVehicleDetailData] = useState<VehicleDetail | null>(null);
   const [vehicleDetailNonce, setVehicleDetailNonce] = useState(0);
@@ -505,6 +510,15 @@ export function ReplayToolPage() {
       // ignore
     }
   }, [eventClickOffsetSeconds]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || !window.matchMedia) return;
+    const mq = window.matchMedia('(max-width: 900px)');
+    const apply = () => setIsNarrow(mq.matches);
+    apply();
+    mq.addEventListener('change', apply);
+    return () => mq.removeEventListener('change', apply);
+  }, []);
 
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
@@ -3628,7 +3642,28 @@ export function ReplayToolPage() {
               </div>
 
               {/* Left panel — Players & Detail */}
-              <div style={{ position: 'absolute', top: 12, left: 12, bottom: 148, width: playersPanelOpen ? 300 : 'auto', display: 'flex', flexDirection: 'column' }}>
+              {isNarrow ? (
+                <div className="replayPanelTabs">
+                  <button type="button" className={mobilePanel === 'players' ? 'is-on' : ''}
+                    onClick={() => setMobilePanel((v) => (v === 'players' ? null : 'players'))}>
+                    Players ({filteredPlayers.length})
+                  </button>
+                  <button type="button" className={mobilePanel === 'events' ? 'is-on' : ''}
+                    onClick={() => setMobilePanel((v) => (v === 'events' ? null : 'events'))}>
+                    Events
+                  </button>
+                  {showVehicleMarkers ? (
+                    <button type="button" className={mobilePanel === 'vehicles' ? 'is-on' : ''}
+                      onClick={() => setMobilePanel((v) => (v === 'vehicles' ? null : 'vehicles'))}>
+                      Vehicles ({vehicleIndex.length})
+                    </button>
+                  ) : null}
+                </div>
+              ) : null}
+
+              <div
+                className={`replayPanel replayPanel--players${isNarrow && mobilePanel !== 'players' ? ' is-hidden' : ''}`}
+                style={{ position: 'absolute', top: 12, left: 12, bottom: 148, width: playersPanelOpen ? 300 : 'auto', display: 'flex', flexDirection: 'column' }}>
                 <div className="card" style={{ padding: 10, background: 'rgba(0,0,0,0.55)', border: '1px solid rgba(255,255,255,0.14)', display: 'flex', flexDirection: 'column', overflow: 'hidden', maxHeight: '100%' }}>
                   <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', gap: 8, flexWrap: 'nowrap', flexShrink: 0 }}>
                     <div style={{ fontWeight: 800, fontSize: 12, whiteSpace: 'nowrap' }}>
@@ -3873,7 +3908,9 @@ export function ReplayToolPage() {
               </div>
 
               {/* Right panel — Events */}
-              <div style={{ position: 'absolute', top: 12, right: 12, bottom: 148, width: 280, display: 'flex', flexDirection: 'column' }}>
+              <div
+                className={`replayPanel replayPanel--events${isNarrow && mobilePanel !== 'events' ? ' is-hidden' : ''}`}
+                style={{ position: 'absolute', top: 12, right: 12, bottom: 148, width: 280, display: 'flex', flexDirection: 'column' }}>
                 <div className="card" style={{ padding: 10, background: 'rgba(0,0,0,0.55)', border: '1px solid rgba(255,255,255,0.14)', display: 'flex', flexDirection: 'column', overflow: 'hidden', maxHeight: '100%' }}>
                   <div style={{ flexShrink: 0 }}>
                     <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', gap: 8, flexWrap: 'nowrap' }}>
@@ -4045,8 +4082,10 @@ export function ReplayToolPage() {
               </div>
 
               {/* Vehicle panel */}
-              {showVehicleMarkers && vehiclePanelOpen ? (
-                <div style={{ position: 'absolute', top: 12, left: playersPanelOpen ? 320 : 64, width: 280, bottom: 148, display: 'flex', flexDirection: 'column' }}>
+              {showVehicleMarkers && (isNarrow ? mobilePanel === 'vehicles' : vehiclePanelOpen) ? (
+                <div
+                  className={`replayPanel replayPanel--vehicles${isNarrow && mobilePanel !== 'vehicles' ? ' is-hidden' : ''}`}
+                  style={{ position: 'absolute', top: 12, left: playersPanelOpen ? 320 : 64, width: 280, bottom: 148, display: 'flex', flexDirection: 'column' }}>
                   <div className="card" style={{ padding: 10, background: 'rgba(0,0,0,0.55)', border: '1px solid rgba(255,255,255,0.14)', display: 'flex', flexDirection: 'column', overflow: 'hidden', maxHeight: '100%' }}>
                     <div className="row" style={{ flexShrink: 0, justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
                       <div style={{ fontWeight: 800, fontSize: 12 }}>Vehicles ({vehicleIndex.length})</div>
