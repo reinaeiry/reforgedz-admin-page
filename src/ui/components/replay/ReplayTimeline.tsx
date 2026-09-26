@@ -40,7 +40,9 @@ const PARENT_COMMIT_MS = 70; // during a drag, seek the (heavy) page at most ~14
 
 type Props = {
   scrubber: { min: number; max: number; value: number; disabled: boolean };
-  range: { minTsMs: number | null; maxTsMs: number | null };
+  /** Accepted for call-site compatibility; the bounds now come from `scrubber`,
+   *  which is the absolute loaded range. */
+  range?: { minTsMs: number | null; maxTsMs: number | null };
   isPlaying: boolean;
   setIsPlaying: (fn: boolean | ((prev: boolean) => boolean)) => void;
   playbackSpeed: number;
@@ -67,7 +69,7 @@ type Props = {
 // across the track, snap to markers (pixel-based, Alt to bypass), step by
 // keyboard, or type an exact time.
 export function ReplayTimeline({
-  scrubber, range, isPlaying, setIsPlaying, playbackSpeed, setPlaybackSpeed, live, setLive,
+  scrubber, isPlaying, setIsPlaying, playbackSpeed, setPlaybackSpeed, live, setLive,
   setCurrentTsMs, allEvents, eventDots, wallClockAnchor, formatWallClock, onJumpToEvent,
 }: Props) {
   const bounds: Span = useMemo(

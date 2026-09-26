@@ -1,4 +1,4 @@
-import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
+import React, { createContext, useCallback, useContext, useRef, useState } from 'react';
 
 export type ToastKind = 'info' | 'success' | 'warn' | 'error';
 export type ToastEntry = { id: number; kind: ToastKind; text: string; ttlMs: number };

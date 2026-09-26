@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useState } from 'react';
 import { useVisiblePolling } from '../../util/useVisiblePolling';
 import { Link } from 'react-router-dom';
 import { getOnlinePlayers, type BmDashServer, type OnlineServer } from '../../util/bmApi';

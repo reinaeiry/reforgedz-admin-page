@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
 import { autoFocusOnDesktop } from '../../util/focus';
 import { useVisiblePolling } from '../../util/useVisiblePolling';
 import {
