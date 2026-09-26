@@ -77,6 +77,8 @@ import { type NameTagOptions, type PlayerMarker, type TerrainGrid, type TownLabe
 import { ReplayMap2D, type WorldBounds } from '../components/ReplayMap2D';
 import { ItemSpawnControl, type CopiedInventory, type CopiedInventoryItem, type SpawnCopiedProgress } from '../components/ItemSpawnControl';
 import { ReplayTimeline, type TimelineEvent } from '../components/replay/ReplayTimeline';
+import { ReplayEventsPanel } from '../components/replay/ReplayEventsPanel';
+import { ReplayPlayersPanel } from '../components/replay/ReplayPlayersPanel';
 import { isTabHidden } from '../../util/useVisiblePolling';
 import { InventorySearchModal } from '../components/replay/InventorySearchModal';
 import { resolveMapId, getMapDef } from '../../util/maps';
@@ -250,18 +252,6 @@ function useQueryParam(name: string): string | null {
   }, [location.search, name]);
 }
 
-function formatElapsedMs(ms: number): string {
-  const safe = Number.isFinite(ms) ? Math.max(0, Math.floor(ms)) : 0;
-  const totalSeconds = Math.floor(safe / 1000);
-  const hours = Math.floor(totalSeconds / 3600);
-  const minutes = Math.floor((totalSeconds % 3600) / 60);
-  const seconds = totalSeconds % 60;
-
-  const hh = String(hours).padStart(2, '0');
-  const mm = String(minutes).padStart(2, '0');
-  const ss = String(seconds).padStart(2, '0');
-  return `${hh}:${mm}:${ss}`;
-}
 
 // Raw inventory is one array entry per stack (no count field on the item
 // itself) - groups by prefab (falling back to name when a modded item has
@@ -375,7 +365,13 @@ export function ReplayToolPage() {
   const [nameTagOptionsOpen, setNameTagOptionsOpen] = useState(false);
 
   const [selectedEventKey, setSelectedEventKey] = useState<string | null>(null);
-  const eventCardRefs = useRef<Map<string, HTMLElement>>(new Map());
+  // One definition of an event's identity, shared by the feed, the timeline
+  // and the selection state (they used to build this string in three places).
+  const eventKeyOf = useCallback(
+    (ev: { tsMs: number; type: string; title: string; subtitle?: string }) =>
+      `${ev.tsMs}|${ev.type}|${ev.title}|${ev.subtitle || ''}`,
+    [],
+  );
 
   const [isPlaying, setIsPlaying] = useState(false);
   const [playbackSpeed, setPlaybackSpeed] = useState(1);
@@ -2799,6 +2795,18 @@ export function ReplayToolPage() {
     return { id, name };
   }, [selectedPlayerId, attachedPlayerId, playersAtTime, knownPlayers]);
 
+  // Who has a position on the map at this instant - the roster's status column.
+  const placedPlayerIds = useMemo(
+    () => new Set(playerMarkers.map((m) => m.playerId).filter((id): id is number => typeof id === 'number')),
+    [playerMarkers],
+  );
+
+  const identityIdOf = useCallback(
+    (playerId: number) => playersAtTime.find((x) => x.playerId === playerId)?.identityId
+      || knownPlayers.find((x) => x.playerId === playerId)?.identityId,
+    [playersAtTime, knownPlayers],
+  );
+
   const filteredPlayers = useMemo((): ReplayPlayer[] => {
     const q = playerSearch.trim().toLowerCase();
     const base = Array.isArray(playersAtTime) ? playersAtTime : [];
@@ -3058,56 +3066,8 @@ export function ReplayToolPage() {
     return out;
   }, [events, findFirstNonOriginPosAfter, findLastNonOriginPosBefore]);
 
-  const timelineEvents = useMemo(() => {
-    const t = currentTsMs;
-    const filterId = eventPlayerFilterId;
-
-    let source = allParsedEvents;
-
-    // Binary search for time cutoff (allParsedEvents is sorted by tsMs).
-    if (typeof t === 'number') {
-      let lo = 0;
-      let hi = source.length - 1;
-      let cutoff = source.length;
-      while (lo <= hi) {
-        const mid = (lo + hi) >> 1;
-        if (source[mid].tsMs > t) {
-          cutoff = mid;
-          hi = mid - 1;
-        } else {
-          lo = mid + 1;
-        }
-      }
-      // Walk backwards from the cutoff collecting only what the feed shows (200).
-      // The previous code sliced the ENTIRE prefix (tens of thousands of entries)
-      // and then filtered it, on every playhead move.
-      const picked: typeof source = [];
-      const scanFloor = Math.max(0, cutoff - 50000); // bound the walk when filtering
-      for (let i = cutoff - 1; i >= scanFloor && picked.length < 200; i--) {
-        const x = source[i];
-        if (typeof filterId === 'number' && !x.playerIds.includes(filterId)) continue;
-        picked.push(x);
-      }
-      picked.reverse();
-      return picked;
-    }
-
-    if (typeof filterId === 'number') {
-      source = source.filter((x) => x.playerIds.includes(filterId));
-    }
-    return source.slice(-200);
-  }, [allParsedEvents, currentTsMs, eventPlayerFilterId]);
-
-  useEffect(() => {
-    if (!selectedEventKey) return;
-
-    const t = window.setTimeout(() => {
-      const el = eventCardRefs.current.get(selectedEventKey);
-      if (el) el.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
-    }, 0);
-
-    return () => window.clearTimeout(t);
-  }, [selectedEventKey]);
+  // (the events feed now renders the whole recording from allParsedEvents,
+  //  windowed, with a NOW divider - see ReplayEventsPanel)
 
   const eventDots = useMemo(() => {
     const min = range.minTsMs;
@@ -3699,23 +3659,37 @@ export function ReplayToolPage() {
 
               <div
                 className={`replayPanel replayPanel--players${isNarrow && mobilePanel !== 'players' ? ' is-hidden' : ''}`}
-                style={{ position: 'absolute', top: 12, left: 12, bottom: 148, width: playersPanelOpen ? 300 : 'auto', display: 'flex', flexDirection: 'column' }}>
+                style={{ position: 'absolute', top: 12, left: 12, bottom: 148, width: 300, display: 'flex', flexDirection: 'column' }}>
                 <div className="card" style={{ padding: 10, background: 'rgba(0,0,0,0.55)', border: '1px solid rgba(255,255,255,0.14)', display: 'flex', flexDirection: 'column', overflow: 'hidden', maxHeight: '100%' }}>
-                  <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', gap: 8, flexWrap: 'nowrap', flexShrink: 0 }}>
-                    <div style={{ fontWeight: 800, fontSize: 12, whiteSpace: 'nowrap' }}>
-                      Players <span className="muted">({filteredPlayers.length})</span>
-                    </div>
-                    <div className="row" style={{ gap: 6, flexWrap: 'nowrap' }}>
-                      <button type="button" className="button" title="Display settings" style={{ padding: '4px 8px', fontSize: 11 }}
-                        onClick={() => setNameTagOptionsOpen((v) => !v)}>⚙</button>
-                      <button type="button" className="button" style={{ padding: '4px 8px', fontSize: 11 }}
-                        onClick={() => setPlayersPanelOpen((v) => !v)}>{playersPanelOpen ? '−' : '+'}</button>
-                    </div>
-                  </div>
-
-                  {playersPanelOpen ? (
-                    <div style={{ display: 'flex', flexDirection: 'column', flex: 1, overflow: 'hidden', marginTop: 8, gap: 8 }}>
-                      {nameTagOptionsOpen ? (
+                  <ReplayPlayersPanel
+                    players={filteredPlayers}
+                    totalPlayers={playersAtTime.length}
+                    placedIds={placedPlayerIds}
+                    selectedPlayerId={selectedPlayerId}
+                    attachedPlayerId={attachedPlayerId}
+                    onSelect={(playerId) => {
+                      setSelectedPlayerId(playerId);
+                      const marker = playerMarkers.find((m) => m.playerId === playerId);
+                      if (marker) {
+                        setFocusTarget(marker.pos);
+                        setFocusNonce((n) => n + 1);
+                      }
+                    }}
+                    onToggleFollow={(playerId) => setAttachedPlayerId((v) => (v === playerId ? null : playerId))}
+                    onOpenProfile={(identityId) => navigate(`/players?identityId=${encodeURIComponent(identityId)}`)}
+                    identityIdOf={identityIdOf}
+                    search={playerSearch}
+                    setSearch={setPlayerSearch}
+                    gotoCoords={gotoCoords}
+                    setGotoCoords={setGotoCoords}
+                    onGoto={doGotoCoords}
+                    severityClassOf={replaySeverityBadgeClass}
+                    settingsOpen={nameTagOptionsOpen}
+                    setSettingsOpen={setNameTagOptionsOpen}
+                    collapsed={!playersPanelOpen}
+                    setCollapsed={(v) => setPlayersPanelOpen(!v)}
+                    settings={(
+                      <>
                         <div style={{ border: '1px solid rgba(255,255,255,0.10)', borderRadius: 8, padding: 10, flexShrink: 0 }}>
                           <div className="label" style={{ marginBottom: 8 }}>Display</div>
 
@@ -3765,67 +3739,9 @@ export function ReplayToolPage() {
                             </div>
                           ) : null}
                         </div>
-                      ) : null}
-
-                      <input className="input" style={{ flexShrink: 0 }} placeholder="Search players…"
-                        value={playerSearch} onChange={(e) => setPlayerSearch(e.target.value)} />
-
-                      <div className="row" style={{ gap: 6, flexShrink: 0 }}>
-                        <input className="input" style={{ flex: 1 }} placeholder="Go to coords (x, y, z)"
-                          value={gotoCoords}
-                          onChange={(e) => setGotoCoords(e.target.value)}
-                          onKeyDown={(e) => { if (e.key === 'Enter') doGotoCoords(gotoCoords); }} />
-                        <button type="button" className="button" style={{ padding: '4px 10px', fontSize: 11 }}
-                          onClick={() => doGotoCoords(gotoCoords)}>Go</button>
-                      </div>
-
-                      <div className="scroll" style={{ flex: 1, minHeight: 0, overflow: 'auto', border: '1px solid rgba(255,255,255,0.10)', borderRadius: 8 }}>
-                        {filteredPlayers.length === 0 ? (
-                          <div className="muted" style={{ padding: 10, fontSize: 12 }}>No players.</div>
-                        ) : (
-                          filteredPlayers.map((p) => {
-                            const isSelected = selectedPlayerId === p.playerId;
-                            return (
-                              <button
-                                key={p.playerId}
-                                type="button"
-                                onClick={() => {
-                                  setSelectedPlayerId(p.playerId);
-                                  setAttachedPlayerId(p.playerId);
-                                  const marker = playerMarkers.find((m) => m.playerId === p.playerId);
-                                  if (marker) {
-                                    setFocusTarget(marker.pos);
-                                    setFocusNonce((n) => n + 1);
-                                  }
-                                }}
-                                className="button"
-                                style={{
-                                  width: '100%', textAlign: 'left', borderRadius: 0, border: 'none',
-                                  borderBottom: '1px solid rgba(255,255,255,0.06)',
-                                  background: isSelected ? 'rgba(249,188,89,0.15)' : 'transparent',
-                                  padding: '6px 10px',
-                                }}
-                              >
-                                <div style={{ fontWeight: 600, fontSize: 12, display: 'flex', alignItems: 'center', gap: 6 }}>
-                                  <span>{p.name}</span>
-                                  {p.highestSeverity ? (
-                                    <span
-                                      className={replaySeverityBadgeClass(p.highestSeverity)}
-                                      style={{ fontSize: 9, padding: '1px 4px', fontWeight: 700 }}
-                                      title={`All-time: risk ${p.riskScore ?? 0}, ${p.confidence ?? 0}% confidence, ${p.flaggedCount ?? 0} flagged incident(s)`}
-                                    >
-                                      {p.highestSeverity} · {p.confidence ?? 0}%
-                                    </span>
-                                  ) : null}
-                                </div>
-                              </button>
-                            );
-                          })
-                        )}
-                      </div>
-
-                      {/* Selected player detail */}
-                      {selectedPlayerId !== null ? (
+                      </>
+                    )}
+                    detail={selectedPlayerId !== null ? (
                         <div style={{ flexShrink: 0, borderTop: '1px solid rgba(255,255,255,0.10)', paddingTop: 8 }}>
                           {selectedPlayerStateWithEquipmentCache ? (
                             <div style={{ fontSize: 12 }}>
@@ -3938,182 +3854,80 @@ export function ReplayToolPage() {
                           ) : null}
                         </div>
                       ) : null}
-                    </div>
-                  ) : null}
+                  />
                 </div>
               </div>
 
-              {/* Right panel — Events */}
+              {/* Right panel — Events (ReplayEventsPanel.tsx) */}
               <div
                 className={`replayPanel replayPanel--events${isNarrow && mobilePanel !== 'events' ? ' is-hidden' : ''}`}
                 style={{ position: 'absolute', top: 12, right: 12, bottom: 148, width: 280, display: 'flex', flexDirection: 'column' }}>
                 <div className="card" style={{ padding: 10, background: 'rgba(0,0,0,0.55)', border: '1px solid rgba(255,255,255,0.14)', display: 'flex', flexDirection: 'column', overflow: 'hidden', maxHeight: '100%' }}>
-                  <div style={{ flexShrink: 0 }}>
-                    <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', gap: 8, flexWrap: 'nowrap' }}>
-                      <div style={{ fontWeight: 800, fontSize: 12 }}>Events</div>
-                      <div className="row" style={{ gap: 6, alignItems: 'center' }}>
-                        <div className="muted" style={{ fontSize: 10 }}>offset</div>
-                        <input className="input" style={{ width: 48, padding: '3px 6px', fontSize: 11, textAlign: 'center' }}
-                          type="number" min={0} max={60} step={1} value={eventClickOffsetSeconds}
-                          onChange={(e) => setEventClickOffsetSeconds(Math.max(0, Math.min(60, Math.floor(Number(e.target.value) || 0))))}
-                          title="Jump this many seconds before an event" />
-                        <div className="muted" style={{ fontSize: 10 }}>s</div>
-                      </div>
-                    </div>
-
-                    <select className="input" style={{ width: '100%', padding: '4px 8px', marginTop: 6, fontSize: 11 }}
-                      value={eventPlayerFilterId === null ? '' : String(eventPlayerFilterId)}
-                      onChange={(e) => {
-                        const raw = String(e.target.value || '');
-                        if (!raw) { setEventPlayerFilterId(null); return; }
-                        const id = Number(raw);
-                        setEventPlayerFilterId(Number.isFinite(id) ? id : null);
-                      }}
-                      title="Filter events by player"
-                    >
-                      <option value="">All players</option>
-                      {playersAtTime.map((p) => (
-                        <option key={p.playerId} value={String(p.playerId)}>
-                          {p.name} (#{p.playerId})
-                        </option>
-                      ))}
-                    </select>
-
-                    {showAnticheat && sessionAcFlags.length > 0 ? (
-                      <details style={{ marginTop: 6 }}>
-                        <summary style={{ cursor: 'pointer', fontWeight: 700, fontSize: 11, color: '#ffcc33' }}>⚠ Anticheat flags ({sessionAcFlags.length})</summary>
-                        <div className="scroll" style={{ maxHeight: 150, overflow: 'auto', marginTop: 4, border: '1px solid rgba(255,255,255,0.10)', borderRadius: 6 }}>
-                          {sessionAcFlags.slice().reverse().map((f) => {
-                            const crit = String(f.severity || '').toUpperCase() === 'CRITICAL';
-                            return (
-                              <button key={f.id} type="button" className="button" title={`${f.name || ''}${f.note ? ' — ' + f.note : ''}`}
-                                style={{ display: 'flex', alignItems: 'baseline', gap: 6, width: '100%', textAlign: 'left', padding: '4px 8px', fontSize: 11, borderBottom: '1px solid rgba(255,255,255,0.06)', overflow: 'hidden' }}
-                                onClick={() => doInvestigateAc(f)}>
-                                <span style={{ color: crit ? '#ff6a6a' : '#ffcc33', fontWeight: 700, flexShrink: 0 }}>{crit ? 'CRIT' : 'WARN'}</span>
-                                <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                                  {f.name || '—'}{f.note ? <span className="muted"> — {f.note}</span> : null}
-                                </span>
-                                {formatWallClock ? <span className="muted" style={{ flexShrink: 0, fontSize: 10 }}>{formatWallClock(f.tsMs)}</span> : null}
-                              </button>
-                            );
-                          })}
-                        </div>
-                      </details>
-                    ) : null}
-                  </div>
-
-                  <div className="scroll" style={{ flex: 1, minHeight: 0, overflow: 'auto', marginTop: 8 }}>
-                    {timelineEvents.length === 0 ? (
-                      <div className="muted" style={{ padding: 10, fontSize: 12, textAlign: 'center' }}>No events yet.</div>
-                    ) : (
-                      timelineEvents.slice().reverse().map((ev, idx) => {
-                        const key = `${ev.tsMs}|${ev.type}|${ev.title}|${ev.subtitle || ''}`;
-                        const isSelected = selectedEventKey === key;
-                        const canPing = !!serverId && ev.type !== 'gmPing' && !!ev.focusPos;
-                        const pingTitle = ev.subtitle ? `${ev.title} • ${ev.subtitle}` : ev.title;
-                        const typeColor = (ev.type === 'kill' || ev.type === 'death' || ev.type === 'aiKill')
-                          ? '#ff4a4a'
-                          : ev.type === 'restart' ? '#ffd966'
-                          : ev.type === 'gmPing' ? '#7acbff'
-                          : ev.type === 'disconnect' ? 'rgba(183,247,200,0.4)'
-                          : '#b7f7c8';
-                        return (
-                          <div
-                            key={`${ev.tsMs}-${idx}`}
-                            ref={(el) => {
-                              if (el) eventCardRefs.current.set(key, el);
-                              else eventCardRefs.current.delete(key);
-                            }}
-                            role="button"
-                            tabIndex={0}
-                            style={{
-                              padding: '6px 8px',
-                              borderLeft: `3px solid ${typeColor}`,
-                              marginBottom: 2,
-                              borderRadius: 4,
-                              background: isSelected ? 'rgba(255,255,255,0.10)' : 'transparent',
-                              cursor: 'pointer',
-                              position: 'relative',
-                            }}
-                            onClick={() => {
-                              setSelectedEventKey(key);
-                              setIsPlaying(false);
-                              setLive(false);
-                              jumpToEventTs(ev.tsMs);
-                              if (typeof ev.focusPlayerId === 'number') setSelectedPlayerId(ev.focusPlayerId);
-                              if (ev.focusPos) {
-                                setFocusTarget(ev.focusPos);
-                                setFocusNonce((n) => n + 1);
-                              }
-                            }}
-                            onKeyDown={(e) => {
-                              if (e.key !== 'Enter' && e.key !== ' ') return;
-                              e.preventDefault();
-                              setSelectedEventKey(key);
-                              setIsPlaying(false);
-                              setLive(false);
-                              jumpToEventTs(ev.tsMs);
-                              if (typeof ev.focusPlayerId === 'number') setSelectedPlayerId(ev.focusPlayerId);
-                              if (ev.focusPos) {
-                                setFocusTarget(ev.focusPos);
-                                setFocusNonce((n) => n + 1);
-                              }
-                            }}
-                          >
-                            <div className="row" style={{ justifyContent: 'space-between', gap: 6 }}>
-                              <div style={{ fontWeight: 700, fontSize: 11, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>{ev.title}</div>
-                              <div className="muted" style={{ fontSize: 10, whiteSpace: 'nowrap', flexShrink: 0 }}>
-                                +{formatElapsedMs(ev.tsMs - scrubber.min)}
-                              </div>
-                            </div>
-                            <div className="row" style={{ justifyContent: 'space-between', gap: 6 }}>
-                              <div className="muted" style={{ fontSize: 10, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>
-                                {ev.subtitle || (formatWallClock ? formatWallClock(ev.tsMs) : '')}
-                              </div>
-                              {isSelected && canPing ? (
-                                <div className="row" style={{ gap: 4, flexShrink: 0 }}>
-                                  <button type="button" className="button" style={{ padding: '2px 6px', fontSize: 10 }}
-                                    title="Send GM ping"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      if (!serverId) return;
-                                      const pingPos = ev.focusPos;
-                                      if (!pingPos) return;
-                                      const reporterPlayerId = (typeof ev.focusPlayerId === 'number')
-                                        ? ev.focusPlayerId
-                                        : (Array.isArray(ev.playerIds) && ev.playerIds.length > 0 ? ev.playerIds[0] : null);
-                                      void sendReplayGmPing({ serverId, tsMs: ev.tsMs, pos: pingPos, title: pingTitle, reporterPlayerId });
-                                    }}
-                                  >Ping</button>
-                                  <button type="button" className="button" style={{ padding: '2px 6px', fontSize: 10 }}
-                                    title="Export to Discord"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      if (!serverId) return;
-                                      const exportPos = ev.focusPos;
-                                      if (!exportPos) return;
-                                      void (async () => {
-                                        try {
-                                          await exportReplayEventToDiscord({
-                                            serverId, tsMs: ev.tsMs, title: ev.title, pos: exportPos,
-                                            focusPlayerId: (typeof ev.focusPlayerId === 'number') ? ev.focusPlayerId : null,
-                                            playerIds: Array.isArray(ev.playerIds) ? ev.playerIds : null,
-                                          });
-                                          pushToast({ kind: 'event', title: 'Discord export', subtitle: 'Sent' });
-                                        } catch (err) {
-                                          setError(err instanceof Error ? err.message : 'Failed to export to Discord');
-                                        }
-                                      })();
-                                    }}
-                                  >Export</button>
-                                </div>
-                              ) : null}
-                            </div>
-                          </div>
-                        );
-                      })
-                    )}
-                  </div>
+                  <ReplayEventsPanel
+                    events={allParsedEvents}
+                    players={playersAtTime}
+                    currentTsMs={currentTsMs}
+                    recordingStartMs={scrubber.min}
+                    formatWallClock={formatWallClock}
+                    selectedKey={selectedEventKey}
+                    eventKeyOf={eventKeyOf}
+                    offsetSeconds={eventClickOffsetSeconds}
+                    setOffsetSeconds={setEventClickOffsetSeconds}
+                    playerFilterId={eventPlayerFilterId}
+                    setPlayerFilterId={setEventPlayerFilterId}
+                    acFlags={sessionAcFlags}
+                    showAnticheat={showAnticheat}
+                    onInvestigateAc={doInvestigateAc}
+                    canAct={!!serverId}
+                    isPlaying={isPlaying}
+                    live={live}
+                    onSelect={(key, ev) => {
+                      setSelectedEventKey(key);
+                      // Seeking does not change play/pause - every video and
+                      // replay player works this way, and the old panel's forced
+                      // pause meant you could not watch on from an event.
+                      setLive(false);
+                      jumpToEventTs(ev.tsMs);
+                      if (typeof ev.focusPlayerId === 'number') setSelectedPlayerId(ev.focusPlayerId);
+                      if (ev.focusPos) {
+                        setFocusTarget(ev.focusPos);
+                        setFocusNonce((n) => n + 1);
+                      }
+                    }}
+                    onPing={(ev) => {
+                      const pingPos = ev.focusPos;
+                      if (!serverId || !pingPos) return;
+                      const reporterPlayerId = (typeof ev.focusPlayerId === 'number')
+                        ? ev.focusPlayerId
+                        : (Array.isArray(ev.playerIds) && ev.playerIds.length > 0 ? ev.playerIds[0] : null);
+                      void sendReplayGmPing({
+                        serverId,
+                        tsMs: ev.tsMs,
+                        pos: pingPos,
+                        title: ev.subtitle ? `${ev.title} • ${ev.subtitle}` : ev.title,
+                        reporterPlayerId,
+                      });
+                    }}
+                    onExport={(ev) => {
+                      const exportPos = ev.focusPos;
+                      if (!serverId || !exportPos) return;
+                      void (async () => {
+                        try {
+                          await exportReplayEventToDiscord({
+                            serverId,
+                            tsMs: ev.tsMs,
+                            title: ev.title,
+                            pos: exportPos,
+                            focusPlayerId: (typeof ev.focusPlayerId === 'number') ? ev.focusPlayerId : null,
+                            playerIds: Array.isArray(ev.playerIds) ? ev.playerIds : null,
+                          });
+                          pushToast({ kind: 'event', title: 'Discord export', subtitle: 'Sent' });
+                        } catch (err) {
+                          setError(err instanceof Error ? err.message : 'Failed to export to Discord');
+                        }
+                      })();
+                    }}
+                  />
                 </div>
               </div>
 
@@ -4246,7 +4060,7 @@ export function ReplayToolPage() {
                       setFocusTarget(ev.focusPos);
                       setFocusNonce((n) => n + 1);
                     }
-                    setSelectedEventKey(`${ev.tsMs}|${ev.type}|${ev.title}|${ev.subtitle || ''}`);
+                    setSelectedEventKey(eventKeyOf(ev));
                   }}
                 />
               </div>
