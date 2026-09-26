@@ -247,6 +247,14 @@ export function ReplayMap2D(props: ReplayMap2DProps) {
     // released outside the canvas set the flag with no following click to clear
     // it, and the next legitimate click on the map was swallowed. This expires.
     let suppressClickAt = 0;
+    // Touch state. The map used to be mouse-only: pan came from mousedown/
+    // mousemove and zoom from wheel, and a touchscreen produces neither for a
+    // drag or a pinch, so on a phone the map was frozen at whatever fitView()
+    // chose and the GM menu (right-click only) was unreachable.
+    const touchPts = new Map<number, { x: number; y: number }>();
+    let pinchPrev: { dist: number; mx: number; my: number } | null = null;
+    let longPressTimer: number | null = null;
+    let lastPointerWasTouch = false;
 
     let dpr = 1;
     let cssW = 0;
@@ -385,7 +393,8 @@ export function ReplayMap2D(props: ReplayMap2DProps) {
 
     function hitTestPlayer(sx: number, sy: number): PlayerMarker | null {
       let best: PlayerMarker | null = null;
-      let bestDist = 11; // px hit radius
+      // a fingertip covers far more than a cursor, so touch gets a wider catch
+      let bestDist = 11 * (lastPointerWasTouch ? 2 : 1); // px hit radius
       for (const p of playersRef.current) {
         if (typeof p.playerId !== 'number') continue;
         const px = worldToScreenX(p.pos.x);
@@ -468,7 +477,7 @@ export function ReplayMap2D(props: ReplayMap2DProps) {
       const acCb = onAcMarkerClickRef.current;
       if (acCb) {
         let bestAc: typeof acMarkersRef.current[number] | null = null;
-        let bestAcDist = 13;
+        let bestAcDist = 13 * (lastPointerWasTouch ? 2 : 1);
         for (const m of acMarkersRef.current) {
           const mx = worldToScreenX(m.x);
           const my = worldToScreenY(m.z);
@@ -481,7 +490,7 @@ export function ReplayMap2D(props: ReplayMap2DProps) {
       const cb = onVehicleClickRef.current;
       if (!cb) return;
       let bestKey: string | null = null;
-      let bestDist = 12; // px hit radius
+      let bestDist = 12 * (lastPointerWasTouch ? 2 : 1); // px hit radius
       for (const v of vehicleMarkersRef.current) {
         const vx = worldToScreenX(v.pos.x);
         const vy = worldToScreenY(v.pos.z);
@@ -501,12 +510,109 @@ export function ReplayMap2D(props: ReplayMap2DProps) {
       cb({ x: wx, z: wz }, { x: e.clientX, y: e.clientY });
     }
 
+    function cancelLongPress() {
+      if (longPressTimer !== null) { window.clearTimeout(longPressTimer); longPressTimer = null; }
+    }
+
+    function onPointerDownTouch(e: PointerEvent) {
+      if (e.pointerType !== 'touch') return;
+      lastPointerWasTouch = true;
+      touchPts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      try { canvasEl.setPointerCapture(e.pointerId); } catch { /* already gone */ }
+
+      if (touchPts.size === 1) {
+        drag.active = true;
+        drag.moved = false;
+        drag.lastX = e.clientX;
+        drag.lastY = e.clientY;
+        const startX = e.clientX;
+        const startY = e.clientY;
+        cancelLongPress();
+        // Long-press is the touch route to the GM menu - the only place that
+        // offers ping/spawn/teleport/heal/eject/message/strip/kill at a point.
+        longPressTimer = window.setTimeout(() => {
+          longPressTimer = null;
+          if (drag.moved) return;
+          const cb = onMapContextMenuRef.current;
+          if (!cb) return;
+          drag.active = false;
+          suppressClickAt = performance.now();   // the release must not also select
+          const rect = canvasEl.getBoundingClientRect();
+          cb(
+            { x: screenToWorldX(startX - rect.left), z: screenToWorldZ(startY - rect.top) },
+            { x: startX, y: startY },
+          );
+        }, 500);
+      } else if (touchPts.size === 2) {
+        cancelLongPress();
+        drag.active = false;
+        const [a, b] = Array.from(touchPts.values());
+        pinchPrev = {
+          dist: Math.hypot(a.x - b.x, a.y - b.y) || 1,
+          mx: (a.x + b.x) / 2,
+          my: (a.y + b.y) / 2,
+        };
+      }
+    }
+
+    function onPointerMoveTouch(e: PointerEvent) {
+      if (e.pointerType !== 'touch' || !touchPts.has(e.pointerId)) return;
+      touchPts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      const rect = canvasEl.getBoundingClientRect();
+
+      if (pinchPrev && touchPts.size >= 2) {
+        const [a, b] = Array.from(touchPts.values());
+        const dist = Math.hypot(a.x - b.x, a.y - b.y) || 1;
+        const mx = (a.x + b.x) / 2;
+        const my = (a.y + b.y) / 2;
+        // The world point under the OLD midpoint, at the OLD scale...
+        const wx = screenToWorldX(pinchPrev.mx - rect.left);
+        const wz = screenToWorldZ(pinchPrev.my - rect.top);
+        view.scale = clamp(view.scale * (dist / pinchPrev.dist), 0.004, 4);
+        // ...is placed under the NEW one, which folds zoom and two-finger pan
+        // into a single step instead of double-counting the travel.
+        view.cx = wx - ((mx - rect.left) - cssW / 2) / view.scale;
+        view.cz = wz + ((my - rect.top) - cssH / 2) / view.scale;
+        pinchPrev = { dist, mx, my };
+        drag.moved = true;
+        return;
+      }
+
+      if (drag.active) {
+        const dx = e.clientX - drag.lastX;
+        const dy = e.clientY - drag.lastY;
+        drag.lastX = e.clientX;
+        drag.lastY = e.clientY;
+        if (Math.abs(dx) + Math.abs(dy) > 2) { drag.moved = true; cancelLongPress(); }
+        view.cx -= dx / view.scale;
+        view.cz += dy / view.scale;
+      }
+    }
+
+    function onPointerUpTouch(e: PointerEvent) {
+      if (e.pointerType !== 'touch') return;
+      touchPts.delete(e.pointerId);
+      cancelLongPress();
+      if (touchPts.size < 2) pinchPrev = null;
+      if (touchPts.size === 0) drag.active = false;
+      try { canvasEl.releasePointerCapture(e.pointerId); } catch { /* already gone */ }
+    }
+
+    function onPointerDownAny(e: PointerEvent) {
+      if (e.pointerType === 'mouse') lastPointerWasTouch = false;
+    }
+
     canvasEl.addEventListener('contextmenu', onContextMenu);
     canvasEl.addEventListener('wheel', onWheel, { passive: false });
     canvasEl.addEventListener('mousedown', onMouseDown);
     window.addEventListener('mousemove', onMouseMove);
     window.addEventListener('mouseup', onMouseUp);
     canvasEl.addEventListener('click', onClick);
+    canvasEl.addEventListener('pointerdown', onPointerDownAny);
+    canvasEl.addEventListener('pointerdown', onPointerDownTouch);
+    canvasEl.addEventListener('pointermove', onPointerMoveTouch);
+    canvasEl.addEventListener('pointerup', onPointerUpTouch);
+    canvasEl.addEventListener('pointercancel', onPointerUpTouch);
 
     function drawMarkerLabel(text: string, sx: number, sy: number, opts: NameTagOptions) {
       if (!opts.enabled || !text) return;
@@ -786,6 +892,12 @@ export function ReplayMap2D(props: ReplayMap2DProps) {
       window.removeEventListener('mousemove', onMouseMove);
       window.removeEventListener('mouseup', onMouseUp);
       canvasEl.removeEventListener('click', onClick);
+      canvasEl.removeEventListener('pointerdown', onPointerDownAny);
+      canvasEl.removeEventListener('pointerdown', onPointerDownTouch);
+      canvasEl.removeEventListener('pointermove', onPointerMoveTouch);
+      canvasEl.removeEventListener('pointerup', onPointerUpTouch);
+      canvasEl.removeEventListener('pointercancel', onPointerUpTouch);
+      cancelLongPress();
     };
   }, []);
 
@@ -793,7 +905,9 @@ export function ReplayMap2D(props: ReplayMap2DProps) {
     <div style={{ width: '100%', height: '100%', minHeight: 400, position: 'relative' }}>
       <canvas
         ref={canvasRef}
-        style={{ width: '100%', height: '100%', display: 'block', borderRadius: 8, cursor: 'grab' }}
+        // touchAction: none - otherwise the browser scrolls/zooms the page
+        // instead of letting pan and pinch reach the map
+        style={{ width: '100%', height: '100%', display: 'block', borderRadius: 8, cursor: 'grab', touchAction: 'none' }}
       />
     </div>
   );
