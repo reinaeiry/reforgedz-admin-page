@@ -99,6 +99,9 @@ export function ReplayTimeline({
   // Pressing ON the playhead keeps the grab offset (so it does not jump under
   // the finger); pressing anywhere else seeks straight to that point.
   const grabOffsetRef = useRef(0);
+  // A click always follows pointerup. Without this, releasing a scrub near a
+  // marker would fire the marker handler and throw away the position just set.
+  const pressRef = useRef<{ x: number; moved: boolean; grabbed: boolean } | null>(null);
 
   const playheadTs = dragTs !== null ? dragTs : scrubber.value;
   const disabled = scrubber.disabled;
@@ -380,6 +383,7 @@ export function ReplayTimeline({
       return;
     }
     modeRef.current = 'scrub';
+    pressRef.current = { x: localX(el, e.clientX), moved: false, grabbed: false };
     setPopover(null);
     stopFollowing();
     const isTouch = e.pointerType === 'touch';
@@ -390,6 +394,7 @@ export function ReplayTimeline({
     if (Math.abs(x - headPx) <= grabRadius) {
       // hold the playhead where it is and carry the offset through the drag
       grabOffsetRef.current = playheadTs - pxToTs(x, view, detailW);
+      if (pressRef.current) pressRef.current.grabbed = true;
       setDragTs(playheadTs);
       return;
     }
@@ -416,7 +421,9 @@ export function ReplayTimeline({
       return;
     }
     if (modeRef.current === 'scrub') {
-      const ts = pxToTs(localX(el, e.clientX), view, detailW) + grabOffsetRef.current;
+      const px = localX(el, e.clientX);
+      if (pressRef.current && Math.abs(px - pressRef.current.x) > 4) pressRef.current.moved = true;
+      const ts = pxToTs(px, view, detailW) + grabOffsetRef.current;
       seekTo(ts, { snap: !e.altKey, coarse: e.pointerType === 'touch' });
       return;
     }
@@ -440,7 +447,10 @@ export function ReplayTimeline({
   function onDetailClick(e: React.MouseEvent<HTMLCanvasElement>) {
     // A tap on a marker cluster opens the list (the touch equivalent of the
     // old hover tooltip, which no phone could ever show).
+    const press = pressRef.current;
+    pressRef.current = null;
     if (disabled || detailW <= 0) return;
+    if (press && (press.moved || press.grabbed)) return; // a scrub or a playhead grab, not a tap
     const x = localX(e.currentTarget, e.clientX);
     const hit = clusters.find((c) => Math.abs(c.px - x) <= 9 && c.items.length > 1);
     if (hit) { setPopover({ px: hit.px, events: hit.items.slice(0, 8) }); return; }
@@ -559,6 +569,13 @@ export function ReplayTimeline({
     const d = new Date(tsToWall(ts));
     const pad = (n: number) => String(n).padStart(2, '0');
     return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+  }
+
+  // Centred overlays (readouts, popover) are clamped so half their width never
+  // hangs off the track; on a full-width phone sheet that would scroll the page.
+  function clampedLeftPx(px: number, halfWidth: number): number {
+    if (detailW <= halfWidth * 2) return detailW / 2;
+    return Math.min(detailW - halfWidth, Math.max(halfWidth, px));
   }
 
   const zoomLabel = useMemo(() => {
@@ -721,21 +738,21 @@ export function ReplayTimeline({
             a finger never covers the value it is trying to place. */}
         {dragTs !== null && detailW > 0 ? (
           <div className="replayTimeline-scrubReadout"
-            style={{ left: `${Math.min(100, Math.max(0, (tsToPx(dragTs, view, detailW) / detailW) * 100))}%` }}>
+            style={{ left: clampedLeftPx(tsToPx(dragTs, view, detailW), 76) }}>
             {formatWallClock ? formatWallClock(dragTs) : formatElapsedMs(dragTs - bounds.start)}
           </div>
         ) : null}
 
         {hoverTs !== null && dragTs === null && detailW > 0 ? (
           <div className="replayTimeline-hoverReadout"
-            style={{ left: `${Math.min(100, Math.max(0, (tsToPx(hoverTs, view, detailW) / detailW) * 100))}%` }}>
+            style={{ left: clampedLeftPx(tsToPx(hoverTs, view, detailW), 60) }}>
             {formatWallClock ? formatWallClock(hoverTs) : formatElapsedMs(hoverTs - bounds.start)}
           </div>
         ) : null}
 
         {popover ? (
           <div className="replayTimeline-popover"
-            style={{ left: `${Math.min(100, Math.max(0, (popover.px / Math.max(1, detailW)) * 100))}%` }}>
+            style={{ left: clampedLeftPx(popover.px, 112) }}>
             <div className="replayTimeline-popoverHead">
               <span>{popover.events.length} events</span>
               <button type="button" className="replayTimeline-btn replayTimeline-btn-sm"

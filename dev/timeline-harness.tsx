@@ -41,6 +41,7 @@ function Harness() {
   const [playbackSpeed, setPlaybackSpeed] = useState(1);
   const [live, setLive] = useState(false);
   const [seeks, setSeeks] = useState(0);
+  const [jumps, setJumps] = useState(0);
 
   const allEvents = useMemo(() => makeEvents(900), []);
   const eventDots = useMemo(() => allEvents.filter((_, i) => i % 2 === 0), [allEvents]);
@@ -55,7 +56,7 @@ function Harness() {
       <div style={{ padding: 16, fontFamily: 'ui-sans-serif, system-ui, sans-serif' }}>
         <h1 style={{ fontSize: 18, margin: '0 0 6px' }}>Replay timeline harness</h1>
         <div style={{ fontSize: 12, opacity: 0.7 }}>
-          playhead {Math.round(currentTsMs)}ms · seeks committed to parent: {seeks} ·
+          playhead {Math.round(currentTsMs)}ms · seeks committed to parent: {seeks} · marker jumps: {jumps} ·
           {' '}drag, wheel-zoom, pinch, arrows, , . + − 0
         </div>
       </div>
@@ -78,7 +79,7 @@ function Harness() {
             eventDots={eventDots}
             wallClockAnchor={{ tsMs: END, receivedAt: ANCHOR_RECEIVED_AT }}
             formatWallClock={formatWallClock}
-            onJumpToEvent={(ev) => { setCurrentTsMs(ev.tsMs); setSeeks((n) => n + 1); }}
+            onJumpToEvent={(ev) => { setCurrentTsMs(ev.tsMs); setJumps((n) => n + 1); }}
           />
         </div>
       </div>
