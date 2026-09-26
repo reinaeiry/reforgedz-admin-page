@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { autoFocusOnDesktop } from '../../util/focus';
 import {
   getPlayerActivity,
   getPlayerProfile,
@@ -111,7 +112,7 @@ function TimelineRowView({ row }: { row: TimelineRow }) {
   return (
     <div
       style={{
-        display: 'flex', alignItems: 'center', gap: 10,
+        display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap',
         borderLeft: `3px solid ${style.border}`,
         background: style.bg,
         padding: '5px 10px',
@@ -120,9 +121,10 @@ function TimelineRowView({ row }: { row: TimelineRow }) {
     >
       <span
         title={row.tagTitle}
+        aria-label={row.tagTitle}
         style={{
           fontSize: '.62rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.5px',
-          color: style.text, minWidth: 92, flexShrink: 0,
+          color: style.text, flexShrink: 0,
         }}
       >
         {row.tag}
@@ -131,8 +133,8 @@ function TimelineRowView({ row }: { row: TimelineRow }) {
       {row.confidence !== null ? (
         <span className="muted" style={{ fontSize: '.68rem', flexShrink: 0 }} title="Confidence for this specific incident">{row.confidence}%</span>
       ) : null}
-      <span className="muted" style={{ fontSize: '.68rem', flexShrink: 0, minWidth: 70, textAlign: 'right' }}>{row.serverId}</span>
-      <span className="muted" style={{ fontSize: '.68rem', flexShrink: 0, minWidth: 130, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
+      <span className="muted" style={{ fontSize: '.68rem', flexShrink: 0, textAlign: 'right' }}>{row.serverId}</span>
+      <span className="muted" style={{ fontSize: '.68rem', flexShrink: 0, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
         {new Date(row.tsMs).toLocaleString()}
       </span>
     </div>
@@ -290,7 +292,7 @@ function PlayerProfilePanel({ identityId, onBack }: { identityId: string; onBack
         </div>
       </header>
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 300px', gap: 20, alignItems: 'start' }}>
+      <div className="pswGrid">
         <section style={{ minWidth: 0 }}>
           <h3 style={{ fontSize: '.85rem' }}>Detection timeline</h3>
           <div className="row" style={{ gap: 14, marginBottom: 10, flexWrap: 'wrap' }}>
@@ -426,7 +428,7 @@ export function PlayerSearchView({ initialIdentityId }: { initialIdentityId?: st
           placeholder="Filter by player name (optional)…"
           value={query}
           onChange={(e) => { setQuery(e.target.value); setOffset(0); }}
-          autoFocus
+          autoFocus={autoFocusOnDesktop()}
         />
         <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: '.8rem', cursor: 'pointer' }}>
           <input type="checkbox" checked={includeBanned} onChange={(e) => { setIncludeBanned(e.target.checked); setOffset(0); }} />

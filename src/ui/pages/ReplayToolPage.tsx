@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { autoFocusOnDesktop } from '../../util/focus';
 import { useLocation, useNavigate } from 'react-router-dom';
 import {
   getReplayEvents,
@@ -3592,7 +3593,7 @@ export function ReplayToolPage() {
                       <button type="button" className="button" style={{ padding: '2px 8px', fontSize: 11 }} onClick={() => setSpawnPickerPos(null)}>Close</button>
                     </div>
                     <div className="row" style={{ gap: 6, marginBottom: 6 }}>
-                      <input className="input" style={{ flex: 1, fontSize: 12 }} placeholder="Search…" autoFocus
+                      <input className="input" style={{ flex: 1, fontSize: 12 }} placeholder="Search…" autoFocus={autoFocusOnDesktop()}
                         value={spawnQuery} onChange={(e) => setSpawnQuery(e.target.value)} />
                       <select className="input" style={{ fontSize: 12 }} value={spawnKind} onChange={(e) => setSpawnKind(e.target.value as any)}>
                         <option value="all">All</option>

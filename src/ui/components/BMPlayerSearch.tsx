@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { autoFocusOnDesktop } from '../../util/focus';
 import { useNavigate } from 'react-router-dom';
 import { searchPlayers, type BmSearchResult } from '../../util/bmApi';
 import { DiscordAvatar } from './DiscordAvatar';
@@ -55,7 +56,7 @@ export function BMPlayerSearch({ serverIds, onPick, navigateOnPick = true }: Pro
         value={q}
         onChange={(e) => setQ(e.target.value)}
         autoComplete="off"
-        autoFocus
+        autoFocus={autoFocusOnDesktop()}
       />
       <div className="bmSearch-status">
         {busy ? 'Searching…' : error ? <span className="bmError">{error}</span> : results.length ? `${results.length} match${results.length === 1 ? '' : 'es'}` : (q.trim().length >= 2 ? 'No results' : 'Type at least 2 characters')}

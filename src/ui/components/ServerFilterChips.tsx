@@ -46,6 +46,9 @@ export function ServerFilterChips({ servers, value, onChange }: Props) {
             className={`bmServerChip bmServerChip-${region.toLowerCase()} ${on ? 'on' : ''}`}
             onClick={() => toggleOne(s.bmServerId)}
             title={`${s.name} · ${s.ip}:${s.port}`}
+            // Which physical server "EU2" is was hover-only, on the primary
+            // server filter for the whole moderation page. Shown on touch.
+            data-sub={s.name}
           >
             {s.tag || s.name}
           </button>

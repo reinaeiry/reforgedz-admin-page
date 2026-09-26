@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { autoFocusOnDesktop } from '../../util/focus';
 import { useVisiblePolling } from '../../util/useVisiblePolling';
 import {
   ApiError,
@@ -516,7 +517,7 @@ function GmsTab() {
                       <div className="gm-rename-row">
                         <input
                           value={editingName}
-                          autoFocus
+                          autoFocus={autoFocusOnDesktop()}
                           onChange={(e) => setEditingName(e.target.value)}
                           onKeyDown={(e) => {
                             if (e.key === 'Enter') onRename(a.guid);
@@ -548,10 +549,16 @@ function GmsTab() {
                       <td key={s.pteroId} className={`gm-col-server ${region.toLowerCase()}`}>
                         <button
                           type="button"
-                          className={`gm-dot ${on ? 'on' : ''}`}
+                          className={`gm-dot ${on ? 'on' : ''}${full ? ' is-full' : ''}${!s.sshConfigured ? ' is-unavailable' : ''}`}
                           disabled={!s.sshConfigured}
                           onClick={() => onToggle(a.guid, s.pteroId, !on)}
-                          aria-label={on ? `Remove ${a.displayName} from ${s.tag}` : `Grant ${a.displayName} access on ${s.tag}`}
+                          // The reason a grant cannot happen used to live only in
+                          // `title`, which a touch device never shows - a full server
+                          // looked identical to a broken one. It is now in the state
+                          // (amber ring = full, hollow = no SSH) and in the label.
+                          aria-label={on
+                            ? `Remove ${a.displayName} from ${s.tag}`
+                            : `Grant ${a.displayName} access on ${s.tag}. ${title}`}
                           title={title}
                         />
                       </td>

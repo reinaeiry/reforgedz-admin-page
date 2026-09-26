@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { autoFocusOnDesktop } from '../../util/focus';
 import { Link } from 'react-router-dom';
 import { getTicket, getTicketMessages, closeTicket, type TicketDetail, type TicketMessage as TicketMessageT } from '../../util/ticketsApi';
 import { TicketMessage } from './TicketMessage';
@@ -190,7 +191,7 @@ function CloseModal({ busy, onCancel, onConfirm }: { busy: boolean; onCancel: ()
           <label className="muted" style={{ display: 'block', marginTop: 8 }}>
             Reason
             <textarea
-              autoFocus
+              autoFocus={autoFocusOnDesktop()}
               value={reason}
               onChange={(e) => setReason(e.target.value)}
               placeholder="Closing reason — sent to Discord + audit log"

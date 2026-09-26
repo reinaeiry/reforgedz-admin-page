@@ -869,3 +869,62 @@ select.input option { background: var(--surface); color: var(--text); }
     padding-bottom: calc(12px + env(safe-area-inset-bottom, 0px));
   }
 }
+
+/* Anti-cheat / player search: the detail column was an inline 300px track, so at
+   360px the content column collapsed to nothing and the page overflowed into
+   .main's hidden area. As a class it can simply stack. */
+.pswGrid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 300px;
+  gap: 20px;
+  align-items: start;
+}
+@media (max-width: 900px) {
+  .pswGrid { grid-template-columns: minmax(0, 1fr); }
+}
+
+@media (max-width: 900px) {
+  /* Checkboxes were 15px. Two of them (BMBanForm's "org-wide" and "write to the
+     game-server config") decide a ban's blast radius, so a mis-tap is expensive.
+     The label carries the 44px target; the box itself only needs to be visible. */
+  input[type="checkbox"], input[type="radio"] {
+    width: 22px;
+    height: 22px;
+    min-height: 22px;
+  }
+  label:has(> input[type="checkbox"]),
+  label:has(> input[type="radio"]),
+  .bmInlineLabel {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 44px;
+  }
+
+  /* Remove-attachment "×" had no padding at all (~16px). */
+  .ticketComposer-attachment button {
+    min-width: 44px;
+    min-height: 44px;
+  }
+
+  /* A 24px star nested inside a 48px row, each doing something different. */
+  .ticketRow-star { min-width: 44px; min-height: 44px; }
+}
+
+/* A game-master dot whose server is full, or has no SSH configured, is now
+   distinguishable without hovering. */
+.gm-dot.is-full { box-shadow: inset 0 0 0 2px var(--orange); }
+.gm-dot.is-unavailable { opacity: 0.35; border-style: dashed; }
+
+/* Touch devices never see a title attribute, so the server chips carry their
+   full name underneath instead of only the short tag. */
+@media (hover: none) {
+  .bmServerChip { flex-direction: column; line-height: 1.15; }
+  .bmServerChip::after {
+    content: attr(data-sub);
+    display: block;
+    font-size: .6rem;
+    font-weight: 500;
+    opacity: 0.7;
+  }
+}

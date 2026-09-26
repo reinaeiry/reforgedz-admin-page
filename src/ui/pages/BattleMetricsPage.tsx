@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { autoFocusOnDesktop } from '../../util/focus';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { hasBmPerm } from '../../util/session';
 import { accountUnban, addIpBan, type BmDashServer, deleteBan, type IpBanInfo, listBans, listBmServers, listIpBans, removeIpBan, updateBan } from '../../util/bmApi';
@@ -504,7 +505,7 @@ function LiftReasonField({ value, onChange }: { value: string; onChange: (v: str
         value={value}
         onChange={(e) => onChange(e.target.value)}
         placeholder="e.g. appeal accepted - the only link was a shared VPN address"
-        autoFocus
+        autoFocus={autoFocusOnDesktop()}
       />
     </div>
   );
@@ -550,7 +551,7 @@ function EditBanModal({ ban, onClose, onSaved }: { ban: any; onClose: () => void
           {err ? <div className="bmError">{err}</div> : null}
           <div className="field">
             <label>Reason</label>
-            <input type="text" value={reason} onChange={(e) => setReason(e.target.value)} autoFocus />
+            <input type="text" value={reason} onChange={(e) => setReason(e.target.value)} autoFocus={autoFocusOnDesktop()} />
           </div>
           <div className="field">
             <label>Note (internal)</label>
@@ -716,7 +717,7 @@ function AddIpBanModal({ onClose, onAdded }: { onClose: () => void; onAdded: () 
           {err ? <div className="bmError">{err}</div> : null}
           <div className="field">
             <label>IP address</label>
-            <input type="text" value={ip} onChange={(e) => setIp(e.target.value)} placeholder="1.2.3.4" autoFocus />
+            <input type="text" value={ip} onChange={(e) => setIp(e.target.value)} placeholder="1.2.3.4" autoFocus={autoFocusOnDesktop()} />
           </div>
           <div className="field">
             <label>Last-seen name (optional)</label>

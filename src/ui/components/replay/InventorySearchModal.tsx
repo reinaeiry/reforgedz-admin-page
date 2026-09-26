@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { autoFocusOnDesktop } from '../../../util/focus';
 import { searchReplayInventory, type InventorySighting } from '../../../util/api';
 
 type Props = {
@@ -49,7 +50,7 @@ export function InventorySearchModal({ serverId, range, onJump, onClose }: Props
         </div>
         <input
           className="input"
-          autoFocus
+          autoFocus={autoFocusOnDesktop()}
           placeholder="Search an item, e.g. 'Cap'…"
           value={query}
           onChange={(e) => setQuery(e.target.value)}

@@ -1,4 +1,5 @@
 import React, { useMemo, useState } from 'react';
+import { autoFocusOnDesktop } from '../../util/focus';
 import { addIngame, type IngameKind } from '../../util/ingameApi';
 
 type Player = { uid: string; name: string };
@@ -86,7 +87,7 @@ export function IngameActionForm({ kind, player, servers, onClose, onCreated }: 
           <div className="field">
             <label>Reason</label>
             <input
-              autoFocus
+              autoFocus={autoFocusOnDesktop()}
               type="text"
               value={reason}
               onChange={(e) => setReason(e.target.value)}

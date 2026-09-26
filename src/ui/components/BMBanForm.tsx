@@ -1,4 +1,5 @@
 import React, { useMemo, useState } from 'react';
+import { autoFocusOnDesktop } from '../../util/focus';
 import { type BmDashServer, createBan } from '../../util/bmApi';
 import { ConfirmModal } from './ConfirmModal';
 
@@ -122,7 +123,7 @@ export function BMBanForm({ player, servers, onClose, onCreated }: Props) {
                 value={reason}
                 onChange={(e) => setReason(e.target.value)}
                 placeholder="e.g. cheating, toxicity"
-                autoFocus
+                autoFocus={autoFocusOnDesktop()}
               />
             </div>
             <div className="field">
