@@ -1,4 +1,5 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
+import { useVisiblePolling } from '../../util/useVisiblePolling';
 import { Link } from 'react-router-dom';
 import { getOnlinePlayers, type BmDashServer, type OnlineServer } from '../../util/bmApi';
 
@@ -34,29 +35,26 @@ export function BMOnlinePlayerList({ server, pollMs = 30_000 }: Props) {
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
-  useEffect(() => {
-    let alive = true;
-    async function load() {
-      try {
-        setBusy(true);
-        const out = await getOnlinePlayers();
-        if (!alive) return;
-        const tag = String(server.tag || '').toLowerCase();
-        const mine = (out.servers || []).find(
-          (s) => String(s.server || '').toLowerCase() === tag,
-        );
-        setEntry(mine || null);
-        setErr(null);
-      } catch (e: any) {
-        if (alive) setErr(e?.message || 'Failed to load');
-      } finally {
-        if (alive) setBusy(false);
-      }
+  const tag = String(server.tag || '').toLowerCase();
+  const load = useCallback(async () => {
+    try {
+      setBusy(true);
+      // getOnlinePlayers returns every server's list and one of these is mounted
+      // per server; the helper shares a single request between them.
+      const out = await getOnlinePlayers();
+      const mine = (out.servers || []).find(
+        (s) => String(s.server || '').toLowerCase() === tag,
+      );
+      setEntry(mine || null);
+      setErr(null);
+    } catch (e: any) {
+      setErr(e?.message || 'Failed to load');
+    } finally {
+      setBusy(false);
     }
-    load();
-    const t = setInterval(load, pollMs);
-    return () => { alive = false; clearInterval(t); };
-  }, [server.tag, pollMs]);
+  }, [tag]);
+
+  useVisiblePolling(load, pollMs);
 
   const rows: Row[] = (entry?.players || []).map((p) => ({
     key: p.guid || p.identity,

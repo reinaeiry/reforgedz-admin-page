@@ -72,9 +72,29 @@ export type OnlineServer = {
  *
  * Addresses are stripped server-side for anyone without viewIps.
  */
+// This endpoint returns EVERY server's online list, and BattleMetricsPage mounts
+// one BMOnlinePlayerList per server - six servers meant six identical full
+// payloads every 30s, each filtered down to one server client-side. Callers
+// within this window share a single request and its result.
+const ONLINE_TTL_MS = 5_000;
+let onlineCache: { at: number; value: { servers: OnlineServer[]; source: string } } | null = null;
+let onlineInFlight: Promise<{ servers: OnlineServer[]; source: string }> | null = null;
+
 export async function getOnlinePlayers(): Promise<{ servers: OnlineServer[]; source: string }> {
-  const res = await fetch(`${base()}/api/ingame/online`, { credentials: 'include' });
-  return jsonOk(res, 'Failed to load online players');
+  const now = Date.now();
+  if (onlineCache && now - onlineCache.at < ONLINE_TTL_MS) return onlineCache.value;
+  if (onlineInFlight) return onlineInFlight;
+  onlineInFlight = (async () => {
+    try {
+      const res = await fetch(`${base()}/api/ingame/online`, { credentials: 'include' });
+      const value = await jsonOk<{ servers: OnlineServer[]; source: string }>(res, 'Failed to load online players');
+      onlineCache = { at: Date.now(), value };
+      return value;
+    } finally {
+      onlineInFlight = null;
+    }
+  })();
+  return onlineInFlight;
 }
 
 export async function getServerPlayers(bmServerId: string): Promise<{ players: any[] }> {

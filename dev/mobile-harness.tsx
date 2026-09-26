@@ -2,12 +2,19 @@
 // conditions the audit found: a wide table inside `.main` (which clips horizontal
 // overflow), form controls carrying inline font sizes, and the toast stack.
 //   npx vite  ->  http://localhost:5199/dev/mobile-harness.html
-import React from 'react';
+import React, { useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { ToastProvider, useToast } from '../src/ui/components/Toast';
+import { useVisiblePolling } from '../src/util/useVisiblePolling';
 import '../src/ui/styles.css';
 import '../src/ui/bm-styles.css';
 import '../src/ui/replay.css';
+
+function PollProbe() {
+  const [n, setN] = useState(0);
+  useVisiblePolling(() => setN((v) => v + 1), 300);
+  return <div id="pollCount" data-count={n} style={{ fontSize: 12 }}>poll ticks: {n}</div>;
+}
 
 function Demo() {
   const toast = useToast();
@@ -70,6 +77,7 @@ function Demo() {
               <button className="button" onClick={() => toast.push('Saved. Tap me to dismiss.', { kind: 'success' })}>
                 Push toast
               </button>
+              <PollProbe />
             </div>
           </div>
         </div>

@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { useVisiblePolling } from '../../util/useVisiblePolling';
 import { useNavigate, useParams } from 'react-router-dom';
 import { allowedTicketCategories, hasToolAccess } from '../../util/session';
 import { listTickets, type TicketSummary } from '../../util/ticketsApi';
@@ -47,13 +48,13 @@ export function TicketsPage() {
 
   useEffect(() => {
     if (!canEnter) { setLoading(false); return; }
-    let alive = true;
     setLoading(true);
-    refresh();
-    const t = setInterval(() => { if (alive) refresh(); }, 15_000);
-    return () => { alive = false; clearInterval(t); };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Polls only while the tab is visible, and refreshes once on return. An SSE
+  // subscription below also calls refresh() on ticket.create / ticket.close.
+  useVisiblePolling(() => { if (canEnter) refresh(); }, 15_000);
 
   useEffect(() => {
     bmEvents.start();

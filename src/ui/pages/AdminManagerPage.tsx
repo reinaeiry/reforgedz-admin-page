@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { useVisiblePolling } from '../../util/useVisiblePolling';
 import {
   ApiError,
   type AdminEntry,
@@ -246,12 +247,7 @@ function GmsTab() {
     }
   }
 
-  useEffect(() => {
-    revalidate(false);
-    const t = setInterval(() => revalidate(false), REVALIDATE_INTERVAL_MS);
-    return () => clearInterval(t);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  useVisiblePolling(() => revalidate(false), REVALIDATE_INTERVAL_MS);
 
   const groups = useMemo<ServerGroup[]>(
     () => buildServerGroups(snapshot?.servers || []),
@@ -658,12 +654,8 @@ function PriorityQueueTab() {
     }
   }
 
-  useEffect(() => {
-    revalidate();
-    const t = setInterval(revalidate, PQ_REVALIDATE_INTERVAL_MS);
-    return () => clearInterval(t);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  // Two requests per tick; both stop while the tab is hidden.
+  useVisiblePolling(revalidate, PQ_REVALIDATE_INTERVAL_MS);
 
   const servers: PriorityQueueServer[] = useMemo(() => snapshot?.servers || [], [snapshot]);
 

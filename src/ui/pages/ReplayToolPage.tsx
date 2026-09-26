@@ -76,6 +76,7 @@ import { type NameTagOptions, type PlayerMarker, type TerrainGrid, type TownLabe
 import { ReplayMap2D, type WorldBounds } from '../components/ReplayMap2D';
 import { ItemSpawnControl, type CopiedInventory, type CopiedInventoryItem, type SpawnCopiedProgress } from '../components/ItemSpawnControl';
 import { ReplayTimeline, type TimelineEvent } from '../components/replay/ReplayTimeline';
+import { isTabHidden } from '../../util/useVisiblePolling';
 import { InventorySearchModal } from '../components/replay/InventorySearchModal';
 import { resolveMapId, getMapDef } from '../../util/maps';
 
@@ -573,7 +574,7 @@ export function ReplayToolPage() {
     }
 
     loadStatuses();
-    const t = window.setInterval(loadStatuses, 15_000);
+    const t = window.setInterval(() => { if (!isTabHidden()) loadStatuses(); }, 15_000);
     return () => {
       cancelled = true;
       window.clearInterval(t);
@@ -881,6 +882,13 @@ export function ReplayToolPage() {
     let timer: number | null = null;
 
     async function pollPlayers() {
+      // Nothing to show while the tab is hidden: skip the request and the
+      // state updates, and look again shortly. This page's fastest loop is
+      // sub-second, so a parked tab was a continuous load on the admin box.
+      if (isTabHidden()) {
+        if (!cancelled) timer = window.setTimeout(pollPlayers, 5000);
+        return;
+      }
       try {
         const p = await listReplayPlayers(serverIdValue);
         if (!cancelled) setPlayers(p);
@@ -908,6 +916,10 @@ export function ReplayToolPage() {
     let timer: number | null = null;
 
     async function poll() {
+      if (isTabHidden()) {
+        if (!cancelled) timer = window.setTimeout(poll, 5000);
+        return;
+      }
       try {
         const r = await getReplayRange(serverIdValue);
         if (cancelled) return;
@@ -1067,7 +1079,7 @@ export function ReplayToolPage() {
       }
 
       if (!cancelled) {
-        timer = window.setTimeout(fetchEvents, live ? 500 : 1500);
+        timer = window.setTimeout(fetchEvents, isTabHidden() ? 5000 : (live ? 500 : 1500));
       }
     }
 
@@ -1249,6 +1261,10 @@ export function ReplayToolPage() {
     let timer: number | null = null;
 
     async function poll() {
+      if (isTabHidden()) {
+        if (!cancelled) timer = window.setTimeout(poll, 10000);
+        return;
+      }
       try {
         const data = await getReplayVehicles(serverIdValue);
         if (!cancelled && Array.isArray(data.vehicles)) setVehicleIndex(data.vehicles);
@@ -1265,6 +1281,10 @@ export function ReplayToolPage() {
     let cancelled = false;
     let timer: number | null = null;
     async function poll() {
+      if (isTabHidden()) {
+        if (!cancelled) timer = window.setTimeout(poll, 60000);
+        return;
+      }
       try {
         const data = await listGameLogs({ types: ['anticheat'], limit: 500 });
         if (!cancelled) setAnticheatLogs(Array.isArray(data.logs) ? data.logs : []);

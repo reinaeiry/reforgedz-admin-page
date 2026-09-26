@@ -1,5 +1,6 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useRef, useState } from 'react';
 import { listBmServers, type BmDashServer } from '../../util/bmApi';
+import { useVisiblePolling } from '../../util/useVisiblePolling';
 
 type Props = {
   pollMs?: number;
@@ -10,24 +11,31 @@ export function BMServerStatusStrip({ pollMs = 30_000, onServersLoaded }: Props)
   const [servers, setServers] = useState<BmDashServer[]>([]);
   const [err, setErr] = useState<string | null>(null);
 
-  useEffect(() => {
-    let alive = true;
-    async function load() {
-      try {
-        const out = await listBmServers();
-        if (!alive) return;
-        setServers(out.servers);
-        setErr(null);
-        onServersLoaded?.(out.servers);
-      } catch (e: any) {
-        if (!alive) return;
-        setErr(e?.message || 'Failed to load servers');
+  // onServersLoaded sets state on BattleMetricsPage, so calling it on every poll
+  // re-rendered the entire moderation page (and every mounted player list) every
+  // 30 seconds even when nothing had changed. Only report real changes.
+  const lastSignatureRef = useRef<string>('');
+  const onLoadedRef = useRef(onServersLoaded);
+  onLoadedRef.current = onServersLoaded;
+
+  const load = useCallback(async () => {
+    try {
+      const out = await listBmServers();
+      setServers(out.servers);
+      setErr(null);
+      const signature = out.servers
+        .map((s) => `${s.bmServerId}:${s.status}:${s.players ?? ''}:${s.maxPlayers ?? ''}`)
+        .join('|');
+      if (signature !== lastSignatureRef.current) {
+        lastSignatureRef.current = signature;
+        onLoadedRef.current?.(out.servers);
       }
+    } catch (e: any) {
+      setErr(e?.message || 'Failed to load servers');
     }
-    load();
-    const t = setInterval(load, pollMs);
-    return () => { alive = false; clearInterval(t); };
-  }, [pollMs]);
+  }, []);
+
+  useVisiblePolling(load, pollMs);
 
   return (
     <div className="bmServerStrip">
