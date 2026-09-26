@@ -56,6 +56,8 @@ synthetic data. Start `npx vite` and open:
 | `/dev/timeline-harness.html` | the replay timeline: drag-scrub, wheel/pinch zoom, keyboard, snapping, marker clusters, the mobile bottom sheet |
 | `/dev/map-harness.html` | ReplayMap2D's input: one-finger pan, two-finger pinch, long-press to open the GM menu, tap-to-select |
 | `/dev/mobile-harness.html` | the app-wide touch rules: table overflow, 44px targets, 16px form controls, the toast stack, the narrow-screen panel tabs, and a visibility-gated polling probe |
+| `/dev/panels-harness.html` | the Events and Players panels. `?n=50000` stresses the windowing, the 5,000-row cap and repeat collapsing |
+| `/dev/layout-harness.html` | the page's own geometry: the map box, the floating panels and the timeline dock. Check this after changing what the dock contains — a taller dock silently hides the panels behind it |
 
 They are plain Vite entry points and are not part of the production build
 (`vite build` only bundles `index.html`).
@@ -64,7 +66,8 @@ Pure timeline maths - tick ladders, cursor-anchored zoom, pixel-space clustering
 and snapping - is unit tested without a DOM:
 
 ```bash
-node scripts/test-timeline.mjs
+node scripts/test-timeline.mjs    # tick ladders, cursor-anchored zoom, clustering, snapping
+node scripts/test-panels.mjs      # search ranking, time bucketing, windowing, row keys, repeat collapsing
 ```
 
 ## Run (production)

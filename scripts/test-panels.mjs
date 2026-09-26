@@ -166,4 +166,44 @@ test('the separator cannot be produced by ordinary text', () => {
   assert.equal(baseKeyOf(next(odd)), odd);
 });
 
+test('adjacent repeats collapse into one row with a count', () => {
+  const items = [
+    { t: 1000, k: 'zombie' }, { t: 2000, k: 'zombie' }, { t: 3000, k: 'zombie' },
+    { t: 4000, k: 'join' },
+    { t: 5000, k: 'zombie' },
+  ];
+  const rows = buildFeedRows(items, (i) => i.t, (_i, idx) => `k${idx}`, 60_000, true, (i) => i.k);
+  const itemRows = rows.filter((r) => r.kind === 'item');
+  // newest first: zombie(5000), join(4000), then the run of three zombies
+  assert.equal(itemRows.length, 3, 'three visible rows');
+  assert.deepEqual(itemRows.map((r) => r.repeat), [1, 1, 3]);
+  const group = rows.find((r) => r.kind === 'group');
+  assert.equal(group.count, 5, 'the header still counts every underlying event');
+});
+
+test('collapsing never crosses a bucket boundary', () => {
+  const items = [{ t: 59_000, k: 'a' }, { t: 61_000, k: 'a' }];
+  const rows = buildFeedRows(items, (i) => i.t, (_i, idx) => `k${idx}`, 60_000, true, (i) => i.k);
+  const itemRows = rows.filter((r) => r.kind === 'item');
+  assert.equal(itemRows.length, 2, 'same key, different minute -> two rows');
+  assert.deepEqual(itemRows.map((r) => r.repeat), [1, 1]);
+});
+
+test('without a collapse key every event keeps its own row', () => {
+  const items = [{ t: 1, k: 'a' }, { t: 2, k: 'a' }];
+  const rows = buildFeedRows(items, (i) => i.t, (_i, idx) => `k${idx}`, 60_000, true);
+  assert.equal(rows.filter((r) => r.kind === 'item').length, 2);
+  assert.deepEqual(rows.filter((r) => r.kind === 'item').map((r) => r.repeat), [1, 1]);
+});
+
+test('a collapsed row keeps the representative event and its timestamp', () => {
+  const items = [{ t: 1000, k: 'z', id: 'old' }, { t: 2000, k: 'z', id: 'new' }];
+  const rows = buildFeedRows(items, (i) => i.t, (i) => i.id, 60_000, true, (i) => i.k);
+  const row = rows.find((r) => r.kind === 'item');
+  assert.equal(row.repeat, 2);
+  assert.equal(row.item.id, 'new', 'newest-first keeps the newest as the representative');
+  assert.equal(row.tsMs, 2000);
+  assert.equal(row.key, 'new', 'the key is the representative event, so selection is stable');
+});
+
 console.log(`\n${passed} passed${process.exitCode ? ' (with failures)' : ''}`);

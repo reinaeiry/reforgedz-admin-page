@@ -73,6 +73,10 @@ export function ReplayEventsPanel({
   const [query, setQuery] = useState('');
   const [typeFilter, setTypeFilter] = useState<Set<TimelineEvent['type']>>(new Set());
   const [follow, setFollow] = useState(true);
+  // A game feed runs in streaks - the same player killing AI a dozen times in a
+  // row. Folding those into one row is what makes the rest readable, but it is a
+  // toggle because it does hide individual timestamps.
+  const [groupRepeats, setGroupRepeats] = useState(true);
   const [acOpen, setAcOpen] = useState(false);
   const [scrollTop, setScrollTop] = useState(0);
   const [viewportH, setViewportH] = useState(320);
@@ -118,8 +122,17 @@ export function ReplayEventsPanel({
 
   const rows = useMemo(() => {
     const nextKey = keyDisambiguator();
-    return buildFeedRows(filtered, (e) => e.tsMs, (e) => nextKey(eventKeyOf(e)), bucketMs, true);
-  }, [filtered, bucketMs, eventKeyOf]);
+    return buildFeedRows(
+      filtered,
+      (e) => e.tsMs,
+      (e) => nextKey(eventKeyOf(e)),
+      bucketMs,
+      true,
+      // subtitle carries coordinates, which differ every time - collapse on what
+      // actually reads as "the same thing happening again"
+      groupRepeats ? (e) => `${e.type}|${e.title}` : undefined,
+    );
+  }, [filtered, bucketMs, eventKeyOf, groupRepeats]);
 
   // Where "now" sits in a newest-first feed: the first row at or before the
   // playhead. Cheap to recompute, so it can follow the playhead every frame.
@@ -259,6 +272,12 @@ export function ReplayEventsPanel({
           Events <span className="muted">({filtered.length}{filtered.length !== events.length ? ` of ${events.length}` : ''})</span>
         </div>
         <div className="rpPanel-headActions">
+          <button type="button"
+            className={`rpChip${groupRepeats ? ' is-on' : ''}`}
+            onClick={() => setGroupRepeats((v) => !v)}
+            aria-pressed={groupRepeats}
+            aria-label="Group repeated events"
+            title="Fold runs of the same event into one row">×N</button>
           <button type="button"
             className={`rpChip${follow ? ' is-on' : ''}`}
             onClick={() => (follow ? setFollow(false) : jumpToNow())}
@@ -455,8 +474,13 @@ function EventRow({
     >
       <span className="rpRow-glyph" style={{ color: meta.color }} aria-hidden="true">{meta.glyph}</span>
       <span className="rpRow-main">
-        <span className="rpRow-title">{ev.title}</span>
-        <span className="rpRow-sub muted">{ev.subtitle || meta.label}</span>
+        <span className="rpRow-title">
+          {ev.title}
+          {row.repeat > 1 ? <span className="rpRepeat">×{row.repeat}</span> : null}
+        </span>
+        <span className="rpRow-sub muted">
+          {row.repeat > 1 ? `${row.repeat} in a row · ` : ''}{ev.subtitle || meta.label}
+        </span>
       </span>
       <span className="rpRow-time">
         <span>{formatWallClock ? formatWallClock(ev.tsMs) : ''}</span>

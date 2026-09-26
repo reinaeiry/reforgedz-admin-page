@@ -59,7 +59,9 @@ export function bucketOf(tsMs: number, bucketMs: number): number {
 
 export type FeedRow<T> =
   | { kind: 'group'; key: string; bucketTs: number; count: number }
-  | { kind: 'item'; key: string; item: T; tsMs: number };
+  /** `repeat` is how many identical, adjacent events this row stands for (1 = itself).
+   *  A game feed is full of runs like the same player killing AI twelve times. */
+  | { kind: 'item'; key: string; item: T; tsMs: number; repeat: number };
 
 /**
  * Flatten a chronological list into group headers + items. `newestFirst` walks
@@ -72,6 +74,9 @@ export function buildFeedRows<T>(
   getKey: (item: T, index: number) => string,
   bucketMs: number,
   newestFirst = true,
+  /** When given, adjacent items sharing this key collapse into one row with a count.
+   *  Only ever collapses within a bucket, so a group header always means what it says. */
+  collapseKeyOf?: (item: T) => string,
 ): FeedRow<T>[] {
   const sorted = items
     .map((item, index) => ({ item, index, tsMs: getTs(item) }))
@@ -80,16 +85,39 @@ export function buildFeedRows<T>(
   const rows: FeedRow<T>[] = [];
   let currentBucket: number | null = null;
   let groupRowIndex = -1;
+  let lastItemIndex = -1;
+  let lastCollapseKey: string | null = null;
+
   for (const entry of sorted) {
     const bucket = bucketOf(entry.tsMs, bucketMs);
     if (bucket !== currentBucket) {
       currentBucket = bucket;
       groupRowIndex = rows.length;
+      lastItemIndex = -1;
+      lastCollapseKey = null;
       rows.push({ kind: 'group', key: `g${bucket}`, bucketTs: bucket, count: 0 });
     }
     const groupRow = rows[groupRowIndex];
     if (groupRow && groupRow.kind === 'group') groupRow.count += 1;
-    rows.push({ kind: 'item', key: getKey(entry.item, entry.index), item: entry.item, tsMs: entry.tsMs });
+
+    if (collapseKeyOf) {
+      const ck = collapseKeyOf(entry.item);
+      const prev = lastItemIndex >= 0 ? rows[lastItemIndex] : null;
+      if (prev && prev.kind === 'item' && lastCollapseKey !== null && ck === lastCollapseKey) {
+        prev.repeat += 1;
+        continue;                       // folded into the row above; keys stay stable
+      }
+      lastCollapseKey = ck;
+    }
+
+    lastItemIndex = rows.length;
+    rows.push({
+      kind: 'item',
+      key: getKey(entry.item, entry.index),
+      item: entry.item,
+      tsMs: entry.tsMs,
+      repeat: 1,
+    });
   }
   return rows;
 }

@@ -609,3 +609,13 @@
   max-height: 42%;
   overflow: auto;
 }
+.rpRepeat {
+  margin-left: 6px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.14);
+  color: var(--text-bright, #fff);
+  font-size: 9px;
+  font-weight: 800;
+  vertical-align: middle;
+}
