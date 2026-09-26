@@ -1,6 +1,7 @@
 import React, { useMemo, useRef, useState } from 'react';
 import type { ReplayPlayer } from '../../../util/api';
 import { bestScore } from './panelUtils';
+import { IconChevronDown, IconChevronUp, IconSettings, IconTarget, IconTargetLocked } from './icons';
 
 type SortKey = 'status' | 'name' | 'risk';
 
@@ -113,11 +114,13 @@ export function ReplayPlayersPanel({
           <button type="button" className={`rpChip${settingsOpen ? ' is-on' : ''}`}
             onClick={() => setSettingsOpen(!settingsOpen)}
             aria-expanded={settingsOpen}
-            title="Map display settings">⚙ Display</button>
+            title="Map display settings"><IconSettings size={12} /> Display</button>
           <button type="button" className="rpChip"
             onClick={() => setCollapsed(!collapsed)}
             aria-expanded={!collapsed}
-            title={collapsed ? 'Show the roster' : 'Collapse to the header'}>{collapsed ? '▾' : '▴'}</button>
+            title={collapsed ? 'Show the roster' : 'Collapse to the header'}>
+            {collapsed ? <IconChevronDown size={14} /> : <IconChevronUp size={14} />}
+          </button>
         </div>
       </div>
 
@@ -220,7 +223,9 @@ export function ReplayPlayersPanel({
                 <span className="rpRow-actions" onClick={(e) => e.stopPropagation()}>
                   <button type="button" className={`rpChip${isFollowing ? ' is-on' : ''}`}
                     onClick={() => onToggleFollow(p.playerId)}>
-                    {isFollowing ? '◉ Following' : '◎ Follow'}
+                    {isFollowing
+                      ? <><IconTargetLocked size={12} /> Following</>
+                      : <><IconTarget size={12} /> Follow</>}
                   </button>
                   {identityId ? (
                     <button type="button" className="rpChip" onClick={() => onOpenProfile(identityId)}>Profile →</button>

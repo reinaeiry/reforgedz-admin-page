@@ -79,6 +79,7 @@ import { ItemSpawnControl, type CopiedInventory, type CopiedInventoryItem, type 
 import { ReplayTimeline, type TimelineEvent } from '../components/replay/ReplayTimeline';
 import { ReplayEventsPanel } from '../components/replay/ReplayEventsPanel';
 import { ReplayPlayersPanel } from '../components/replay/ReplayPlayersPanel';
+import { IconClose, IconCopy, IconSearch } from '../components/replay/icons';
 import { isTabHidden } from '../../util/useVisiblePolling';
 import { InventorySearchModal } from '../components/replay/InventorySearchModal';
 import { resolveMapId, getMapDef } from '../../util/maps';
@@ -3389,13 +3390,13 @@ export function ReplayToolPage() {
             onClick={() => setInvSearchOpen(true)}
             title="Search every player's item history on this server, all-time"
           >
-            🔍 Search item history
+            <IconSearch size={13} /> Search item history
           </button>
         ) : null}
 
         {copiedInventory ? (
           <div className="row" style={{ gap: 6, alignItems: 'center' }}>
-            <span className="muted" style={{ fontSize: 11 }}>📋 {copiedInventory.items.length} item(s) from {copiedInventory.sourcePlayerName}</span>
+            <span className="muted" style={{ fontSize: 11, display: 'inline-flex', alignItems: 'center', gap: 5 }}><IconCopy size={12} /> {copiedInventory.items.length} item(s) from {copiedInventory.sourcePlayerName}</span>
             <input
               className="input"
               style={{ width: 120, fontSize: 11, padding: '4px 6px' }}
@@ -3421,7 +3422,7 @@ export function ReplayToolPage() {
             >
               Spawn to myself
             </button>
-            <button type="button" className="button" style={{ fontSize: 11, padding: '4px 8px' }} title="Clear clipboard" onClick={() => setCopiedInventory(null)}>✕</button>
+            <button type="button" className="button" style={{ fontSize: 11, padding: '4px 8px' }} title="Clear clipboard" aria-label="Clear clipboard" onClick={() => setCopiedInventory(null)}><IconClose size={12} /></button>
           </div>
         ) : null}
 
@@ -3829,7 +3830,7 @@ export function ReplayToolPage() {
                                         pushToast({ kind: 'event', title: 'Inventory copied', subtitle: `${grouped.length} item(s) from ${sourceName}` });
                                       }}
                                     >
-                                      📋 Copy
+                                      <IconCopy size={12} /> Copy
                                     </button>
                                   ) : null}
                                 </summary>
@@ -3844,7 +3845,8 @@ export function ReplayToolPage() {
                                         <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{g.name}{g.count > 1 ? ` ×${g.count}` : ''}</span>
                                         {live && selectedPlayerId !== null && g.prefab ? (
                                           <button type="button" className="button" title="Remove one" style={{ padding: '0 6px', fontSize: 11, flexShrink: 0, color: '#ff7a7a' }}
-                                            onClick={() => doRemoveItem('player', String(selectedPlayerId), g.prefab, g.name)}>✕</button>
+                                            aria-label={`Remove one ${g.name}`}
+                                            onClick={() => doRemoveItem('player', String(selectedPlayerId), g.prefab, g.name)}><IconClose size={11} /></button>
                                         ) : null}
                                       </div>
                                     ));
@@ -4005,7 +4007,8 @@ export function ReplayToolPage() {
                                   <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{dispName}</span>
                                   {live && selectedVehicleId && prefab ? (
                                     <button type="button" className="button" title="Remove one" style={{ padding: '0 6px', fontSize: 11, flexShrink: 0, color: '#ff7a7a' }}
-                                      onClick={() => doRemoveItem('vehicle', selectedVehicleId, prefab, dispName)}>✕</button>
+                                      aria-label={`Remove one ${dispName}`}
+                                      onClick={() => doRemoveItem('vehicle', selectedVehicleId, prefab, dispName)}><IconClose size={11} /></button>
                                   ) : null}
                                 </div>
                               );

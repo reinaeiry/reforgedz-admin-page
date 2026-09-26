@@ -468,6 +468,10 @@
 .rpChip-clear { align-self: flex-start; }
 
 .rpJumpNow {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
   flex-shrink: 0;
   min-height: 32px;
   border-radius: 6px;
@@ -533,7 +537,9 @@
   height: 2px;
   background: linear-gradient(90deg, rgba(120, 200, 255, 0.95), rgba(120, 200, 255, 0));
 }
-.rpRow-glyph { font-size: 12px; text-align: center; }
+/* holds an inline SVG now, not a glyph */
+.rpRow-glyph { display: flex; align-items: center; justify-content: center; }
+.rpAc-head { display: inline-flex; align-items: center; gap: 6px; }
 .rpRow-main { display: flex; flex-direction: column; min-width: 0; gap: 1px; }
 .rpRow-title {
   font-size: 12px; font-weight: 700; line-height: 1.25;

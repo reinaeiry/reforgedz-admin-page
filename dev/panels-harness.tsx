@@ -64,7 +64,9 @@ function Harness() {
 
   // ?n=50000 to stress the windowing and the 5,000-row cap
   const eventCount = useMemo(() => {
-    const raw = Number(new URLSearchParams(window.location.search).get('n'));
+    const param = new URLSearchParams(window.location.search).get('n');
+    if (param === null) return 4000;
+    const raw = Number(param);
     return Number.isFinite(raw) && raw >= 0 ? Math.min(200000, Math.floor(raw)) : 4000;
   }, []);
   const events = useMemo(() => makeEvents(eventCount), [eventCount]);
@@ -72,7 +74,9 @@ function Harness() {
     `${ev.tsMs}|${ev.type}|${ev.title}|${ev.subtitle || ''}`;
 
   const playerCount = useMemo(() => {
-    const raw = Number(new URLSearchParams(window.location.search).get('p'));
+    const param = new URLSearchParams(window.location.search).get('p');
+    if (param === null) return NAMES.length;
+    const raw = Number(param);
     return Number.isFinite(raw) && raw >= 0 ? Math.min(NAMES.length, Math.floor(raw)) : NAMES.length;
   }, []);
   const players: ReplayPlayer[] = useMemo(() => NAMES.slice(0, playerCount).map((name, i) => ({

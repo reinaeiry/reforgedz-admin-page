@@ -1,5 +1,9 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
+  IconChevronDown, IconChevronUp, IconClose, IconPause, IconPlay, IconRecord,
+  IconSkipBack, IconSkipForward,
+} from './icons';
+import {
   MIN_SPAN_MS, chooseTickStep, clampSpan, clusterByPixel, densityBuckets, firstTickAfter,
   formatElapsedMs, formatTick, labelFits, panBy, pxToTs, scrollIntoView, snapToEvent, tsToPx, zoomAt,
   type Span,
@@ -607,17 +611,17 @@ export function ReplayTimeline({
           <button type="button" className="replayTimeline-btn" title="Previous event (,)"
             disabled={disabled}
             onClick={() => { const ev = nearestEvent(playheadTs, -1); if (ev) { stopFollowing(); onJumpToEvent(ev); } }}>
-            ⏮
+            <IconSkipBack />
           </button>
           <button type="button" className="replayTimeline-btn replayTimeline-btn-primary" title="Play / pause (space)"
             disabled={disabled}
             onClick={() => { if (live) setLive(false); setIsPlaying((v) => !v); }}>
-            {isPlaying ? '❚❚' : '▶'}
+            {isPlaying ? <IconPause /> : <IconPlay />}
           </button>
           <button type="button" className="replayTimeline-btn" title="Next event (.)"
             disabled={disabled}
             onClick={() => { const ev = nearestEvent(playheadTs, 1); if (ev) { stopFollowing(); onJumpToEvent(ev); } }}>
-            ⏭
+            <IconSkipForward />
           </button>
           <select className="replayTimeline-select" value={String(playbackSpeed)}
             onChange={(e) => setPlaybackSpeed(Number(e.target.value))}
@@ -632,18 +636,18 @@ export function ReplayTimeline({
             className={`replayTimeline-btn replayTimeline-live${live ? ' is-on' : ''}`}
             onClick={() => { const next = !live; setLive(next); if (next) setIsPlaying(false); }}
             title="Follow the live edge">
-            ● LIVE
+            <IconRecord size={9} /> LIVE
           </button>
           {playheadTs < view.start || playheadTs > view.end ? (
             <button type="button" className="replayTimeline-btn replayTimeline-btn-sm replayTimeline-btn-accent"
               onClick={() => setView((v) => scrollIntoView(v, bounds, playheadTs, 0.4))}
-              title="Bring the view back to the playhead">↵ Playhead</button>
+              title="Bring the view back to the playhead">Playhead</button>
           ) : null}
           <button type="button" className="replayTimeline-btn replayTimeline-btn-sm"
             onClick={() => setCompact((v) => !v)}
             aria-expanded={!compact}
             title={compact ? 'Show filters and overview' : 'Collapse to the bar'}>
-            {compact ? '▴' : '▾'}
+            {compact ? <IconChevronUp /> : <IconChevronDown />}
           </button>
         </div>
       </div>
@@ -762,7 +766,7 @@ export function ReplayTimeline({
             <div className="replayTimeline-popoverHead">
               <span>{popover.events.length} events</span>
               <button type="button" className="replayTimeline-btn replayTimeline-btn-sm"
-                onClick={() => setPopover(null)} aria-label="Close">✕</button>
+                onClick={() => setPopover(null)} aria-label="Close"><IconClose size={12} /></button>
             </div>
             {popover.events.map((ev, i) => (
               <button key={`${ev.tsMs}-${i}`} type="button" className="replayTimeline-popoverRow"

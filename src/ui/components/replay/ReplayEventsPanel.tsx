@@ -4,6 +4,10 @@ import {
   keyDisambiguator, variableWindowSlice, type FeedRow,
 } from './panelUtils';
 import type { TimelineEvent } from './ReplayTimeline';
+import {
+  IconArrowIn, IconArrowOut, IconChevronDown, IconChevronUp, IconExport,
+  IconKill, IconRestart, IconTarget, IconTargetLocked, IconWarning,
+} from './icons';
 
 export type AcFlagRow = {
   id: string;
@@ -42,14 +46,16 @@ type Props = {
   live: boolean;
 };
 
-const TYPE_META: Record<TimelineEvent['type'], { label: string; glyph: string; color: string }> = {
-  kill: { label: 'Kills', glyph: '✖', color: '#ff4a4a' },
-  death: { label: 'Deaths', glyph: '✖', color: '#ff4a4a' },
-  aiKill: { label: 'AI kills', glyph: '✖', color: '#ff8c4a' },
-  join: { label: 'Joins', glyph: '→', color: '#b7f7c8' },
-  disconnect: { label: 'Leaves', glyph: '←', color: '#78aa8c' },
-  restart: { label: 'Restarts', glyph: '⟳', color: '#ffd966' },
-  gmPing: { label: 'GM pings', glyph: '◎', color: '#78c8ff' },
+type IconComponent = (props: { size?: number; className?: string }) => JSX.Element;
+
+const TYPE_META: Record<TimelineEvent['type'], { label: string; Icon: IconComponent; color: string }> = {
+  kill: { label: 'Kills', Icon: IconKill, color: '#ff4a4a' },
+  death: { label: 'Deaths', Icon: IconKill, color: '#ff4a4a' },
+  aiKill: { label: 'AI kills', Icon: IconKill, color: '#ff8c4a' },
+  join: { label: 'Joins', Icon: IconArrowIn, color: '#b7f7c8' },
+  disconnect: { label: 'Leaves', Icon: IconArrowOut, color: '#78aa8c' },
+  restart: { label: 'Restarts', Icon: IconRestart, color: '#ffd966' },
+  gmPing: { label: 'GM pings', Icon: IconTarget, color: '#78c8ff' },
 };
 const ALL_TYPES = Object.keys(TYPE_META) as TimelineEvent['type'][];
 
@@ -282,7 +288,7 @@ export function ReplayEventsPanel({
             className={`rpChip${follow ? ' is-on' : ''}`}
             onClick={() => (follow ? setFollow(false) : jumpToNow())}
             title={follow ? 'Following the playhead - click to stop' : 'Scroll with the playhead'}>
-            {follow ? '◉ Following' : '○ Follow'}
+            {follow ? <><IconTargetLocked size={12} /> Following</> : <><IconTarget size={12} /> Follow</>}
           </button>
         </div>
       </div>
@@ -310,7 +316,7 @@ export function ReplayEventsPanel({
                   if (next.has(t)) next.delete(t); else next.add(t);
                   return next;
                 })}>
-                <span style={{ color: TYPE_META[t].color }}>{TYPE_META[t].glyph}</span>
+                {React.createElement(TYPE_META[t].Icon, { size: 12 })}
                 {TYPE_META[t].label}
               </button>
             );
@@ -351,8 +357,8 @@ export function ReplayEventsPanel({
         {showAnticheat && acFlags.length > 0 ? (
           <div className="rpAc">
             <button type="button" className="rpAc-toggle" onClick={() => setAcOpen((v) => !v)} aria-expanded={acOpen}>
-              <span>⚠ Anticheat flags ({acFlags.length}{critCount ? `, ${critCount} critical` : ''})</span>
-              <span>{acOpen ? '▴' : '▾'}</span>
+              <span className="rpAc-head"><IconWarning size={13} /> Anticheat flags ({acFlags.length}{critCount ? `, ${critCount} critical` : ''})</span>
+              {acOpen ? <IconChevronUp size={14} /> : <IconChevronDown size={14} />}
             </button>
             {acOpen ? (
               <div className="rpAc-list">
@@ -373,7 +379,9 @@ export function ReplayEventsPanel({
       </div>
 
       {!follow && nowIndex >= 0 && nowIndex < rows.length ? (
-        <button type="button" className="rpJumpNow" onClick={jumpToNow}>↓ Jump to the playhead</button>
+        <button type="button" className="rpJumpNow" onClick={jumpToNow}>
+          <IconChevronDown size={13} /> Jump to the playhead
+        </button>
       ) : null}
 
       <div
@@ -472,7 +480,7 @@ function EventRow({
         onSelect(row.key, ev);
       }}
     >
-      <span className="rpRow-glyph" style={{ color: meta.color }} aria-hidden="true">{meta.glyph}</span>
+      <span className="rpRow-glyph" style={{ color: meta.color }} aria-hidden="true"><meta.Icon size={13} /></span>
       <span className="rpRow-main">
         <span className="rpRow-title">
           {ev.title}
@@ -490,10 +498,14 @@ function EventRow({
       {isSelected ? (
         <span className="rpRow-actions" onClick={(e) => e.stopPropagation()}>
           {canPing ? (
-            <button type="button" className="rpChip" onClick={() => onPing(ev)} title="Send a GM ping at this spot">◎ Ping</button>
+            <button type="button" className="rpChip" onClick={() => onPing(ev)} title="Send a GM ping at this spot">
+              <IconTarget size={12} /> Ping
+            </button>
           ) : null}
           {canAct && ev.focusPos ? (
-            <button type="button" className="rpChip" onClick={() => onExport(ev)} title="Export a clip to Discord">↗ Export</button>
+            <button type="button" className="rpChip" onClick={() => onExport(ev)} title="Export a clip to Discord">
+              <IconExport size={12} /> Export
+            </button>
           ) : null}
         </span>
       ) : null}
