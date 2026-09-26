@@ -426,7 +426,23 @@
 }
 .rpPanel-title { font-weight: 800; font-size: 12px; white-space: nowrap; }
 .rpPanel-headActions { display: flex; gap: 6px; align-items: center; }
-.rpPanel-controls { display: flex; flex-direction: column; gap: 6px; flex-shrink: 0; }
+/* The controls are what must yield when the panel is short. They were
+   flex-shrink: 0 while .rpFeed was the only shrinkable child, so the feed
+   absorbed the entire deficit: measured in a 292px phone sheet, 36px of head
+   plus 216px of controls left the feed 2px — the Events panel rendered its
+   filters and not one event. This is not a phone-only bug; any short window
+   (e.g. 1440x620) did the same, so it is a base rule, not a media query. */
+.rpPanel-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex-shrink: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: none;
+}
+.rpPanel-controls::-webkit-scrollbar { display: none; }
 .rpPanel-row { display: flex; gap: 6px; align-items: center; }
 .rpPanel-foot { font-size: 10px; flex-shrink: 0; opacity: 0.7; }
 
@@ -485,7 +501,10 @@
 
 .rpFeed {
   flex: 1;
-  min-height: 0;
+  /* A floor for the list, but never more than the panel can give it: a flat
+     floor spills past .replayPanel-card's overflow:hidden when rotated or in a
+     short window, leaving the bottom of the list unreachable. */
+  min-height: min(138px, 60%);
   overflow: auto;
   overscroll-behavior: contain;
   border: 1px solid rgba(255, 255, 255, 0.10);
@@ -609,12 +628,20 @@
   overflow: auto;
 }
 .rpDetail {
-  flex-shrink: 0;
+  /* Was flex-shrink: 0 with max-height: 42%, stacked after the feed inside a
+     card with overflow: hidden — so selecting a player collapsed the roster to
+     2px AND clipped the detail's own bottom outside the card. Both panes now
+     share the space and each scrolls itself. */
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: 60%;
   border-top: 1px solid rgba(255, 255, 255, 0.10);
   padding-top: 8px;
-  max-height: 42%;
   overflow: auto;
+  overscroll-behavior: contain;
 }
+/* With a detail pane open the roster keeps a usable minimum but yields the rest. */
+.rpPanel:has(.rpDetail) .rpFeed { min-height: min(92px, 40%); }
 .rpRepeat {
   margin-left: 6px;
   padding: 0 5px;
@@ -714,4 +741,17 @@
 
 @media (prefers-reduced-transparency: reduce) {
   .replayPanel-card, .replayOverlay-card { background: #0c0f14; backdrop-filter: none; }
+}
+
+/* The Filters disclosure lives on the search row, which is already 44px tall,
+   so collapsing the filter block costs no chrome at all. */
+.rpFiltersToggle { flex: 0 0 auto; white-space: nowrap; }
+
+/* In-map toasts: anchored to the right of the map box. The old `right: 304px`
+   was sized to clear the 280px desktop events panel, which on a phone put the
+   whole stack off the left edge of an overflow:hidden box — every toast was
+   clipped away. */
+.replayToastStack { right: 304px; width: 240px; }
+@media (max-width: 900px) {
+  .replayToastStack { right: 8px; left: 8px; width: auto; }
 }

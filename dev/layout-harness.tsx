@@ -6,6 +6,7 @@
 import React, { useCallback, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { ReplayTimeline, type TimelineEvent } from '../src/ui/components/replay/ReplayTimeline';
+import { ReplayEventsPanel } from '../src/ui/components/replay/ReplayEventsPanel';
 import '../src/ui/styles.css';
 import '../src/ui/replay.css';
 
@@ -78,7 +79,30 @@ function Harness() {
 
             <div id="panelEvents" className={`replayPanel${panel === 'events' ? '' : ' is-hidden'}`}
               style={{ position: 'absolute', top: 12, right: 12, bottom: panelBottom, width: 280, display: 'flex', flexDirection: 'column' }}>
-              <div className="card replayPanel-card">Events panel — feed, filters</div>
+              <div className="card replayPanel-card">
+                <ReplayEventsPanel
+                  events={events}
+                  players={[{ playerId: 1, name: 'Osmodium' }, { playerId: 2, name: 'M@tt' }]}
+                  currentTsMs={currentTsMs}
+                  recordingStartMs={0}
+                  formatWallClock={(ts) => new Date(Date.parse('2026-09-26T08:00:00Z') + (ts - END)).toLocaleTimeString()}
+                  selectedKey={null}
+                  eventKeyOf={(ev) => `${ev.tsMs}|${ev.type}|${ev.title}|${ev.subtitle || ''}`}
+                  onSelect={() => {}}
+                  offsetSeconds={10}
+                  setOffsetSeconds={() => {}}
+                  playerFilterId={null}
+                  setPlayerFilterId={() => {}}
+                  acFlags={[{ id: 'a1', name: 'Speed', note: 'x', severity: 'CRITICAL', tsMs: 0, x: 0, y: 0, z: 0 }]}
+                  showAnticheat
+                  onInvestigateAc={() => {}}
+                  canAct={false}
+                  onPing={() => {}}
+                  onExport={() => {}}
+                  isPlaying={false}
+                  live={false}
+                />
+              </div>
             </div>
 
             <div className="replayTimeline-dock" ref={dockRef}>

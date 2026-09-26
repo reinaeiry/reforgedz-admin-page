@@ -82,11 +82,22 @@ input:-webkit-autofill:focus {
 /* ============================================================
    Shell — icon rail + top bar
    ============================================================ */
+/* viewport-fit=cover (index.html) extends the page under the notch and the
+   Dynamic Island. Without these, the rail and the content run underneath it in
+   landscape. */
 .appShell {
+  padding-left: env(safe-area-inset-left, 0px);
+  padding-right: env(safe-area-inset-right, 0px);
+  box-sizing: border-box;
   display: grid;
   grid-template-columns: 100px 1fr;
   grid-template-rows: 52px 1fr;
+  /* 100vh on iOS Safari is the LARGE viewport - the height with the toolbars
+     retracted - so the shell stood ~80-90px taller than the screen and the
+     bottom of every page sat underneath the browser chrome. dvh tracks the
+     visible viewport; vh stays as the fallback for anything that lacks it. */
   height: 100vh;
+  height: 100dvh;
   background: var(--bg);
 }
 
@@ -846,9 +857,12 @@ select.input option { background: var(--surface); color: var(--text); }
 
   /* Minimum comfortable target. Applied to the control classes rather than
      bare `button` so inline text links keep their natural line box. */
-  .button, .btn, .btn-sm, .bmChip, .input, select, .gm-icon-btn, .ticketRow-star {
+  .button, .btn, .btn-sm, .bmChip, .input, select, .gm-icon-btn, .ticketRow-star,
+  .railItem, .bmDuration, .pageLink {
     min-height: 44px;
   }
+  /* .railItem is an <a>, so it needs to lay its contents out to fill the target */
+  .railItem { display: inline-flex; align-items: center; }
   .gm-dot {
     min-width: 30px;
     min-height: 30px;
@@ -956,3 +970,9 @@ select.input option { background: var(--surface); color: var(--text); }
 /* legend swatches are illustrations, not targets - they must not inherit the
    44px touch sizing applied to the real dots below 900px */
 .gm-legend .gm-dot { pointer-events: none; min-width: 14px; min-height: 14px; width: 14px; height: 14px; }
+
+@media (max-width: 700px) {
+  /* Hover tooltips can never fire on a touch screen, but they were still laid
+     out — adding dead horizontal scroll to the rail. */
+  .railItem[data-tooltip]::after { content: none; }
+}

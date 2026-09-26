@@ -3499,7 +3499,16 @@ export function ReplayToolPage() {
                   <div
                     className="card"
                     style={{
-                      position: 'fixed', left: Math.min(mapMenu.sx, window.innerWidth - 200), top: Math.min(mapMenu.sy, window.innerHeight - 260),
+                      // Clamped to the viewport and scrollable: the old 260px
+                      // bottom reserve assumed desktop-sized rows, so with 44px
+                      // touch buttons the menu ran ~247px off the bottom and
+                      // Kill, Strip and Message could not be reached at all.
+                      position: 'fixed',
+                      left: Math.max(8, Math.min(mapMenu.sx, window.innerWidth - 208)),
+                      top: Math.max(8, Math.min(mapMenu.sy, window.innerHeight - 24)),
+                      maxHeight: 'calc(100dvh - 32px)',
+                      overflowY: 'auto',
+                      overscrollBehavior: 'contain',
                       zIndex: 41, padding: 4, background: 'rgba(12,15,25,0.96)', border: '1px solid rgba(255,255,255,0.16)',
                       minWidth: 190,
                     }}
@@ -3649,7 +3658,7 @@ export function ReplayToolPage() {
               ) : null}
 
               {/* Top-right toast popups (overlay above events panel) */}
-              <div style={{ position: 'absolute', top: 12, right: 304, width: 240, display: 'flex', flexDirection: 'column', gap: 8, pointerEvents: 'none', zIndex: 10 }}>
+              <div className="replayToastStack" style={{ position: 'absolute', top: 12, display: 'flex', flexDirection: 'column', gap: 8, pointerEvents: 'none', zIndex: 10 }}>
                 {toasts.map((t) => (
                   <div
                     key={t.id}

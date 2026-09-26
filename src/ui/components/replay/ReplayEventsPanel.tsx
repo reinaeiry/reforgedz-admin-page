@@ -84,6 +84,9 @@ export function ReplayEventsPanel({
   // toggle because it does hide individual timestamps.
   const [groupRepeats, setGroupRepeats] = useState(true);
   const [acOpen, setAcOpen] = useState(false);
+  // The filter block is 216px of fixed chrome. In a phone sheet that left the
+  // feed 2px, so it is collapsed by default and the search box stays out.
+  const [filtersOpen, setFiltersOpen] = useState(false);
   const [scrollTop, setScrollTop] = useState(0);
   const [viewportH, setViewportH] = useState(320);
 
@@ -294,15 +297,27 @@ export function ReplayEventsPanel({
       </div>
 
       <div className="rpPanel-controls">
-        <input
-          ref={searchRef}
-          className="rpInput"
-          placeholder="Search events…   /"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          onKeyDown={(e) => { if (e.key === 'Escape') { setQuery(''); (e.target as HTMLInputElement).blur(); } }}
-        />
+        <div className="rpPanel-row">
+          <input
+            ref={searchRef}
+            className="rpInput"
+            placeholder="Search events…   /"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Escape') { setQuery(''); (e.target as HTMLInputElement).blur(); } }}
+          />
+          <button
+            type="button"
+            className={`rpChip rpFiltersToggle${filtersOpen ? ' is-on' : ''}`}
+            onClick={() => setFiltersOpen((v) => !v)}
+            aria-expanded={filtersOpen}
+          >
+            Filters{activeFilters ? ` (${activeFilters})` : ''}
+          </button>
+        </div>
 
+        {filtersOpen ? (
+        <>
         <div className="rpChips">
           {ALL_TYPES.filter((t) => visibleTypes.has(t)).map((t) => {
             const on = typeFilter.size === 0 || typeFilter.has(t);
@@ -347,6 +362,8 @@ export function ReplayEventsPanel({
             <span className="muted">s before</span>
           </label>
         </div>
+        </>
+        ) : null}
 
         {activeFilters > 0 ? (
           <button type="button" className="rpChip rpChip-clear" onClick={() => { setQuery(''); setTypeFilter(new Set()); setPlayerFilterId(null); }}>
