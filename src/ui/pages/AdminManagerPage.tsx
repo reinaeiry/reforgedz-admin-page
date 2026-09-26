@@ -224,6 +224,10 @@ function GmsTab() {
   const [error, setError] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
   const [search, setSearch] = useState('');
+  // Each row renders one button per server plus two icon buttons, so a large
+  // roster builds well over a thousand controls. Render a page; the search
+  // above is the way to reach the rest.
+  const [shownAdmins, setShownAdmins] = useState(80);
 
   const [showAdd, setShowAdd] = useState(false);
   const [newGuid, setNewGuid] = useState('');
@@ -507,7 +511,7 @@ function GmsTab() {
                 </td>
               </tr>
             ) : null}
-            {filteredAdmins.map((a) => {
+            {filteredAdmins.slice(0, shownAdmins).map((a) => {
               const editing = editingGuid === a.guid;
               const unknown = isUnknown(a);
               return (
@@ -584,6 +588,15 @@ function GmsTab() {
                 </tr>
               );
             })}
+            {filteredAdmins.length > shownAdmins ? (
+              <tr>
+                <td colSpan={3 + orderedServers.length} style={{ textAlign: 'center', padding: 10 }}>
+                  <button className="btn" onClick={() => setShownAdmins((n) => n + 80)}>
+                    Show 80 more ({filteredAdmins.length - shownAdmins} not shown — or search above)
+                  </button>
+                </td>
+              </tr>
+            ) : null}
           </tbody>
         </table>
       </div>

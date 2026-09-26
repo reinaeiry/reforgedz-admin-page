@@ -147,7 +147,15 @@ function TicketRow({ t, selected, unread, starred, onClick, onToggleStar }: {
   return (
     <li
       className={`ticketRow ${selected ? 'on' : ''} ${unread ? 'unread' : ''}`}
+      role="button"
+      tabIndex={0}
+      aria-current={selected ? 'true' : undefined}
       onClick={onClick}
+      onKeyDown={(e) => {
+        if (e.key !== 'Enter' && e.key !== ' ') return;
+        e.preventDefault();
+        onClick();
+      }}
     >
       <DiscordAvatar
         name={t.creator.discordName}

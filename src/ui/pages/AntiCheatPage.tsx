@@ -263,8 +263,16 @@ function FlaggedPlayersView() {
             {players.map((p) => (
               <React.Fragment key={p.identityId}>
                 <tr
+                  role="button"
+                  tabIndex={0}
+                  aria-expanded={expanded === p.identityId}
                   style={{ cursor: 'pointer' }}
                   onClick={() => setExpanded(expanded === p.identityId ? null : p.identityId)}
+                  onKeyDown={(e) => {
+                    if (e.key !== 'Enter' && e.key !== ' ') return;
+                    e.preventDefault();
+                    setExpanded(expanded === p.identityId ? null : p.identityId);
+                  }}
                 >
                   <td><RiskBar score={p.riskScore} max={maxScore} /></td>
                   <td title="How sure we are, weighted by how much independent evidence there is">{p.confidence}%</td>

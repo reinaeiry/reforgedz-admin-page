@@ -145,6 +145,9 @@ function PlayerProfilePanel({ identityId, onBack }: { identityId: string; onBack
   const [profile, setProfile] = useState<PlayerProfile | null | undefined>(undefined);
   const [activity, setActivity] = useState<PlayerActivityItem[]>([]);
   const [activityLoading, setActivityLoading] = useState(false);
+  // Incidents are fetched at 300 per server and merged, so a heavily flagged
+  // player on six servers can reach ~1,800 rows. Render a page of them.
+  const [shownRows, setShownRows] = useState(300);
   const [nextBefore, setNextBefore] = useState<number | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [typeFilter, setTypeFilter] = useState<Set<string>>(new Set()); // empty = all neutral types
@@ -334,11 +337,16 @@ function PlayerProfilePanel({ identityId, onBack }: { identityId: string; onBack
             <div className="muted">No recorded activity.</div>
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 2, border: '1px solid var(--border)', borderRadius: 6, overflow: 'hidden' }}>
-              {timelineRows.map((row, idx) => (
+              {timelineRows.slice(0, shownRows).map((row, idx) => (
                 <TimelineRowView key={`${row.tsMs}-${row.tag}-${idx}`} row={row} />
               ))}
             </div>
           )}
+          {timelineRows.length > shownRows ? (
+            <button className="btn" style={{ marginTop: 8 }} onClick={() => setShownRows((n) => n + 300)}>
+              Show 300 more ({timelineRows.length - shownRows} older still hidden)
+            </button>
+          ) : null}
           {nextBefore ? (
             <button className="btn" style={{ marginTop: 8 }} disabled={activityLoading}
               onClick={() => loadMoreActivity(identityId, nextBefore, setActivity)}>
@@ -449,7 +457,21 @@ export function PlayerSearchView({ initialIdentityId }: { initialIdentityId?: st
                 const tier = riskTierOf(r.highestSeverity);
                 const style = TIER_STYLE[tier];
                 return (
-                  <tr key={r.identityId} style={{ cursor: 'pointer', borderLeft: r.flaggedCount > 0 ? `3px solid ${style.border}` : undefined }} onClick={() => setSelected(r.identityId)}>
+                  <tr
+                    key={r.identityId}
+                    // cursor:pointer means nothing on touch and nothing to a
+                    // keyboard: the row is a control, so it says so.
+                    role="button"
+                    tabIndex={0}
+                    aria-label={`Open ${r.displayName || r.identityId}`}
+                    style={{ cursor: 'pointer', borderLeft: r.flaggedCount > 0 ? `3px solid ${style.border}` : undefined }}
+                    onClick={() => setSelected(r.identityId)}
+                    onKeyDown={(e) => {
+                      if (e.key !== 'Enter' && e.key !== ' ') return;
+                      e.preventDefault();
+                      setSelected(r.identityId);
+                    }}
+                  >
                     <td>
                       {r.highestSeverity ? (
                         <span

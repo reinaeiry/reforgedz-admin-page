@@ -22,7 +22,14 @@ export function BMActivityFeed({ serverIds, pollMs = 30_000 }: Props) {
       }
     }
     load();
-    const t = setInterval(load, pollMs);
+    // NOTE: this component is currently imported nowhere. Its interval is gated
+    // on tab visibility anyway, so wiring it up cannot quietly add a poll that
+    // runs forever in a background tab - which is what the rest of the app used
+    // to do. The SSE reload below is still unthrottled; throttle it if a busy
+    // period ever makes this chatty.
+    const t = setInterval(() => {
+      if (document.visibilityState === 'visible') load();
+    }, pollMs);
 
     // Webhook SSE deliveries also nudge a reload (cheap — caches will short-circuit).
     bmEvents.start();
