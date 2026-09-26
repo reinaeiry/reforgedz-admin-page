@@ -25,6 +25,18 @@ function prefabShort(prefab: string): string {
 // in - a sibling action to the catalog picker below it, not a replacement,
 // since "give me one specific item" and "restore this whole loadout" are
 // both things an admin reaches for here.
+const ITEM_BTN: React.CSSProperties = {
+  display: 'block', width: '100%', textAlign: 'left', padding: '4px 7px', fontSize: 11,
+  borderRadius: 5,
+  border: '1px solid rgba(255,255,255,0.08)',
+  background: 'rgba(255,255,255,0.03)',
+};
+const ITEM_BTN_SELECTED: React.CSSProperties = {
+  ...ITEM_BTN,
+  border: '1px solid rgba(74,222,255,0.6)',
+  background: 'rgba(74,222,255,0.16)',
+};
+
 export function ItemSpawnControl({ items, onSpawn, busy, copiedInventory, onSpawnCopied, spawnCopiedProgress }: Props) {
   const [query, setQuery] = useState('');
   const [selected, setSelected] = useState<string | null>(null);
@@ -42,6 +54,14 @@ export function ItemSpawnControl({ items, onSpawn, busy, copiedInventory, onSpaw
     }
     return out;
   }, [items, query]);
+
+  // The Reforger catalog runs to thousands of entries and the whole filtered set
+  // was rendered as buttons - unwindowed, with a fresh inline style object per
+  // item per render. Showing a page of it keeps an unfiltered open from building
+  // thousands of nodes; the count tells you to narrow the search.
+  const RENDER_CAP = 200;
+  const shown = filtered.length > RENDER_CAP ? filtered.slice(0, RENDER_CAP) : filtered;
+  const hiddenCount = filtered.length - shown.length;
 
   return (
     <div className="stack" style={{ gap: 6, marginTop: 6, paddingTop: 6, borderTop: '1px solid rgba(255,255,255,0.10)' }}>
@@ -110,23 +130,23 @@ export function ItemSpawnControl({ items, onSpawn, busy, copiedInventory, onSpaw
           >
             {filtered.length === 0 ? (
               <div className="muted" style={{ padding: 6, fontSize: 10, gridColumn: '1 / -1' }}>No matches.</div>
-            ) : filtered.map((it) => (
+            ) : shown.map((it) => (
               <button
                 key={it.prefab}
                 type="button"
                 className="button"
                 title={`${it.name || prefabShort(it.prefab)}\n${it.prefab}`}
-                style={{
-                  display: 'block', width: '100%', textAlign: 'left', padding: '4px 7px', fontSize: 11,
-                  borderRadius: 5,
-                  border: selected === it.prefab ? '1px solid rgba(74,222,255,0.6)' : '1px solid rgba(255,255,255,0.08)',
-                  background: selected === it.prefab ? 'rgba(74,222,255,0.16)' : 'rgba(255,255,255,0.03)',
-                }}
+                style={selected === it.prefab ? ITEM_BTN_SELECTED : ITEM_BTN}
                 onClick={() => setSelected(it.prefab)}
               >
                 <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{it.name || prefabShort(it.prefab)}</div>
               </button>
             ))}
+            {hiddenCount > 0 ? (
+              <div className="muted" style={{ padding: 6, fontSize: 10, gridColumn: '1 / -1' }}>
+                +{hiddenCount} more — refine the search to narrow it down.
+              </div>
+            ) : null}
           </div>
           <div className="row" style={{ gap: 6, alignItems: 'center' }}>
             <span className="muted" style={{ fontSize: 10 }}>Qty</span>

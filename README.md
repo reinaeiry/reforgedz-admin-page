@@ -44,6 +44,29 @@ Frontend dev server:
 npm run dev
 ```
 
+## Development harnesses (no login, no live data)
+
+The replay UI normally needs a staff session and a server that is actually
+ingesting, which makes small UI changes slow to check and impossible to check at
+phone sizes. Three pages under `dev/` render the pieces in isolation with
+synthetic data. Start `npx vite` and open:
+
+| Page | What it exercises |
+|---|---|
+| `/dev/timeline-harness.html` | the replay timeline: drag-scrub, wheel/pinch zoom, keyboard, snapping, marker clusters, the mobile bottom sheet |
+| `/dev/map-harness.html` | ReplayMap2D's input: one-finger pan, two-finger pinch, long-press to open the GM menu, tap-to-select |
+| `/dev/mobile-harness.html` | the app-wide touch rules: table overflow, 44px targets, 16px form controls, the toast stack, the narrow-screen panel tabs, and a visibility-gated polling probe |
+
+They are plain Vite entry points and are not part of the production build
+(`vite build` only bundles `index.html`).
+
+Pure timeline maths - tick ladders, cursor-anchored zoom, pixel-space clustering
+and snapping - is unit tested without a DOM:
+
+```bash
+node scripts/test-timeline.mjs
+```
+
 ## Run (production)
 
 Build client:
