@@ -928,3 +928,31 @@ select.input option { background: var(--surface); color: var(--text); }
     opacity: 0.7;
   }
 }
+
+/* The slot chips' breakdown is hover-only on a device that has hover; where it
+   does not exist, render it under the chip instead of hiding the page's main
+   diagnostic. */
+@media (hover: none) {
+  .pq-stat--detailed { display: inline-flex; flex-direction: column; line-height: 1.2; }
+  .pq-stat--detailed::after {
+    content: attr(data-sub);
+    display: block;
+    font-size: .62rem;
+    font-weight: 500;
+    opacity: 0.75;
+  }
+}
+
+/* Legend for the game-master matrix dots. */
+.gm-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  align-items: center;
+  padding: 8px 2px 0;
+  font-size: .7rem;
+}
+.gm-legend > span { display: inline-flex; align-items: center; gap: 6px; }
+/* legend swatches are illustrations, not targets - they must not inherit the
+   44px touch sizing applied to the real dots below 900px */
+.gm-legend .gm-dot { pointer-events: none; min-width: 14px; min-height: 14px; width: 14px; height: 14px; }

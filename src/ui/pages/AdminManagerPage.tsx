@@ -100,11 +100,16 @@ function SlotChips({ capacity }: { capacity?: Record<string, ServerCapacity | nu
         const title = `${c.tag}: ${c.gms} GM + ${c.pq} priority queue = ${c.total} of ${c.limit} slots`
           + (waiting ? `, plus ${waiting} priority queue added at the shop's next sync` : '')
           + ` · ${c.remaining} free`;
+        // The breakdown behind "EU1 12/20" is this page's core diagnostic and
+        // lived only in `title`, which no touch device shows. It travels as data
+        // and is rendered under the chip on pointer-coarse devices (styles.css).
+        const sub = `${c.gms} GM · ${c.pq} PQ${waiting ? ` · +${waiting} soon` : ''} · ${c.remaining} free`;
         return (
           <span
             key={c.tag}
-            className="pq-stat"
+            className="pq-stat pq-stat--detailed"
             title={title}
+            data-sub={sub}
           >
             {c.tag} <b style={color ? { color } : undefined}>{c.total}/{c.limit}</b>
           </span>
@@ -599,6 +604,12 @@ function GmsTab() {
             ) : null}
           </tbody>
         </table>
+        <div className="gm-legend muted">
+          <span><span className="gm-dot on" /> on this server</span>
+          <span><span className="gm-dot" /> not on it</span>
+          <span><span className="gm-dot is-full" /> server's admin list is full</span>
+          <span><span className="gm-dot is-unavailable" /> no SSH configured — cannot change</span>
+        </div>
       </div>
     </>
   );
