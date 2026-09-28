@@ -21,6 +21,7 @@ import {
   serverCapacity, gmAddOverLimit, adminListFullMessage, pqMoveBody, reservedOnServer,
 } from './lib/adminList.js';
 import { parseRoster } from './lib/ingameRoster.js';
+import { LOCAL_TILE_MAPS, renderLocalTile } from './lib/localMapTiles.js';
 import { buildBmRouter } from './routes/bm.js';
 import bmWebhookRouter from './routes/bm-webhook.js';
 import { buildTicketsRouter } from './routes/tickets.js';
@@ -482,19 +483,23 @@ function sampleTerrainY(t, x, z) {
 const TOPDOWN_MAP_DEFS = {
   everon: { id: 'everon', image: 'everon.jpg', worldSize: 12802 },
   chernarus: { id: 'chernarus', image: 'chernarus.jpg', worldSize: 15362 },
+  // Our own image (no tacops imagery): tiles are cut from it, see lib/localMapTiles.js.
+  faircroft: { id: 'faircroft', image: 'faircroft.jpg', worldSize: 12800, nameOnly: true },
 };
 
 function resolveTopDownMapId(worldFile, worldSize) {
   const s = (worldFile || '').toLowerCase();
   if (s.includes('chern')) return 'chernarus';
+  if (s.includes('faircroft')) return 'faircroft';
   if (s.includes('everon') || s.includes('eden')) return 'everon';
-  // A named world without imagery (e.g. Faircroft, 12.6 km wide) must not be
-  // matched to Everon by size - only an unnamed world falls back to the size.
+  // A named world without imagery must not be matched by size (Faircroft, 12.6 km
+  // wide, was drawn on Everon's imagery that way) - only an unnamed world falls back.
   if (s.trim()) return null;
   if (typeof worldSize === 'number' && Number.isFinite(worldSize) && worldSize > 0) {
     let best = null;
     let bestDelta = Infinity;
     for (const def of Object.values(TOPDOWN_MAP_DEFS)) {
+      if (def.nameOnly) continue;   // same size as Everon: by name only
       const d = Math.abs(def.worldSize - worldSize);
       if (d < bestDelta) { bestDelta = d; best = def.id; }
     }
@@ -718,17 +723,30 @@ function gifTileRange(view, w, h, worldSize, z) {
   return { n, tileWS, x0, x1, y0, y1 };
 }
 
-// Decode a cached tile (fetching+caching from tacops on miss) to a napi Image.
-async function getMapTileNapi(map, z, x, y) {
+// One map tile as webp: from the disk cache, else cut from our own image (LOCAL_TILE_MAPS) or fetched
+// from tacops, then cached. Throws { empty: true } for a tile with no imagery.
+async function getMapTileBuffer(map, z, x, y) {
   const cachePath = path.join(MAPTILES_DIR, map, String(z), String(x), `${y}.webp`);
   try {
-    return await loadImage(cachePath);
+    return await fs.readFile(cachePath);
   } catch { /* miss */ }
+  let buf;
+  if (LOCAL_TILE_MAPS[map]) {
+    const img = await loadTopDownMapImage(map);
+    if (!img) { const e = new Error('no map image'); e.empty = true; throw e; }
+    buf = await renderLocalTile(createCanvas, img, TACOPS_MAX_NATIVE_ZOOM, z, x, y);
+  } else {
+    buf = await fetchTacopsTile(map, z, x, y);
+  }
+  await ensureDir(path.dirname(cachePath));
+  await fs.writeFile(cachePath, buf);
+  return buf;
+}
+
+// Decode a map tile (cached, cut or fetched - see getMapTileBuffer) to a napi Image.
+async function getMapTileNapi(map, z, x, y) {
   try {
-    const buf = await fetchTacopsTile(map, z, x, y);
-    await ensureDir(path.dirname(cachePath));
-    await fs.writeFile(cachePath, buf);
-    return await loadImage(buf);
+    return await loadImage(await getMapTileBuffer(map, z, x, y));
   } catch {
     return null;
   }
@@ -1911,7 +1929,7 @@ app.get('/api/replay/maptile/:map/:z/:x/:y', requireAuth, requireTool('replay'),
   const z = parseInt(req.params.z, 10);
   const x = parseInt(req.params.x, 10);
   const y = parseInt(String(req.params.y || '').replace(/\.webp$/i, ''), 10);
-  if (!TACOPS_MAPS.has(map) || ![z, x, y].every(Number.isInteger) || z < 0 || z > TACOPS_MAX_NATIVE_ZOOM) {
+  if (!(TACOPS_MAPS.has(map) || LOCAL_TILE_MAPS[map]) || ![z, x, y].every(Number.isInteger) || z < 0 || z > TACOPS_MAX_NATIVE_ZOOM) {
     res.status(400).send('bad tile');
     return;
   }
@@ -1921,24 +1939,11 @@ app.get('/api/replay/maptile/:map/:z/:x/:y', requireAuth, requireTool('replay'),
     return;
   }
 
-  const cacheDir = path.join(MAPTILES_DIR, map, String(z), String(x));
-  const cachePath = path.join(cacheDir, `${y}.webp`);
-  const sendBuf = (buf) => {
+  try {
+    const buf = await getMapTileBuffer(map, z, x, y);
     res.set('Content-Type', 'image/webp');
     res.set('Cache-Control', 'public, max-age=31536000, immutable');
     res.send(buf);
-  };
-
-  try {
-    sendBuf(await fs.readFile(cachePath));
-    return;
-  } catch { /* cache miss */ }
-
-  try {
-    const buf = await fetchTacopsTile(map, z, x, y);
-    await ensureDir(cacheDir);
-    await fs.writeFile(cachePath, buf);
-    sendBuf(buf);
   } catch (err) {
     if (err && err.empty) { res.status(204).end(); return; }
     res.status(502).send('tile fetch failed');

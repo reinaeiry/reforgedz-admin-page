@@ -8,11 +8,15 @@ export type MapDef = {
   name: string;
   // World extent in metres (square terrains); the tile pyramid covers [0..worldSize].
   worldSize: number;
+  // Matched by world file name only, never by size (Faircroft and Everon are both ~12.8 km).
+  nameOnly?: boolean;
 };
 
 export const MAP_DEFS: Record<string, MapDef> = {
   everon: { id: 'everon', name: 'Everon', worldSize: 12802 },
   chernarus: { id: 'chernarus', name: 'Chernarus', worldSize: 15362 },
+  // No tacops imagery: the server cuts its tiles from our own 4096px map (server/lib/localMapTiles.js).
+  faircroft: { id: 'faircroft', name: 'Faircroft Islands', worldSize: 12800, nameOnly: true },
 };
 
 // Match the world file string a server reports to a known map.
@@ -20,6 +24,7 @@ function matchByWorldFile(worldFile: string): string | null {
   const s = (worldFile || '').toLowerCase();
   if (!s) return null;
   if (s.includes('chern')) return 'chernarus';
+  if (s.includes('faircroft')) return 'faircroft';
   // Everon's vanilla world is internally named "Eden".
   if (s.includes('everon') || s.includes('eden')) return 'everon';
   return null;
@@ -31,6 +36,7 @@ function matchByWorldSize(worldSize: number | null | undefined): string | null {
   let best: string | null = null;
   let bestDelta = Infinity;
   for (const def of Object.values(MAP_DEFS)) {
+    if (def.nameOnly) continue;
     const delta = Math.abs(def.worldSize - worldSize);
     if (delta < bestDelta) {
       bestDelta = delta;
@@ -42,8 +48,8 @@ function matchByWorldSize(worldSize: number | null | undefined): string | null {
 }
 
 // A world the server names but we have no imagery for is never matched by size:
-// Faircroft (`Worlds/Faircroft.ent`) is 12.6 km wide, within 500 m of Everon, and
-// was drawn on Everon's imagery. Such a world gets the terrain-raster view.
+// Faircroft (12.6 km wide, within 500 m of Everon) was drawn on Everon's imagery
+// before it had its own entry. Such a world gets the terrain-raster view.
 export function resolveMapId(worldFile: string | null | undefined, worldSize: number | null | undefined): string | null {
   const named = (worldFile || '').trim();
   if (named) return matchByWorldFile(named);
