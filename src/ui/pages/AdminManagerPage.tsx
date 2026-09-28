@@ -458,7 +458,7 @@ function GmsTab() {
               </div>
             </div>
             <div style={{ fontSize: 11, color: 'var(--text-dim)' }}>
-              Adding here only registers the admin in the central roster. Use the dots in the matrix to grant access on each server. Names are auto-resolved from local activity and BattleMetrics in the background.
+              Adding here only registers the admin in the central roster. Use the dots in the matrix to grant access on each server. Names are auto-resolved in the background from our own player records.
             </div>
           </div>
         </div>

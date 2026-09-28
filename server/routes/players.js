@@ -82,6 +82,13 @@ export function buildPlayersRouter({ asyncRoute, DATA_DIR, sanitizeServerId, pat
     res.json({ results });
   }));
 
+  // An old /player/by-bm/:id link -> the player's GUID, from the archive.
+  router.get('/by-bm/:bmId', asyncRoute(async (req, res) => {
+    const guid = bmArchive.guidForBmId(req.params.bmId);
+    if (!guid) { res.status(404).json({ error: 'not found' }); return; }
+    res.json({ identityId: guid.toLowerCase() });
+  }));
+
   // Sessions: ours since 2026-09-28 plus BattleMetrics' (its last 90 days before the migration).
   router.get('/:identityId/sessions', asyncRoute(async (req, res) => {
     const id = String(req.params.identityId || '');

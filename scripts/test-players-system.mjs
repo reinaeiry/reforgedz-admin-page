@@ -115,6 +115,9 @@ try {
   check('archive: population, hourly where kept and daily before', pop.length === 2 && pop[0].resolution === 'day' && pop[1].resolution === 'hour',
     JSON.stringify(pop));
   check('archive: info', bma.archiveInfo().available && bma.archiveInfo().players === 1);
+  check('archive: roster name by UUID, any case', bma.latestNameForIdentity(G1.toUpperCase()) === 'Alpha_Old');
+  check('archive: roster name for an unknown UUID is null', bma.latestNameForIdentity(G2) === null);
+  check('archive: BM id resolves to the UUID', bma.guidForBmId('900') === G1 && bma.guidForBmId('x1') === null);
 
   // A2S parsing on a captured-shape reply
   const reply = Buffer.concat([Buffer.from([0xff, 0xff, 0xff, 0xff, 0x49, 17]), Buffer.from('[EU1] Test\0Map\0folder\0game\0', 'utf8'),

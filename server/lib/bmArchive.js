@@ -92,6 +92,25 @@ export function forIdentity(identityId, { sessionLimit = 200 } = {}) {
   };
 }
 
+// Old links carry BattleMetrics' player id (/player/by-bm/:id): map it to the Reforger UUID.
+// The newest name BattleMetrics recorded for a UUID, or null. One indexed query, for places that need
+// only a display name (the GM roster), so it skips forIdentity's sessions, bans and notes.
+export function latestNameForIdentity(identityId) {
+  const d = open();
+  if (!d || !identityId) return null;
+  const row = d.prepare(`SELECT COALESCE((SELECT i.identifier FROM bm_identifiers i
+        WHERE i.bm_id = p.bm_id AND i.type = 'name' ORDER BY i.last_seen DESC LIMIT 1), p.name) AS name
+    FROM bm_players p WHERE p.reforger_uuid = ? COLLATE NOCASE ORDER BY p.updated_at DESC LIMIT 1`).get(identityId);
+  return row?.name || null;
+}
+
+// The UUID behind a BattleMetrics player id, for old links that carry BM's id.
+export function guidForBmId(bmId) {
+  const d = open();
+  if (!d || !/^\d{1,12}$/.test(String(bmId || ''))) return null;
+  return d.prepare(`SELECT reforger_uuid AS guid FROM bm_players WHERE bm_id = ?`).get(String(bmId))?.guid || null;
+}
+
 // Name search over every name BM ever recorded, for players whose UUID it knew.
 export function searchNames(query, limit = 25) {
   const d = open();

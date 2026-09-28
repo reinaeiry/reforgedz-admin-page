@@ -2,7 +2,8 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { autoFocusOnDesktop } from '../../util/focus';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { hasBmPerm } from '../../util/session';
-import { accountUnban, addIpBan, type BmDashServer, deleteBan, type IpBanInfo, listBans, listBmServers, listIpBans, removeIpBan, updateBan } from '../../util/bmApi';
+import { accountUnban, addIpBan, type BmDashServer, type IpBanInfo, listBmServers, listIpBans, removeIpBan } from '../../util/bmApi';
+import { listAccountBans, type AccountBan } from '../../util/playersApi';
 import { renderBanReason } from '../../util/banFormat';
 import { ConfirmModal } from '../components/ConfirmModal';
 import { load as loadFilter, save as saveFilter } from '../../util/serverFilter';
@@ -272,17 +273,20 @@ function BansAndMutesTab({ servers, serverIds }: { servers: BmDashServer[]; serv
   );
 }
 
-function BansTab({ servers, serverIds }: { servers: BmDashServer[]; serverIds: string[] }) {
-  const [bans, setBans] = useState<any[]>([]);
-  const [includeExpired, setIncludeExpired] = useState(false);
+// Every account ban our controller enforces - the list that actually keeps players out of all
+// servers (their ReforgedZBans.json files). Replaced the BattleMetrics ban list, which was only ever
+// a record. Bans BattleMetrics held before 2026-09-28 are on each player's profile (archive).
+function BansTab({ servers }: { servers: BmDashServer[]; serverIds: string[] }) {
+  const [bans, setBans] = useState<AccountBan[]>([]);
+  const [filter, setFilter] = useState('');
+  const [shown, setShown] = useState(100);
   const [err, setErr] = useState<string | null>(null);
   // Success needs its own line: the one thing admins consistently get wrong is that a
   // lifted ban is not immediate, so say when it actually applies.
   const [notice, setNotice] = useState<string | null>(null);
   const [banFor, setBanFor] = useState<{ bmPlayerId: string; name: string; guid?: string | null } | null>(null);
   const [showSearch, setShowSearch] = useState(false);
-  const [editing, setEditing] = useState<any | null>(null);
-  const [unbanConfirm, setUnbanConfirm] = useState<any | null>(null);
+  const [unbanConfirm, setUnbanConfirm] = useState<AccountBan | null>(null);
   const [unbanReason, setUnbanReason] = useState('');
   const [busy, setBusy] = useState(false);
   const canBan = hasBmPerm('ban');
@@ -290,19 +294,22 @@ function BansTab({ servers, serverIds }: { servers: BmDashServer[]; serverIds: s
 
   async function load() {
     try {
-      const out = await listBans({ serverIds: serverIds.length ? serverIds : undefined, includeExpired });
-      setBans(out.bans);
-      setErr(null);
+      const out = await listAccountBans();
+      setBans(out.bans || []);
+      setErr(out.error === 'ipban_controller_not_configured' ? 'The ban controller is not configured on this admin server.' : null);
     } catch (e: any) {
       setErr(e?.message || 'Failed to load');
     }
   }
-  useEffect(() => { load(); }, [JSON.stringify(serverIds), includeExpired]); // eslint-disable-line
+  useEffect(() => { load(); }, []);
+
+  const q = filter.trim().toLowerCase();
+  const visible = q
+    ? bans.filter((b) => [b.name, b.uid, b.reason, b.banned_by].some((v) => String(v || '').toLowerCase().includes(q)))
+    : bans;
 
   async function doUnban() {
     if (!unbanConfirm) return;
-    // Checked before anything is touched. deleteBan below cannot be undone, so a refusal from
-    // the server after it would leave the BattleMetrics record gone and the game ban in place.
     const reason = unbanReason.trim();
     if (!reason) {
       setErr('Say why this ban is being lifted. It is kept in the ban history.');
@@ -311,36 +318,14 @@ function BansTab({ servers, serverIds }: { servers: BmDashServer[]; serverIds: s
     setBusy(true);
     setNotice(null);
     try {
-      // Two halves. deleteBan clears the BattleMetrics record; on its own that frees
-      // nobody, because the entry keeping them out of all six servers lives in our
-      // controller. Lift that too, and report honestly if we cannot.
-      await deleteBan(unbanConfirm.id);
-      let liftNote = '';
-      try {
-        const out = await accountUnban({
-          playerId: unbanConfirm.playerId,
-          playerName: unbanConfirm.playerName,
-          reason,
-        });
-        liftNote = out?.appliesAt ? ` Game-server ban lifted; applies ${out.appliesAt}.` : '';
-      } catch (e: any) {
-        // The BM record is already gone, so do not fail the whole action - say what is
-        // still true, which is that the player remains banned in game.
-        setErr(
-          `BattleMetrics record removed, but the game-server ban could NOT be lifted: ` +
-          `${e?.message || 'unknown error'}. The player is still banned on every server. ` +
-          `Use .unban <uuid> <reason> in Discord.`,
-        );
-        setUnbanConfirm(null);
-        await load();
-        return;
-      }
+      const out = await accountUnban({ guid: unbanConfirm.uid, playerName: unbanConfirm.name || undefined, reason });
       setErr(null);
-      setNotice(`Ban removed.${liftNote}`);
+      setNotice(`Ban lifted.${out?.appliesAt ? ` Applies ${out.appliesAt}.` : ''}`);
       setUnbanConfirm(null);
       await load();
     } catch (e: any) {
-      setErr(e?.message || 'Failed to unban');
+      setErr(`The ban could NOT be lifted: ${e?.message || 'unknown error'}. The player is still banned on every server. `
+        + 'Use .unban <uuid> <reason> in Discord.');
     } finally {
       setBusy(false);
     }
@@ -349,10 +334,9 @@ function BansTab({ servers, serverIds }: { servers: BmDashServer[]; serverIds: s
   return (
     <section className="bmTabPanel">
       <div className="bmToolbar">
-        <label className="bmInlineLabel">
-          <input type="checkbox" checked={includeExpired} onChange={(e) => setIncludeExpired(e.target.checked)} />
-          Include expired
-        </label>
+        <input value={filter} onChange={(e) => { setFilter(e.target.value); setShown(100); }}
+          placeholder="Filter by name, GUID, reason or who banned" style={{ minWidth: 280 }} />
+        <span className="muted">{visible.length} of {bans.length} account bans</span>
         <button className="btn" onClick={load}>Refresh</button>
         {canBan ? <button className="btn btn-primary" onClick={() => setShowSearch(true)}>+ New ban</button> : null}
       </div>
@@ -360,57 +344,36 @@ function BansTab({ servers, serverIds }: { servers: BmDashServer[]; serverIds: s
       {notice ? <div className="bmNotice">{notice}</div> : null}
       <table className="bmTable">
         <thead>
-          <tr><th>Player</th><th>Reason</th><th>Expires</th><th>Created</th><th></th></tr>
+          <tr><th>Player</th><th>Reason</th><th>Banned by</th><th>When</th><th>From</th><th></th></tr>
         </thead>
         <tbody>
-          {bans.length === 0 ? (
-            <tr><td colSpan={5} className="muted">No bans.</td></tr>
-          ) : bans.map((b) => {
-            const a = b.attributes || {};
-            const idName = a.identifiers?.find((i: any) => i.type === 'name')?.identifier;
-            // Prefer the Reforger guid the ban itself carries. A name cannot identify
-            // anyone - four separate accounts are called "six" - so by-name is only ever
-            // a last resort when neither a guid nor a BM player record exists.
-            const banGuid = a.identifiers?.find((i: any) => i.type === 'reforgerUUID')?.identifier;
-            const playerName = b.player?.name || idName || a.note?.split('\n')[0] || '(unknown)';
-            return (
-              <tr key={b.id}>
-                <td>
-                  {banGuid
-                    ? <a href="#" onClick={(e) => { e.preventDefault(); nav(`/player/${encodeURIComponent(banGuid)}`); }}>{playerName}</a>
-                    : b.player?.id
-                      ? <a href="#" onClick={(e) => { e.preventDefault(); nav(`/player/by-bm/${b.player.id}`); }}>{playerName}</a>
-                      : playerName}
-                </td>
-                <td>{renderBanReason(a.reason, a.expires, a.createdAt)}</td>
-                <td>{a.expires ? new Date(a.expires).toLocaleString() : 'Permanent'}</td>
-                <td>{a.createdAt ? new Date(a.createdAt).toLocaleString() : ''}</td>
-                <td className="bmBanActions">
-                  {/* Always our own profile, never battlemetrics.com - that tab is dead to
-                      us since RCON went, and the link opened a page nobody can use. When
-                      BM has no player record we still know the name, which by-name
-                      resolves. */}
-                  {banGuid ? (
-                    <button className="btn btn-sm" onClick={() => nav(`/player/${encodeURIComponent(banGuid)}`)}>View</button>
-                  ) : b.player?.id ? (
-                    <button className="btn btn-sm" onClick={() => nav(`/player/by-bm/${b.player.id}`)}>View</button>
-                  ) : playerName && playerName !== '(unknown)' ? (
-                    <button className="btn btn-sm" onClick={() => nav(`/player/by-name/${encodeURIComponent(playerName)}`)}>View</button>
-                  ) : null}
-                  {canBan ? (
-                    <>
-                      <button className="btn btn-sm" onClick={() => setEditing(b)}>Edit</button>
-                      <button className="btn btn-sm btn-danger" onClick={() => { setUnbanReason(''); setUnbanConfirm({ id: b.id, playerName, playerId: b.player?.id, reason: a.reason, expires: a.expires, createdAt: a.createdAt }); }}>Remove</button>
-                    </>
-                  ) : null}
-                </td>
-              </tr>
-            );
-          })}
+          {visible.length === 0 ? (
+            <tr><td colSpan={6} className="muted">No bans.</td></tr>
+          ) : visible.slice(0, shown).map((b) => (
+            <tr key={b.uid}>
+              <td>
+                <a href="#" onClick={(e) => { e.preventDefault(); nav(`/player/${encodeURIComponent(b.uid)}`); }}>{b.name || '(unknown)'}</a>
+                <div className="muted"><code>{b.uid}</code></div>
+              </td>
+              <td>{b.reason || <span className="muted">(none recorded)</span>}</td>
+              <td>{b.banned_by || '?'}</td>
+              <td>{b.timestamp ? new Date(b.timestamp * 1000).toLocaleString() : ''}</td>
+              <td className="muted">{b.origin_server || ''}</td>
+              <td className="bmBanActions">
+                <button className="btn btn-sm" onClick={() => nav(`/player/${encodeURIComponent(b.uid)}`)}>View</button>
+                {canBan ? (
+                  <button className="btn btn-sm btn-danger" onClick={() => { setUnbanReason(''); setUnbanConfirm(b); }}>Lift</button>
+                ) : null}
+              </td>
+            </tr>
+          ))}
         </tbody>
       </table>
+      {visible.length > shown ? (
+        <div style={{ marginTop: 8 }}><button className="btn" onClick={() => setShown(shown + 200)}>Show more</button></div>
+      ) : null}
 
-      {/* New ban: search a player, then open the full ban form */}
+      {/* New ban: search a player, then open the full ban form (it bans through our controller) */}
       {showSearch ? (
         <div className="modalBackdrop" onClick={(e) => { if (e.target === e.currentTarget) setShowSearch(false); }}>
           <div className="modalCard">
@@ -440,42 +403,25 @@ function BansTab({ servers, serverIds }: { servers: BmDashServer[]; serverIds: s
         />
       ) : null}
 
-      {editing ? (
-        <EditBanModal
-          ban={editing}
-          onClose={() => setEditing(null)}
-          onSaved={() => { setEditing(null); load(); }}
-        />
-      ) : null}
-
       {unbanConfirm ? (
         <ConfirmModal
-          title="Remove ban?"
+          title="Lift ban?"
           danger
           busy={busy}
-          confirmLabel="Remove"
+          confirmLabel="Lift"
           confirmDisabled={!unbanReason.trim()}
           body={(
             <div>
-              {/* Name alone is not enough to catch a mis-click: this list shows the same
-                  player on consecutive rows with different bans. Show what identifies
-                  the row as well. */}
-              <p>
-                Remove the ban on <strong>{unbanConfirm.playerName}</strong>?
-              </p>
+              <p>Lift the ban on <strong>{unbanConfirm.name || '(unknown)'}</strong>?</p>
               <ul style={{ margin: '8px 0', paddingLeft: 18, fontSize: '.85rem' }}>
+                <li>GUID: <code>{unbanConfirm.uid}</code></li>
                 <li>Reason: <strong>{unbanConfirm.reason || '(none recorded)'}</strong></li>
-                <li>Expires: {unbanConfirm.expires
-                  ? new Date(unbanConfirm.expires).toLocaleString()
-                  : 'Permanent'}</li>
-                {unbanConfirm.createdAt ? (
-                  <li>Created: {new Date(unbanConfirm.createdAt).toLocaleString()}</li>
-                ) : null}
+                <li>Banned by {unbanConfirm.banned_by || '?'}
+                  {unbanConfirm.timestamp ? ` on ${new Date(unbanConfirm.timestamp * 1000).toLocaleString()}` : ''}</li>
               </ul>
               <p>
-                This clears the BattleMetrics record <em>and</em> lifts the ban on the game
-                servers. It takes effect at each server&apos;s next restart &mdash; up to 4
-                hours away, not immediately.
+                This lifts the account ban on every game server. It takes effect at each server&apos;s next
+                restart &mdash; up to 4 hours away, not immediately. IP bans are separate (IP Bans tab).
               </p>
               <LiftReasonField value={unbanReason} onChange={setUnbanReason} />
             </div>
@@ -507,74 +453,6 @@ function LiftReasonField({ value, onChange }: { value: string; onChange: (v: str
         placeholder="e.g. appeal accepted - the only link was a shared VPN address"
         autoFocus={autoFocusOnDesktop()}
       />
-    </div>
-  );
-}
-
-function EditBanModal({ ban, onClose, onSaved }: { ban: any; onClose: () => void; onSaved: () => void }) {
-  const a = ban.attributes || {};
-  const initialReason = a.reason || '';
-  const initialNote = a.note || '';
-  // datetime-local needs `YYYY-MM-DDTHH:mm` without timezone — convert.
-  const initialExpiresLocal = (() => {
-    if (!a.expires) return '';
-    const d = new Date(a.expires);
-    const pad = (n: number) => String(n).padStart(2, '0');
-    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
-  })();
-  const [reason, setReason] = useState(initialReason);
-  const [note, setNote] = useState(initialNote);
-  const [expires, setExpires] = useState<string>(initialExpiresLocal);
-  const [permanent, setPermanent] = useState<boolean>(!a.expires);
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
-
-  async function save() {
-    setBusy(true);
-    setErr(null);
-    try {
-      const expiresIso = permanent ? null : (expires ? new Date(expires).toISOString() : null);
-      await updateBan(ban.id, { reason, note, expires: expiresIso });
-      onSaved();
-    } catch (e: any) {
-      setErr(e?.message || 'Failed to save');
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <div className="modalBackdrop" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-      <div className="modalCard bmBanForm">
-        <header className="modalHeader"><h3>Edit ban</h3></header>
-        <div className="modalBody">
-          {err ? <div className="bmError">{err}</div> : null}
-          <div className="field">
-            <label>Reason</label>
-            <input type="text" value={reason} onChange={(e) => setReason(e.target.value)} autoFocus={autoFocusOnDesktop()} />
-          </div>
-          <div className="field">
-            <label>Note (internal)</label>
-            <textarea rows={2} value={note} onChange={(e) => setNote(e.target.value)} />
-          </div>
-          <div className="field">
-            <label className="bmInlineLabel">
-              <input type="checkbox" checked={permanent} onChange={(e) => setPermanent(e.target.checked)} />
-              Permanent
-            </label>
-          </div>
-          {!permanent ? (
-            <div className="field">
-              <label>Expires</label>
-              <input type="datetime-local" value={expires} onChange={(e) => setExpires(e.target.value)} />
-            </div>
-          ) : null}
-        </div>
-        <footer className="modalFooter">
-          <button className="btn" onClick={onClose} disabled={busy}>Cancel</button>
-          <button className="btn btn-primary" onClick={save} disabled={busy}>Save</button>
-        </footer>
-      </div>
     </div>
   );
 }

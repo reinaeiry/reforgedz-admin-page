@@ -14,9 +14,21 @@ import { parseLiftReason, shapeBanHistory } from '../lib/banLift.js';
 import * as gameLogs from '../lib/gameLogs.js';
 import { postAuditEvent, ctxFromReq, auditView } from '../lib/bmAudit.js';
 import { publish } from '../lib/eventBus.js';
+import { getLatestPopulation, listPlayersIndexed, getPlayerProfileIndexed } from '../lib/playerIndex.js';
+import * as bmArchive from '../lib/bmArchive.js';
+
+// We are replacing BattleMetrics with our own data. The routes staff use (servers, search, bans) answer
+// from our data in the shapes the pages already expect; what is left of BM here is best-effort and ends
+// with BM_DISABLED=1 (or no key), after which nothing in this router calls BattleMetrics.
+function bmEnabled() {
+  return !!process.env.BATTLEMETRICS_API_KEY && process.env.BM_DISABLED !== '1';
+}
 
 export function buildBmRouter({ requirePerm, getPteroServers, asyncRoute }) {
   const router = express.Router();
+
+  // Every BM-only route below answers 404 once BattleMetrics is switched off, instead of an error.
+  const bmOnly = (req, res, next) => (bmEnabled() ? next() : res.status(404).json({ error: 'battlemetrics_retired' }));
 
   function getRequestedServerIds(req) {
     // ?servers=33903005,36715840 or omitted -> all of our org's mapped servers
@@ -30,37 +42,85 @@ export function buildBmRouter({ requirePerm, getPteroServers, asyncRoute }) {
 
   // ─── Servers ──────────────────────────────────────────────────────────────
 
+  // Our game servers with their live player count, from our own once-a-minute query-port samples.
+  // Same shape as the BattleMetrics version; `bmServerId` now carries the Pterodactyl id.
   router.get('/servers', requirePerm('viewServers'), asyncRoute(async (req, res) => {
-    // Ensure mapping is fresh; refresh if forced.
     const pteros = await getPteroServers();
-    const snap = await bmServers.ensure(pteros, { forceRefresh: req.query.refresh === '1' });
-    const out = await Promise.all(Object.values(snap.mapping).map(async (m) => {
-      try {
-        const live = await bm.getServer(m.bmServerId);
-        const a = live?.attributes || {};
-        return {
-          ...m,
-          status: a.status || 'unknown',
-          players: a.players ?? 0,
-          maxPlayers: a.maxPlayers ?? 0,
-          rank: a.rank ?? null,
-          updatedAt: a.updatedAt || null
-        };
-      } catch {
-        return { ...m, status: 'unknown', players: 0, maxPlayers: 0, error: true };
-      }
-    }));
-    res.json({ servers: out, unmatched: snap.unmatched || [] });
+    const now = Date.now();
+    const servers = pteros.map((p) => {
+      const [host, port] = String(p.ip || '').split(':');
+      const live = getLatestPopulation(p.tag || p.pteroId);
+      const fresh = live && now - live.tsMs < 5 * 60_000;
+      return {
+        bmServerId: p.pteroId,
+        pteroId: p.pteroId,
+        name: p.name,
+        ip: host || null,
+        port: port ? Number(port) : null,
+        tag: p.tag || null,
+        region: p.region || null,
+        status: fresh ? 'online' : 'offline',
+        players: fresh ? live.players : 0,
+        maxPlayers: live?.maxPlayers ?? 0,
+        rank: null,
+        updatedAt: live ? new Date(live.tsMs).toISOString() : null,
+      };
+    });
+    res.json({ servers, unmatched: [] });
   }));
 
-  router.get('/servers/:id/players', requirePerm('viewServers'), asyncRoute(async (req, res) => {
+  router.get('/servers/:id/players', bmOnly, requirePerm('viewServers'), asyncRoute(async (req, res) => {
     const players = await bm.getServerPlayers(req.params.id);
     res.json({ players });
   }));
 
   // ─── Player search (unified) ──────────────────────────────────────────────
 
+  // Search our own players (every name the replay index has seen) plus every name the BattleMetrics
+  // archive recorded, by name or GUID. Same result shape the pickers and the search box expect.
   router.get('/search', requirePerm('viewPlayers'), asyncRoute(async (req, res) => {
+    const q = String(req.query.q || '').trim();
+    if (q.length < 2) return res.json({ players: [] });
+    const byGuid = new Map();
+    const add = (guid, name, firstSeenMs, lastSeenMs, source) => {
+      if (!guid) return;
+      const key = String(guid).toLowerCase();
+      const cur = byGuid.get(key) || { guid: key, names: new Set(), firstSeenMs: null, lastSeenMs: 0, sources: new Set() };
+      if (name) cur.names.add(name);
+      if (firstSeenMs && (!cur.firstSeenMs || firstSeenMs < cur.firstSeenMs)) cur.firstSeenMs = firstSeenMs;
+      cur.lastSeenMs = Math.max(cur.lastSeenMs, lastSeenMs || 0);
+      cur.sources.add(source);
+      byGuid.set(key, cur);
+    };
+    if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(q)) {
+      const p = getPlayerProfileIndexed(q.toLowerCase());
+      if (p) add(q, p.displayName, p.firstSeen, p.lastSeen, 'reforgedz');
+      const a = bmArchive.forIdentity(q.toLowerCase(), { sessionLimit: 0 });
+      if (a) add(q, a.names[0]?.name, null, a.names[0]?.lastSeenMs, 'archive');
+    } else {
+      for (const r of listPlayersIndexed({ query: q, limit: 25, offset: 0, excludeIds: [] })) {
+        add(r.identityId, r.displayName, null, r.lastSeen, 'reforgedz');
+      }
+      for (const r of bmArchive.searchNames(q, 25)) add(r.identityId, r.name, null, r.lastSeenMs, 'archive');
+    }
+    const players = [...byGuid.values()]
+      .sort((a, b) => (b.lastSeenMs || 0) - (a.lastSeenMs || 0))
+      .slice(0, 25)
+      .map((r) => ({
+        source: [...r.sources].join('+'),
+        bmPlayerId: null,
+        name: [...r.names][0] || '',
+        firstSeen: r.firstSeenMs ? new Date(r.firstSeenMs).toISOString() : null,
+        lastSeen: r.lastSeenMs ? new Date(r.lastSeenMs).toISOString() : null,
+        identifiers: [{ type: 'reforgerUUID', identifier: r.guid },
+          ...[...r.names].map((n) => ({ type: 'name', identifier: n }))],
+        guid: r.guid,
+      }));
+    res.json({ players });
+  }));
+
+  // The BattleMetrics search this replaced, kept reachable only while BM is on.
+  router.get('/search-bm', bmOnly, requirePerm('viewPlayers'), asyncRoute(async (req, res) => {
     const q = String(req.query.q || '').trim();
     // Always scope to OUR org's servers — never search the global BM dataset.
     // If the caller passed a subset of server IDs, use that; otherwise default
@@ -117,14 +177,14 @@ export function buildBmRouter({ requirePerm, getPteroServers, asyncRoute }) {
 
   // ─── Player profile ──────────────────────────────────────────────────────
 
-  router.get('/players/by-guid/:guid', requirePerm('viewPlayers'), asyncRoute(async (req, res) => {
+  router.get('/players/by-guid/:guid', bmOnly, requirePerm('viewPlayers'), asyncRoute(async (req, res) => {
     const player = await bm.matchPlayerByGuid(req.params.guid);
     if (!player) return res.status(404).json({ error: 'not_found' });
     auditView(req, 'view.player', `guid:${String(req.params.guid).toLowerCase()}`);
     res.json({ player });
   }));
 
-  router.get('/players/:id', requirePerm('viewPlayers'), asyncRoute(async (req, res) => {
+  router.get('/players/:id', bmOnly, requirePerm('viewPlayers'), asyncRoute(async (req, res) => {
     // We always include identifier so the basic profile shows Steam/hardware IDs
     // (those are now part of the viewPlayers tier). Only IPs are stripped
     // client-side if the viewer lacks viewIps.
@@ -142,17 +202,17 @@ export function buildBmRouter({ requirePerm, getPteroServers, asyncRoute }) {
     }
   }));
 
-  router.get('/players/:id/bans', requirePerm('viewBans'), asyncRoute(async (req, res) => {
+  router.get('/players/:id/bans', bmOnly, requirePerm('viewBans'), asyncRoute(async (req, res) => {
     const bans = await bm.listBansForPlayer(req.params.id);
     res.json({ bans });
   }));
 
-  router.get('/players/:id/notes', requirePerm('writeNotes'), asyncRoute(async (req, res) => {
+  router.get('/players/:id/notes', bmOnly, requirePerm('writeNotes'), asyncRoute(async (req, res) => {
     const notes = await bm.listPlayerNotes(req.params.id);
     res.json({ notes });
   }));
 
-  router.post('/players/:id/notes', requirePerm('writeNotes'), asyncRoute(async (req, res) => {
+  router.post('/players/:id/notes', bmOnly, requirePerm('writeNotes'), asyncRoute(async (req, res) => {
     const { note, shared } = req.body || {};
     if (!note || typeof note !== 'string') return res.status(400).json({ error: 'missing_note' });
     const out = await bm.createPlayerNote(req.params.id, { note, shared });
@@ -165,7 +225,7 @@ export function buildBmRouter({ requirePerm, getPteroServers, asyncRoute }) {
     res.json({ note: out });
   }));
 
-  router.patch('/notes/:noteId', requirePerm('writeNotes'), asyncRoute(async (req, res) => {
+  router.patch('/notes/:noteId', bmOnly, requirePerm('writeNotes'), asyncRoute(async (req, res) => {
     const out = await bm.updatePlayerNote(req.params.noteId, req.body || {});
     postAuditEvent({
       actorUsername: req.rzUser.username,
@@ -176,7 +236,7 @@ export function buildBmRouter({ requirePerm, getPteroServers, asyncRoute }) {
     res.json({ note: out });
   }));
 
-  router.delete('/notes/:noteId', requirePerm('writeNotes'), asyncRoute(async (req, res) => {
+  router.delete('/notes/:noteId', bmOnly, requirePerm('writeNotes'), asyncRoute(async (req, res) => {
     await bm.deletePlayerNote(req.params.noteId);
     postAuditEvent({
       actorUsername: req.rzUser.username,
@@ -189,7 +249,7 @@ export function buildBmRouter({ requirePerm, getPteroServers, asyncRoute }) {
 
   // ─── Bans ────────────────────────────────────────────────────────────────
 
-  router.get('/bans', requirePerm('viewBans'), asyncRoute(async (req, res) => {
+  router.get('/bans', bmOnly, requirePerm('viewBans'), asyncRoute(async (req, res) => {
     const serverIds = getRequestedServerIds(req);
     const includeExpired = req.query.includeExpired === '1';
     const bans = await bm.listBans({ serverIds, includeExpired });
@@ -212,8 +272,13 @@ export function buildBmRouter({ requirePerm, getPteroServers, asyncRoute }) {
       serverIds
     };
 
-    let created;
-    try {
+    // Our controller is the ban that keeps a player out. The BattleMetrics copy is a record only, made
+    // while BM is still on; if it fails, the controller ban goes ahead and the reply carries bmError.
+    let created = null;
+    let bmError = null;
+    if (!bmEnabled() || !playerId) {
+      created = null;
+    } else try {
       created = await bm.createBan(args);
     } catch (err) {
       // Pass BM's HTTP status + message through cleanly so the UI can show
@@ -229,16 +294,10 @@ export function buildBmRouter({ requirePerm, getPteroServers, asyncRoute }) {
             : bmServers.listAll().map((s) => s.bmServerId);
           created = await bm.createBan({ ...args, orgWide: false, serverIds: fallbackServers });
         } catch (err2) {
-          return res.status(parseStatus(err2) || 500).json({
-            error: 'bm_ban_failed',
-            detail: stripBmPrefix(err2?.message || msg)
-          });
+          bmError = stripBmPrefix(err2?.message || msg);
         }
       } else {
-        return res.status(parseStatus(err) || 500).json({
-          error: 'bm_ban_failed',
-          detail: stripBmPrefix(msg)
-        });
+        bmError = stripBmPrefix(msg);
       }
     }
 
@@ -301,7 +360,11 @@ export function buildBmRouter({ requirePerm, getPteroServers, asyncRoute }) {
       ctx: ctxFromReq(req)
     });
 
-    res.json({ ban: created, dualWritten: enforced.ok, enforced });
+    if (!created && !enforced.ok) {
+      // Nothing was recorded anywhere: say so instead of a quiet 200.
+      return res.status(502).json({ error: 'ban_not_applied', detail: enforced.reason || bmError || 'unknown', enforced, bmError });
+    }
+    res.json({ ban: created, dualWritten: enforced.ok, enforced, bmError });
   }));
 
   // Resolve a player's Reforger UUID, which is what our ban system keys on.
@@ -309,7 +372,7 @@ export function buildBmRouter({ requirePerm, getPteroServers, asyncRoute }) {
   // when the caller has not supplied one we read it off the player record.
   async function resolveReforgerGuid({ playerId, guid }) {
     if (guid && /^[0-9a-f-]{36}$/i.test(guid)) return guid.toLowerCase();
-    if (!playerId) return null;
+    if (!playerId || !bmEnabled()) return null;
     const player = await bm.getPlayer(playerId, { include: 'identifier' });
     const ids = (player?.included || []).filter((i) => i?.type === 'identifier');
     const match = ids
@@ -320,6 +383,16 @@ export function buildBmRouter({ requirePerm, getPteroServers, asyncRoute }) {
 
   // Lift our identity ban. Keyed on the Reforger GUID because that is what the
   // ban files hold; the BM ban is deleted separately via DELETE /bans/:id.
+  // Every account ban our controller enforces (the one list that actually keeps players out), newest
+  // first, plus how much ban history the BattleMetrics archive holds. Replaces the BM ban list.
+  router.get('/account-bans', requirePerm('viewBans'), asyncRoute(async (req, res) => {
+    if (!ipBans.isEnabled()) return res.json({ bans: [], error: 'ipban_controller_not_configured' });
+    const out = await ipBans.listAccountBans();
+    const bans = (Array.isArray(out?.bans) ? out.bans : [])
+      .sort((a, b) => (Number(b.timestamp) || 0) - (Number(a.timestamp) || 0));
+    res.json({ bans, archive: bmArchive.archiveInfo() });
+  }));
+
   router.post('/account-unban', requirePerm('ban'), asyncRoute(async (req, res) => {
     if (!ipBans.isEnabled()) {
       return res.status(503).json({ error: 'ipban_controller_not_configured' });
@@ -353,7 +426,7 @@ export function buildBmRouter({ requirePerm, getPteroServers, asyncRoute }) {
     return String(msg || '').replace(/^bm \d{3}:\s*/, '').slice(0, 400);
   }
 
-  router.patch('/bans/:id', requirePerm('ban'), asyncRoute(async (req, res) => {
+  router.patch('/bans/:id', bmOnly, requirePerm('ban'), asyncRoute(async (req, res) => {
     const updated = await bm.updateBan(req.params.id, req.body || {});
     postAuditEvent({
       actorUsername: req.rzUser.username,
@@ -365,7 +438,7 @@ export function buildBmRouter({ requirePerm, getPteroServers, asyncRoute }) {
     res.json({ ban: updated });
   }));
 
-  router.delete('/bans/:id', requirePerm('ban'), asyncRoute(async (req, res) => {
+  router.delete('/bans/:id', bmOnly, requirePerm('ban'), asyncRoute(async (req, res) => {
     await bm.deleteBan(req.params.id);
     postAuditEvent({
       actorUsername: req.rzUser.username,
@@ -379,7 +452,7 @@ export function buildBmRouter({ requirePerm, getPteroServers, asyncRoute }) {
 
   // ─── Kick ────────────────────────────────────────────────────────────────
 
-  router.post('/kick', requirePerm('kick'), asyncRoute(async (req, res) => {
+  router.post('/kick', bmOnly, requirePerm('kick'), asyncRoute(async (req, res) => {
     // "Kick" is implemented as a 10-second BM ban scoped to the requested
     // server only. BM's RCON kick endpoint doesn't work reliably on Reforger,
     // so a server-scoped short ban achieves the same effect (player drops,
@@ -411,7 +484,7 @@ export function buildBmRouter({ requirePerm, getPteroServers, asyncRoute }) {
 
   // ─── Activity + chat ─────────────────────────────────────────────────────
 
-  router.get('/activity', requirePerm('viewActivity'), asyncRoute(async (req, res) => {
+  router.get('/activity', bmOnly, requirePerm('viewActivity'), asyncRoute(async (req, res) => {
     const serverIds = getRequestedServerIds(req);
     const limit = Math.min(parseInt(req.query.limit, 10) || 50, 100);
     const events = await bm.listActivity({ serverIds, limit });

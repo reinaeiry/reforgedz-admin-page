@@ -3,9 +3,6 @@ import { Link, useNavigate, useParams } from 'react-router-dom';
 import {
   getBanHistory,
   getIpAlts,
-  getPlayer,
-  getPlayerBans,
-  getPlayerByGuid,
   linkageByDiscordId,
   linkageByGuid,
   listBmServers,
@@ -15,22 +12,39 @@ import {
   type Linkage,
   type TranscriptRef,
 } from '../../util/bmApi';
+import {
+  addFlag,
+  getOverview,
+  getSessions,
+  guidForBmId,
+  removeFlag,
+  type PlayerOverview,
+  type PlayerSession,
+} from '../../util/playersApi';
 import { hasBmPerm } from '../../util/session';
 import { renderBanReason } from '../../util/banFormat';
 import { DiscordAvatar } from '../components/DiscordAvatar';
-import { BMNotesPanel } from '../components/BMNotesPanel';
+import { PlayerNotesPanel } from '../components/PlayerNotesPanel';
 import { BMBanForm } from '../components/BMBanForm';
 import { BMLogs } from '../components/BMLogs';
 import { BMPlayerStats } from '../components/BMPlayerStats';
 import { IngameActionForm } from '../components/IngameActionForm';
 
+// Resolved from our own data (the player index, the ban controller) and the archive of what
+// BattleMetrics held before 2026-09-28 - no BattleMetrics call. bmPlayerId stays '' now; the
+// ban form's BattleMetrics copy is skipped and the ban goes to our controller by GUID.
 type ResolvedPlayer = {
   bmPlayerId: string;
   name: string;
   guid: string | null;
-  attributes: any;
   identifiers: Array<{ type: string; identifier: string }>;
 };
+
+function fmtDuration(ms: number | null | undefined): string {
+  if (!ms || ms < 0) return '';
+  const m = Math.round(ms / 60000);
+  return m < 60 ? `${m} min` : `${Math.floor(m / 60)} h ${m % 60} min`;
+}
 
 // The controller writes UTC as "YYYY-MM-DD HH:MM:SS" with no zone, which Date would read as
 // local time. Mark it as UTC so every admin sees the time in their own timezone.
@@ -45,11 +59,12 @@ export function PlayerProfilePage() {
   const [player, setPlayer] = useState<ResolvedPlayer | null>(null);
   const [linkage, setLinkage] = useState<Linkage | null>(null);
   const [transcripts, setTranscripts] = useState<TranscriptRef[]>([]);
-  const [bans, setBans] = useState<any[]>([]);
+  const [overview, setOverview] = useState<PlayerOverview | null>(null);
+  const [sessions, setSessions] = useState<PlayerSession[] | null>(null);
+  const [flagDraft, setFlagDraft] = useState('');
   const [servers, setServers] = useState<BmDashServer[]>([]);
   const [err, setErr] = useState<string | null>(null);
   const [transcriptsErr, setTranscriptsErr] = useState<string | null>(null);
-  const [bansErr, setBansErr] = useState<string | null>(null);
   const [banFormOpen, setBanFormOpen] = useState(false);
   const [ingameAction, setIngameAction] = useState<'bans' | 'mutes' | null>(null);
   const [ipAlts, setIpAlts] = useState<IpAltsResponse | null>(null);
@@ -75,29 +90,20 @@ export function PlayerProfilePage() {
 
     async function load() {
       try {
-        let resolved: ResolvedPlayer | null = null;
-        let guid: string | null = null;
-
-        if (guidParam) {
-          guid = guidParam.toLowerCase();
-          // Resolve GUID -> BM player id
-          const out = await getPlayerByGuid(guid).catch(() => null);
-          if (out?.player) {
-            // Then fetch the full profile.
-            const full = await getPlayer(out.player.id);
-            resolved = pickPlayer(full, guid);
-          }
-        } else if (bmId) {
-          const full = await getPlayer(bmId);
-          resolved = pickPlayer(full, null);
-          guid = resolved?.guid || null;
+        let guid: string | null = guidParam ? guidParam.toLowerCase() : null;
+        if (!guid && bmId) {
+          // An old BattleMetrics link: the archive maps BM's player id to the GUID.
+          guid = (await guidForBmId(bmId).catch(() => null))?.identityId || null;
         }
+        const ov = guid ? await getOverview(guid).catch(() => null) : null;
 
         if (!alive) return;
-        if (!resolved) {
+        if (!guid || !ov) {
           setErr('Player not found.');
           return;
         }
+        const resolved = resolveFromOverview(ov);
+        setOverview(ov);
         setPlayer(resolved);
         setErr(null);
 
@@ -131,11 +137,9 @@ export function PlayerProfilePage() {
             }
           })());
         }
-        if (canBans) promises.push(getPlayerBans(resolved!.bmPlayerId).then((b) => {
-          if (alive) setBans(b.bans);
-        }).catch((e: any) => {
-          if (alive) setBansErr(e?.message || 'Failed to load bans');
-        }));
+        promises.push(getSessions(guid).then((s) => {
+          if (alive) setSessions(s.sessions || []);
+        }).catch(() => { if (alive) setSessions([]); }));
         promises.push(listBmServers().then((s) => {
           if (alive) setServers(s.servers);
         }).catch(() => {}));
@@ -169,13 +173,24 @@ export function PlayerProfilePage() {
     return <div className="page" style={{ padding: 24 }}>Loading…</div>;
   }
 
-  // Only build this when BattleMetrics actually knows the player. Unconditionally
-  // interpolating gave `/players/undefined` for anyone BM has never seen - a button
-  // that opens a page that does not exist. Reachable more often now that a profile
-  // can be opened by name from the online list.
-  const bmUrl = player.bmPlayerId
-    ? `https://www.battlemetrics.com/players/${player.bmPlayerId}`
-    : null;
+  const firstSeen = overview?.profile?.firstSeen
+    ?? overview?.archive?.servers.reduce<number | null>((m, s) => (s.firstSeenMs && (!m || s.firstSeenMs < m) ? s.firstSeenMs : m), null)
+    ?? null;
+  const lastSeen = overview?.profile?.lastSeen
+    ?? overview?.archive?.names[0]?.lastSeenMs
+    ?? null;
+  const currentBan = (overview?.ban || null) as null | { reason?: string; bannedBy?: string; timestamp?: number; duration?: number; active?: boolean };
+
+  async function toggleFlag(flag: string, on: boolean) {
+    if (!player?.guid || !flag.trim()) return;
+    try {
+      const out = on ? await addFlag(player.guid, flag.trim()) : await removeFlag(player.guid, flag);
+      setOverview((o) => (o ? { ...o, flags: out.flags } : o));
+      setFlagDraft('');
+    } catch (e: any) {
+      window.alert(e?.message || 'Failed to change the flag');
+    }
+  }
   // Steam IDs, mobile device IDs, and hardware IDs are now part of viewPlayers
   // (basic). Only IPs are gated behind viewIps.
   const identifiersForPii = canViewIps
@@ -210,14 +225,14 @@ export function PlayerProfilePage() {
               </span>
             ) : null}
           </div>
+          <div className="bmProfile-meta">
+            {firstSeen ? <span>First seen {new Date(firstSeen).toLocaleDateString()}</span> : null}
+            {lastSeen ? <span> · Last seen {new Date(lastSeen).toLocaleString()}</span> : null}
+            {(overview?.flags || []).map((f) => (
+              <span key={f.id} className="bmBadge" style={{ marginLeft: 6 }} title={`by ${f.addedBy || '?'}`}>{f.flag}</span>
+            ))}
+          </div>
           <div className="bmProfile-actions">
-            {bmUrl ? (
-              <a className="btn" href={bmUrl} target="_blank" rel="noreferrer">View on BattleMetrics</a>
-            ) : (
-              <span className="btn" aria-disabled="true" title="BattleMetrics has no record of this player" style={{ opacity: 0.5, cursor: 'default' }}>
-                Not on BattleMetrics
-              </span>
-            )}
             {canBan ? (
               <button className="btn btn-danger" onClick={() => setBanFormOpen(true)}>Ban</button>
             ) : null}
@@ -245,36 +260,90 @@ export function PlayerProfilePage() {
 
       {canBans ? (
         <section className="bmProfile-section">
-          <h2>Bans ({bans.length})</h2>
-          {bansErr ? <div className="bmError">Failed to load bans: {bansErr}</div> : null}
-          {bans.length === 0 && !bansErr ? <div className="muted">No bans on record.</div> : (
-            <table className="bmTable">
-              <thead><tr><th>Reason</th><th>Expires</th><th>Created</th><th></th></tr></thead>
-              <tbody>
-                {bans.map((b) => {
-                  const a = b.attributes || {};
-                  return (
-                    <tr key={b.id}>
-                      <td>{renderBanReason(a.reason, a.expires, a.createdAt)}</td>
-                      <td>{a.expires ? new Date(a.expires).toLocaleString() : 'Permanent'}</td>
-                      <td>{a.createdAt ? new Date(a.createdAt).toLocaleString() : ''}</td>
-                      {/* Was battlemetrics.com, which nobody can open since RCON went.
-                          Goes to this player's anti-cheat page instead - the deep link the
-                          page already supports, keyed on the Reforger guid (identityId in
-                          the player index is that guid; the ban index is keyed the same). */}
-                      <td>
-                        {player.guid ? (
-                          <Link className="btn btn-sm" to={`/players?identityId=${encodeURIComponent(player.guid)}`}>View</Link>
-                        ) : null}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+          <h2>Current ban</h2>
+          {/* What the servers actually enforce: the ReforgedZBans.json files our ban controller keeps in sync. */}
+          {currentBan && currentBan.active ? (
+            <div>
+              <strong>Banned</strong>{currentBan.duration ? ' (temporary)' : ' (permanent)'}
+              {currentBan.reason ? <> - {currentBan.reason}</> : null}
+              <div className="muted">
+                by {currentBan.bannedBy || '?'}
+                {currentBan.timestamp ? ` · ${new Date(currentBan.timestamp * 1000).toLocaleString()}` : ''}
+              </div>
+            </div>
+          ) : (
+            <div className="muted">Not banned.</div>
           )}
         </section>
       ) : null}
+
+      {canBans && (overview?.archive?.bans?.length || 0) > 0 ? (
+        <section className="bmProfile-section">
+          <h2>BattleMetrics ban history ({overview!.archive!.bans.length})</h2>
+          <div className="muted">Bans BattleMetrics recorded before 2026-09-28 (archived, read-only). Enforcement is the ban above.</div>
+          <table className="bmTable">
+            <thead><tr><th>Reason</th><th>Expires</th><th>Created</th><th>By</th></tr></thead>
+            <tbody>
+              {overview!.archive!.bans.map((b) => (
+                <tr key={b.id}>
+                  <td>{renderBanReason(b.reason || '', b.expiresMs ? new Date(b.expiresMs).toISOString() : null,
+                    b.bannedMs ? new Date(b.bannedMs).toISOString() : null)}</td>
+                  <td>{b.expiresMs ? new Date(b.expiresMs).toLocaleString() : 'Permanent'}</td>
+                  <td>{b.bannedMs ? new Date(b.bannedMs).toLocaleString() : ''}</td>
+                  <td>{b.admin || ''}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </section>
+      ) : null}
+
+      <section className="bmProfile-section">
+        <h2>Sessions{sessions ? ` (${sessions.length})` : ''}</h2>
+        {sessions === null ? <div className="muted">Loading…</div> : sessions.length === 0 ? (
+          <div className="muted">No sessions recorded yet.</div>
+        ) : (
+          <table className="bmTable">
+            <thead><tr><th>Server</th><th>Joined</th><th>Left</th><th>Length</th><th>Name</th><th></th></tr></thead>
+            <tbody>
+              {sessions.map((s, i) => (
+                <tr key={`${s.source}-${s.joinedMs}-${i}`}>
+                  <td>{s.serverId}</td>
+                  <td>{s.joinedMs ? new Date(s.joinedMs).toLocaleString() : ''}</td>
+                  <td>{s.leftMs ? new Date(s.leftMs).toLocaleString() : <em>online</em>}</td>
+                  <td>{fmtDuration(s.joinedMs && s.leftMs ? s.leftMs - s.joinedMs : null)}</td>
+                  <td>{s.name || ''}</td>
+                  <td className="muted">{s.source === 'battlemetrics' ? 'archive' : s.endReason === 'restart' ? 'ended by restart' : ''}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </section>
+
+      <section className="bmProfile-section">
+        <h2>Flags</h2>
+        {(overview?.flags || []).length === 0 && !(overview?.archive?.flags || []).length ? <div className="muted">No flags.</div> : null}
+        <div>
+          {(overview?.flags || []).map((f) => (
+            <span key={f.id} className="bmBadge" style={{ marginRight: 6 }} title={`added by ${f.addedBy || '?'} ${new Date(f.addedMs).toLocaleString()}`}>
+              {f.flag}
+              {canWriteNotes ? (
+                <button className="btn btn-sm" style={{ marginLeft: 4 }} onClick={() => toggleFlag(f.flag, false)} title="Remove">×</button>
+              ) : null}
+            </span>
+          ))}
+          {(overview?.archive?.flags || []).filter((f) => !f.removedMs).map((f, i) => (
+            <span key={`a${i}`} className="bmBadge" style={{ marginRight: 6, opacity: 0.7 }} title="From BattleMetrics (archived)">{f.flag}</span>
+          ))}
+        </div>
+        {canWriteNotes ? (
+          <div className="bmNotes-add" style={{ marginTop: 8 }}>
+            <input value={flagDraft} onChange={(e) => setFlagDraft(e.target.value)} placeholder="Add a flag, e.g. Streamer" maxLength={40} />
+            <button className="btn" onClick={() => toggleFlag(flagDraft, true)} disabled={!flagDraft.trim()}>Add flag</button>
+          </div>
+        ) : null}
+      </section>
 
       {canBans && player.guid ? (
         <section className="bmProfile-section">
@@ -316,7 +385,7 @@ export function PlayerProfilePage() {
 
       <section className="bmProfile-section">
         <h2>Notes</h2>
-        <BMNotesPanel bmPlayerId={player.bmPlayerId} canWrite={canWriteNotes} />
+        {player.guid ? <PlayerNotesPanel guid={player.guid} canWrite={canWriteNotes} /> : null}
       </section>
 
       <section className="bmProfile-section">
@@ -448,37 +517,21 @@ function collectPlayerNames(player: ResolvedPlayer): string[] {
   return Array.from(out);
 }
 
-function pickPlayer(json: any, hintGuid: string | null): ResolvedPlayer | null {
-  const data = json?.data;
-  if (!data) return null;
-  // Group included identifiers by player id (BM back-references from the
-  // identifier side, not the other way around).
-  const ids: Array<{ type: string; identifier: string; lastSeen?: string }> = [];
-  for (const inc of json?.included || []) {
-    if (inc.type !== 'identifier') continue;
-    const pid = inc.relationships?.player?.data?.id;
-    if (pid !== data.id) continue;
-    const t = inc.attributes?.type;
-    const v = inc.attributes?.identifier;
-    if (!t || !v) continue;
-    ids.push({ type: t, identifier: v, lastSeen: inc.attributes?.lastSeen });
-  }
-  // De-dupe identifiers by (type, identifier).
-  const seen = new Set<string>();
-  const dedup = ids.filter((i) => {
-    const k = `${i.type}::${i.identifier}`;
-    if (seen.has(k)) return false;
-    seen.add(k);
-    return true;
-  });
-  // Pick the most-recently-seen reforgerUUID as the player's current GUID.
-  const guidIds = dedup.filter((i) => i.type === 'reforgerUUID');
-  guidIds.sort((a, b) => (b.lastSeen || '').localeCompare(a.lastSeen || ''));
+// The player as our own data knows them: every name the replay index recorded, then the names the
+// BattleMetrics archive recorded, newest first. The GUID is the identity; names are display only.
+function resolveFromOverview(ov: PlayerOverview): ResolvedPlayer {
+  const names: string[] = [];
+  const add = (n?: string | null) => { if (n && !names.includes(n)) names.push(n); };
+  add(ov.profile?.displayName);
+  for (const n of ov.profile?.alsoKnownAs || []) add(n);
+  for (const n of ov.archive?.names || []) add(n.name);
   return {
-    bmPlayerId: data.id,
-    name: data.attributes?.name || '',
-    guid: guidIds[0]?.identifier || hintGuid || null,
-    attributes: data.attributes,
-    identifiers: dedup,
+    bmPlayerId: '',
+    name: names[0] || '',
+    guid: ov.identityId,
+    identifiers: [
+      { type: 'reforgerUUID', identifier: ov.identityId },
+      ...names.map((n) => ({ type: 'name', identifier: n })),
+    ],
   };
 }

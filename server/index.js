@@ -26,8 +26,8 @@ import { buildBmRouter } from './routes/bm.js';
 import bmWebhookRouter from './routes/bm-webhook.js';
 import { buildTicketsRouter } from './routes/tickets.js';
 import { buildPlayersRouter } from './routes/players.js';
-import { initPlayerIndex, recordEvent, getRiskConfidenceForIdentities, searchInventorySightings, recordPopulation } from './lib/playerIndex.js';
-import { initBmArchive } from './lib/bmArchive.js';
+import { initPlayerIndex, recordEvent, getRiskConfidenceForIdentities, searchInventorySightings, recordPopulation, getDisplayNamesForIdentities } from './lib/playerIndex.js';
+import { initBmArchive, latestNameForIdentity } from './lib/bmArchive.js';
 import { queryInfo as a2sQueryInfo } from './lib/a2s.js';
 import * as ticketEventRelay from './lib/ticketEventRelay.js';
 import { buildBmSseRouter } from './routes/bm-sse.js';
@@ -3189,7 +3189,7 @@ function adminMgrIsValidPteroId(s) {
 async function adminMgrFetchBmName(guid) {
   // Thin wrapper over the unified BM client (lib/battlemetrics.js).
   // Keeps cache + rate-limit behaviour consistent with the dashboard.
-  if (!bmClient.isEnabled()) return null;
+  if (!bmClient.isEnabled() || process.env.BM_DISABLED === '1') return null;
   try {
     const player = await bmClient.matchPlayerByGuid(guid);
     const name = player?.attributes?.name;
@@ -3200,7 +3200,7 @@ async function adminMgrFetchBmName(guid) {
 }
 
 function adminMgrBmAvailable() {
-  return !!ADMIN_MGR_BM_TOKEN;
+  return !!ADMIN_MGR_BM_TOKEN && process.env.BM_DISABLED !== '1';
 }
 
 let adminsCache = { data: null, builtAt: 0, version: 0, building: null };
@@ -3458,6 +3458,10 @@ async function runBackfillCascade(useBattleMetrics) {
   for (const g of Object.keys(state.admins || {})) allGuids.add(g);
 
   const { piiByGuid, snapByGuid } = await adminMgrLoadLocalNameSources();
+  // Our player index (every name the replay feed has seen), then the BattleMetrics archive; the live
+  // BattleMetrics lookup is only the last resort.
+  let indexNames = {};
+  try { indexNames = getDisplayNamesForIdentities([...allGuids]); } catch { /* index not ready */ }
 
   let resolved = 0;
   let unknown = 0;
@@ -3472,6 +3476,8 @@ async function runBackfillCascade(useBattleMetrics) {
     let source = 'unknown';
     if (piiByGuid.has(guid)) { name = piiByGuid.get(guid).name; source = 'pii'; }
     else if (snapByGuid.has(guid)) { name = snapByGuid.get(guid); source = 'snapshot'; }
+    else if (indexNames[guid]) { name = indexNames[guid]; source = 'players'; }
+    else if ((name = latestNameForIdentity(guid) || '')) { source = 'archive'; }
     else if (useBattleMetrics) {
       const r = await adminMgrFetchBmName(guid);
       if (r) { name = r; source = 'battlemetrics'; }

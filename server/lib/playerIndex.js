@@ -453,6 +453,13 @@ export function getPopulation(serverKey, { sinceMs, untilMs, bucketMs } = {}) {
   `).all(bucket, serverKey, since, until, bucket);
 }
 
+// The newest sample for one server, or null. Callers treat a sample older than a few minutes as offline.
+export function getLatestPopulation(serverKey) {
+  if (!db || !serverKey) return null;
+  return db.prepare(`SELECT ts_ms AS tsMs, players, max_players AS maxPlayers FROM server_population
+    WHERE server_key = ? ORDER BY ts_ms DESC LIMIT 1`).get(serverKey) || null;
+}
+
 export function listPopulationKeys() {
   if (!db) return [];
   return db.prepare(`SELECT server_key AS serverKey, MAX(ts_ms) AS lastMs FROM server_population GROUP BY server_key`).all();

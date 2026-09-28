@@ -407,7 +407,7 @@ export type ReforgerServer = {
 export type AdminEntry = {
   guid: string;
   displayName: string;
-  source: 'pii' | 'snapshot' | 'battlemetrics' | 'manual' | 'unknown';
+  source: 'pii' | 'snapshot' | 'players' | 'archive' | 'battlemetrics' | 'manual' | 'unknown';
   presence: Record<string, boolean>;
 };
 
