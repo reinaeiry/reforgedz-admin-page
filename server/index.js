@@ -5005,14 +5005,14 @@ app.get('*', (req, res, next) => {
 // once an hour per server - EU1 and EU2 do not use the ports their order suggests, so never guess.
 // A failed sample is a gap in the chart, never an error anywhere else.
 const a2sTargets = new Map(); // volumeUuid -> { host, port, at }
+const a2sFailLogged = new Map(); // volumeUuid -> when a failure was last logged (once an hour each)
 let populationServers = { list: [], at: 0 };
 
 async function a2sTargetFor(server) {
   const hit = a2sTargets.get(server.volumeUuid);
   if (hit && Date.now() - hit.at < 3600_000) return hit;
   const state = await readAdminMgrState();
-  const text = await sshReadFile(server, configPathFor(server, state.configOverrides));
-  const cfg = text ? JSON.parse(text) : null;
+  const cfg = await sshReadFile(server, configPathFor(server, state.configOverrides)); // parsed config.json, or null
   const port = Number(cfg?.a2s?.port);
   const host = String(server.ip || '').split(':')[0];
   if (!host || !Number.isInteger(port)) throw new Error('no_a2s_target');
@@ -5026,7 +5026,11 @@ async function samplePopulation() {
     if (Date.now() - populationServers.at > 10 * 60_000) {
       populationServers = { list: await listReforgerServers(), at: Date.now() };
     }
-  } catch {
+  } catch (e) {
+    if (!a2sFailLogged.has('list') || Date.now() - a2sFailLogged.get('list') > 3600_000) {
+      a2sFailLogged.set('list', Date.now());
+      console.warn(`[population] server list unavailable: ${e.message}`);
+    }
     return;
   }
   const now = Date.now();
@@ -5035,7 +5039,14 @@ async function samplePopulation() {
       const t = await a2sTargetFor(srv);
       const info = await a2sQueryInfo(t.host, t.port, 3000);
       recordPopulation(srv.tag || srv.pteroId, now, info.players, info.maxPlayers);
-    } catch { /* one missed minute */ }
+    } catch (e) {
+      // one missed minute; say so once an hour per server, so a sampler that never works is visible
+      const last = a2sFailLogged.get(srv.volumeUuid) || 0;
+      if (Date.now() - last > 3600_000) {
+        a2sFailLogged.set(srv.volumeUuid, Date.now());
+        console.warn(`[population] ${srv.tag || srv.pteroId}: no sample (${e.message})`);
+      }
+    }
   }));
 }
 
