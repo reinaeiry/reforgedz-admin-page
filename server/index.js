@@ -488,6 +488,9 @@ function resolveTopDownMapId(worldFile, worldSize) {
   const s = (worldFile || '').toLowerCase();
   if (s.includes('chern')) return 'chernarus';
   if (s.includes('everon') || s.includes('eden')) return 'everon';
+  // A named world without imagery (e.g. Faircroft, 12.6 km wide) must not be
+  // matched to Everon by size - only an unnamed world falls back to the size.
+  if (s.trim()) return null;
   if (typeof worldSize === 'number' && Number.isFinite(worldSize) && worldSize > 0) {
     let best = null;
     let bestDelta = Infinity;

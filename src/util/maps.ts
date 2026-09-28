@@ -1,6 +1,7 @@
 // Identifies which real-world map a server is running (from the world file the
-// replay reports, with the captured terrain size as a fallback). `id` is the
-// tacops map id used to stream native tiles via /api/replay/maptile.
+// replay reports; the captured terrain size is a fallback only when no world
+// file is reported at all). `id` is the tacops map id used to stream native
+// tiles via /api/replay/maptile.
 
 export type MapDef = {
   id: string;
@@ -40,8 +41,13 @@ function matchByWorldSize(worldSize: number | null | undefined): string | null {
   return bestDelta <= 500 ? best : null;
 }
 
+// A world the server names but we have no imagery for is never matched by size:
+// Faircroft (`Worlds/Faircroft.ent`) is 12.6 km wide, within 500 m of Everon, and
+// was drawn on Everon's imagery. Such a world gets the terrain-raster view.
 export function resolveMapId(worldFile: string | null | undefined, worldSize: number | null | undefined): string | null {
-  return matchByWorldFile(worldFile || '') || matchByWorldSize(worldSize);
+  const named = (worldFile || '').trim();
+  if (named) return matchByWorldFile(named);
+  return matchByWorldSize(worldSize);
 }
 
 export function getMapDef(id: string | null | undefined): MapDef | null {
