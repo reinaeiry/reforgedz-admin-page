@@ -41,6 +41,22 @@ function explainNotEnforced(reason?: string): string {
   }
 }
 
+// When nothing took the ban (no BattleMetrics copy and the controller refused), the server answers 502
+// with the controller's reason. Say plainly that the player is NOT banned, and what to do instead.
+function explainNotApplied(reason?: string): string | null {
+  switch (reason) {
+    case 'temporary_ban_not_enforceable_centrally':
+      return 'Not banned. Timed bans cannot go through our ban list (it has no expiry, so the ban would become '
+        + 'permanent). Make it permanent, or use In-game ban, which takes a duration.';
+    case 'no_reforger_guid':
+      return 'Not banned: this player has no Reforger UUID on record, so there is nothing to ban on the game servers.';
+    case 'controller_not_configured':
+      return 'Not banned: the ban controller is not configured on this admin server. Tell a systems dev.';
+    default:
+      return null;
+  }
+}
+
 export function BMBanForm({ player, servers, onClose, onCreated }: Props) {
   const [reason, setReason] = useState('');
   const [note, setNote] = useState('');
@@ -102,7 +118,7 @@ export function BMBanForm({ player, servers, onClose, onCreated }: Props) {
       onCreated?.();
       onClose();
     } catch (e: any) {
-      setErr(e?.message || 'Failed to ban');
+      setErr(explainNotApplied(e?.message) || e?.message || 'Failed to ban');
     } finally {
       setBusy(false);
       setConfirmOpen(false);
