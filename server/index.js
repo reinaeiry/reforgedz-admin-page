@@ -26,7 +26,9 @@ import { buildBmRouter } from './routes/bm.js';
 import bmWebhookRouter from './routes/bm-webhook.js';
 import { buildTicketsRouter } from './routes/tickets.js';
 import { buildPlayersRouter } from './routes/players.js';
-import { initPlayerIndex, recordEvent, getRiskConfidenceForIdentities, searchInventorySightings } from './lib/playerIndex.js';
+import { initPlayerIndex, recordEvent, getRiskConfidenceForIdentities, searchInventorySightings, recordPopulation } from './lib/playerIndex.js';
+import { initBmArchive } from './lib/bmArchive.js';
+import { queryInfo as a2sQueryInfo } from './lib/a2s.js';
 import * as ticketEventRelay from './lib/ticketEventRelay.js';
 import { buildBmSseRouter } from './routes/bm-sse.js';
 import { postAuditEvent, ctxFromReq, auditView } from './lib/bmAudit.js';
@@ -146,6 +148,7 @@ const INGEST_KEYS = process.env.INGEST_KEYS || '';
 
 const DATA_DIR = process.env.DATA_DIR || 'data';
 initPlayerIndex(DATA_DIR);
+initBmArchive(DATA_DIR);
 
 // Rolling retention for events.ndjson (see server/lib/retention.js).
 // - Set RETENTION_MS=0 to keep everything (the log then grows without bound).
@@ -1712,7 +1715,7 @@ app.use('/api/bm', bmRouter);
 const ticketsRouter = buildTicketsRouter({ requireAuth, asyncRoute });
 app.use('/api/tickets', ticketsRouter);
 
-const playersRouter = buildPlayersRouter({ asyncRoute, DATA_DIR, listAllServers, sanitizeServerId, readJsonOrNull, path, getBanInfo, getActiveBannedIdentityIds });
+const playersRouter = buildPlayersRouter({ asyncRoute, DATA_DIR, listAllServers, sanitizeServerId, readJsonOrNull, path, getBanInfo, getActiveBannedIdentityIds, requirePerm: requireBmPerm });
 app.use('/api/players', requireAuth, requireTool('players'), playersRouter);
 
 // Tail the ticket-bot's SSE stream so events flow into our shared eventBus
@@ -4990,9 +4993,53 @@ app.get('*', (req, res, next) => {
   res.sendFile(path.join(distDir, 'index.html'));
 });
 
+// ─── Population history: players online per server, once a minute ────────────────────────
+// Our own replacement for BattleMetrics' player-count graphs. Each game server's query port (A2S,
+// config.json "a2s.port") answers with the engine's own player count; the port is read over SSH
+// once an hour per server - EU1 and EU2 do not use the ports their order suggests, so never guess.
+// A failed sample is a gap in the chart, never an error anywhere else.
+const a2sTargets = new Map(); // volumeUuid -> { host, port, at }
+let populationServers = { list: [], at: 0 };
+
+async function a2sTargetFor(server) {
+  const hit = a2sTargets.get(server.volumeUuid);
+  if (hit && Date.now() - hit.at < 3600_000) return hit;
+  const state = await readAdminMgrState();
+  const text = await sshReadFile(server, configPathFor(server, state.configOverrides));
+  const cfg = text ? JSON.parse(text) : null;
+  const port = Number(cfg?.a2s?.port);
+  const host = String(server.ip || '').split(':')[0];
+  if (!host || !Number.isInteger(port)) throw new Error('no_a2s_target');
+  const target = { host, port, at: Date.now() };
+  a2sTargets.set(server.volumeUuid, target);
+  return target;
+}
+
+async function samplePopulation() {
+  try {
+    if (Date.now() - populationServers.at > 10 * 60_000) {
+      populationServers = { list: await listReforgerServers(), at: Date.now() };
+    }
+  } catch {
+    return;
+  }
+  const now = Date.now();
+  await Promise.all(populationServers.list.map(async (srv) => {
+    try {
+      const t = await a2sTargetFor(srv);
+      const info = await a2sQueryInfo(t.host, t.port, 3000);
+      recordPopulation(srv.tag || srv.pteroId, now, info.players, info.maxPlayers);
+    } catch { /* one missed minute */ }
+  }));
+}
+
 const server = app.listen(PORT, () => {
   // eslint-disable-next-line no-console
   console.log(`[reforgedz] admin server listening on :${PORT}`);
+  if (ADMIN_MGR_PTERO_URL && ADMIN_MGR_PTERO_KEY) {
+    setTimeout(samplePopulation, 15_000);
+    setInterval(samplePopulation, 60_000).unref();
+  }
   // eslint-disable-next-line no-console
   console.log(`[reforgedz] ingest keys loaded: ${ingestKeyMap.size}`);
 

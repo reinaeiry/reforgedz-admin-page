@@ -111,7 +111,64 @@ export function initPlayerIndex(dataDir) {
     );
     CREATE INDEX IF NOT EXISTS idx_inv_sightings_lookup ON inventory_sightings(identity_id, server_id, item_prefab, last_ts_ms DESC);
     CREATE INDEX IF NOT EXISTS idx_inv_sightings_name ON inventory_sightings(item_name COLLATE NOCASE);
+
+    -- Our own player history, replacing what BattleMetrics used to keep for us.
+    -- One row per finished session (a join paired with its disconnect, or with the
+    -- restart that ended it). player_server_stats keeps the running totals; this keeps
+    -- WHEN, which "when did they last play EU1, and for how long" needs.
+    CREATE TABLE IF NOT EXISTS sessions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      identity_id TEXT NOT NULL,
+      server_id TEXT NOT NULL,
+      name TEXT,
+      joined_ts_ms INTEGER NOT NULL,
+      left_ts_ms INTEGER NOT NULL,
+      end_reason TEXT NOT NULL DEFAULT 'disconnect'
+    );
+    CREATE INDEX IF NOT EXISTS idx_sessions_identity ON sessions(identity_id, joined_ts_ms DESC);
+    CREATE INDEX IF NOT EXISTS idx_sessions_server ON sessions(server_id, joined_ts_ms DESC);
+
+    -- Players online per server, sampled once a minute from the game's own query port.
+    CREATE TABLE IF NOT EXISTS server_population (
+      server_key TEXT NOT NULL,
+      ts_ms INTEGER NOT NULL,
+      players INTEGER NOT NULL,
+      max_players INTEGER,
+      PRIMARY KEY (server_key, ts_ms)
+    );
+
+    -- Staff notes on a player. Never hard-deleted: an edit or a delete keeps who and when,
+    -- so a note's history survives the way a ban's does in the ban controller.
+    CREATE TABLE IF NOT EXISTS player_notes (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      identity_id TEXT NOT NULL,
+      note TEXT NOT NULL,
+      author TEXT NOT NULL,
+      author_id TEXT,
+      created_ms INTEGER NOT NULL,
+      edited_ms INTEGER,
+      edited_by TEXT,
+      deleted_ms INTEGER,
+      deleted_by TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_player_notes_identity ON player_notes(identity_id, created_ms DESC);
+
+    -- Labels such as "Streamer". A removal closes the row instead of deleting it.
+    CREATE TABLE IF NOT EXISTS player_flags (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      identity_id TEXT NOT NULL,
+      flag TEXT NOT NULL,
+      added_by TEXT,
+      added_ms INTEGER NOT NULL,
+      removed_by TEXT,
+      removed_ms INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS idx_player_flags_identity ON player_flags(identity_id);
   `);
+  // A join rarely knows the identity yet; snapshots fill it in, so a session cut short by a
+  // restart can still be attributed instead of discarded.
+  const pendingCols = db.prepare(`PRAGMA table_info(pending_sessions)`).all().map((c) => c.name);
+  if (!pendingCols.includes('identity_id')) db.exec(`ALTER TABLE pending_sessions ADD COLUMN identity_id TEXT`);
   return db;
 }
 
@@ -209,6 +266,16 @@ export function recordEvent(serverId, type, tsMs, payload) {
   if (type === 'restart' || type === 'serverStart') {
     // Orphan any joins that never got a matching disconnect before this
     // restart - don't let them pair with a disconnect from the new run.
+    // The running totals stay as they were; the session history does get
+    // the ones whose identity a snapshot supplied, ended by the restart.
+    const open = db.prepare(`SELECT player_id, joined_ts_ms, name, identity_id FROM pending_sessions WHERE server_id = ?`)
+      .all(serverId);
+    for (const s of open) {
+      const durationMs = tsMs - s.joined_ts_ms;
+      if (s.identity_id && durationMs > 0 && durationMs <= MAX_PLAUSIBLE_SESSION_MS) {
+        insertSession(s.identity_id, serverId, s.name, s.joined_ts_ms, tsMs, 'restart');
+      }
+    }
     db.prepare(`DELETE FROM pending_sessions WHERE server_id = ?`).run(serverId);
     return;
   }
@@ -228,7 +295,7 @@ export function recordEvent(serverId, type, tsMs, payload) {
     upsertPlayer(evt.identityId, evt.name, tsMs);
     logEvent(evt.identityId, serverId, tsMs, 'disconnect', { name: evt.name });
 
-    const pending = db.prepare(`SELECT joined_ts_ms FROM pending_sessions WHERE server_id = ? AND player_id = ?`)
+    const pending = db.prepare(`SELECT joined_ts_ms, name, identity_id FROM pending_sessions WHERE server_id = ? AND player_id = ?`)
       .get(serverId, evt.playerId);
     if (pending) {
       db.prepare(`DELETE FROM pending_sessions WHERE server_id = ? AND player_id = ?`).run(serverId, evt.playerId);
@@ -236,6 +303,10 @@ export function recordEvent(serverId, type, tsMs, payload) {
       if (evt.identityId && durationMs > 0 && durationMs <= MAX_PLAUSIBLE_SESSION_MS) {
         bumpServerStat(evt.identityId, serverId, 'sessions', 1, tsMs);
         bumpServerStat(evt.identityId, serverId, 'playtime_ms', durationMs, tsMs);
+      }
+      const who = evt.identityId || pending.identity_id;
+      if (who && durationMs > 0 && durationMs <= MAX_PLAUSIBLE_SESSION_MS) {
+        insertSession(who, serverId, evt.name || pending.name, pending.joined_ts_ms, tsMs, 'disconnect');
       }
     }
     return;
@@ -328,12 +399,121 @@ export function recordEvent(serverId, type, tsMs, payload) {
   // "who's ever had a Cap" search, unlike the anti-cheat categories that need
   // real rolling state and so stay live-scan-only.
   if (type === 'snapshot' && Array.isArray(evt.players)) {
+    const fillIdentity = db.prepare(`UPDATE pending_sessions SET identity_id = ?
+      WHERE server_id = ? AND player_id = ? AND identity_id IS NULL`);
     for (const pl of evt.players) {
       if (!pl || !pl.identityId) continue;
       upsertPlayer(pl.identityId, pl.name, tsMs);
+      if (typeof pl.playerId === 'number') fillIdentity.run(pl.identityId, serverId, pl.playerId);
       if (Array.isArray(pl.inventory)) recordInventorySighting(pl.identityId, serverId, pl.inventory, tsMs);
     }
   }
+}
+
+function insertSession(identityId, serverId, name, joinedMs, leftMs, reason) {
+  db.prepare(`INSERT INTO sessions (identity_id, server_id, name, joined_ts_ms, left_ts_ms, end_reason)
+    VALUES (?, ?, ?, ?, ?, ?)`).run(identityId, serverId, name || null, joinedMs, leftMs, reason);
+}
+
+// ---------------------------------------------------------------- history, notes, flags
+// Our own copies of what BattleMetrics used to hold. See the tables' comments above.
+
+export function listSessions(identityId, { serverId, beforeMs, limit } = {}) {
+  if (!db || !identityId) return [];
+  const lim = Math.max(1, Math.min(Number(limit) || 100, 1000));
+  return db.prepare(`
+    SELECT server_id AS serverId, name, joined_ts_ms AS joinedMs, left_ts_ms AS leftMs, end_reason AS endReason
+    FROM sessions
+    WHERE identity_id = ? AND (? IS NULL OR server_id = ?) AND (? IS NULL OR joined_ts_ms < ?)
+    ORDER BY joined_ts_ms DESC LIMIT ?
+  `).all(identityId, serverId ?? null, serverId ?? null, beforeMs ?? null, beforeMs ?? null, lim);
+}
+
+export function recordPopulation(serverKey, tsMs, players, maxPlayers) {
+  if (!db || !serverKey || !Number.isFinite(players)) return;
+  const minute = Math.floor(tsMs / 60_000) * 60_000;
+  db.prepare(`INSERT OR REPLACE INTO server_population (server_key, ts_ms, players, max_players) VALUES (?, ?, ?, ?)`)
+    .run(serverKey, minute, players, Number.isFinite(maxPlayers) ? maxPlayers : null);
+}
+
+// Population for a chart: raw minutes for short ranges, bucketed (average and peak) for long ones,
+// so a 90-day graph is ~2k points, not 130k.
+export function getPopulation(serverKey, { sinceMs, untilMs, bucketMs } = {}) {
+  if (!db || !serverKey) return [];
+  const until = Number(untilMs) || Date.now();
+  const since = Number(sinceMs) || (until - 24 * 3600_000);
+  const bucket = Math.max(60_000, Number(bucketMs) || (until - since > 3 * 86400_000 ? 3600_000 : 60_000));
+  // better-sqlite3 binds JS numbers as REAL, so "ts_ms / ?" would divide as floats and never group;
+  // "%" always works in integers.
+  return db.prepare(`
+    SELECT ts_ms - (ts_ms % ?) AS tsMs, ROUND(AVG(players), 1) AS players, MAX(players) AS peak, MAX(max_players) AS maxPlayers
+    FROM server_population
+    WHERE server_key = ? AND ts_ms >= ? AND ts_ms < ?
+    GROUP BY ts_ms - (ts_ms % ?) ORDER BY tsMs
+  `).all(bucket, serverKey, since, until, bucket);
+}
+
+export function listPopulationKeys() {
+  if (!db) return [];
+  return db.prepare(`SELECT server_key AS serverKey, MAX(ts_ms) AS lastMs FROM server_population GROUP BY server_key`).all();
+}
+
+export function listNotes(identityId, { includeDeleted = false } = {}) {
+  if (!db || !identityId) return [];
+  return db.prepare(`
+    SELECT id, note, author, author_id AS authorId, created_ms AS createdMs, edited_ms AS editedMs,
+           edited_by AS editedBy, deleted_ms AS deletedMs, deleted_by AS deletedBy
+    FROM player_notes WHERE identity_id = ? AND (? = 1 OR deleted_ms IS NULL)
+    ORDER BY created_ms DESC
+  `).all(identityId, includeDeleted ? 1 : 0);
+}
+
+export function addNote(identityId, note, author, authorId) {
+  const text = String(note || '').trim();
+  if (!db || !identityId || !text) return null;
+  const r = db.prepare(`INSERT INTO player_notes (identity_id, note, author, author_id, created_ms) VALUES (?, ?, ?, ?, ?)`)
+    .run(identityId, text.slice(0, 4000), String(author || 'unknown'), authorId ? String(authorId) : null, Date.now());
+  return Number(r.lastInsertRowid);
+}
+
+export function editNote(id, note, editor) {
+  const text = String(note || '').trim();
+  if (!db || !text) return false;
+  return db.prepare(`UPDATE player_notes SET note = ?, edited_ms = ?, edited_by = ? WHERE id = ? AND deleted_ms IS NULL`)
+    .run(text.slice(0, 4000), Date.now(), String(editor || 'unknown'), id).changes === 1;
+}
+
+export function deleteNote(id, by) {
+  if (!db) return false;
+  return db.prepare(`UPDATE player_notes SET deleted_ms = ?, deleted_by = ? WHERE id = ? AND deleted_ms IS NULL`)
+    .run(Date.now(), String(by || 'unknown'), id).changes === 1;
+}
+
+export function getNote(id) {
+  if (!db) return null;
+  return db.prepare(`SELECT id, identity_id AS identityId, deleted_ms AS deletedMs FROM player_notes WHERE id = ?`).get(id) || null;
+}
+
+export function listFlags(identityId) {
+  if (!db || !identityId) return [];
+  return db.prepare(`SELECT id, flag, added_by AS addedBy, added_ms AS addedMs FROM player_flags
+    WHERE identity_id = ? AND removed_ms IS NULL ORDER BY added_ms`).all(identityId);
+}
+
+export function addFlag(identityId, flag, by) {
+  const f = String(flag || '').trim().slice(0, 40);
+  if (!db || !identityId || !f) return false;
+  const open = db.prepare(`SELECT 1 FROM player_flags WHERE identity_id = ? AND flag = ? AND removed_ms IS NULL`).get(identityId, f);
+  if (open) return false;
+  db.prepare(`INSERT INTO player_flags (identity_id, flag, added_by, added_ms) VALUES (?, ?, ?, ?)`)
+    .run(identityId, f, String(by || 'unknown'), Date.now());
+  return true;
+}
+
+export function removeFlag(identityId, flag, by) {
+  if (!db) return false;
+  return db.prepare(`UPDATE player_flags SET removed_ms = ?, removed_by = ? WHERE identity_id = ? AND flag = ? AND removed_ms IS NULL`)
+    .run(Date.now(), String(by || 'unknown'), identityId, String(flag || '')).changes > 0;
 }
 
 // Groups by prefab first - mirrors the exact grouping ReplayToolPage.tsx

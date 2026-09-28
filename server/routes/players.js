@@ -5,8 +5,13 @@
 // since this is a single flat permission, not a category system like tickets.
 
 import express from 'express';
-import { listPlayersIndexed, getPlayerProfileIndexed, getPlayerTimelineIndexed, listIncidentsIndexed, getDisplayNamesForIdentities } from '../lib/playerIndex.js';
+import { listPlayersIndexed, getPlayerProfileIndexed, getPlayerTimelineIndexed, listIncidentsIndexed, getDisplayNamesForIdentities,
+  listSessions, getPopulation, listPopulationKeys, listNotes, addNote, editNote, deleteNote, getNote, listFlags, addFlag, removeFlag } from '../lib/playerIndex.js';
 import { getIncidentsCached, summarizePlayerRisk, getScanProgress } from '../lib/anticheat.js';
+import * as bmArchive from '../lib/bmArchive.js';
+import { postAuditEvent, ctxFromReq } from '../lib/bmAudit.js';
+
+const GUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 // The live scanner (getIncidentsCached) only ever sees whatever's still in
 // events.ndjson - once the 7-day retention sweep trims a line, any incident
@@ -35,8 +40,145 @@ function mergeIncidents(liveIncidents, indexedIncidents) {
 // (below) merge that same permanent index with a live raw-log scan - see
 // mergeIncidents above.
 
-export function buildPlayersRouter({ asyncRoute, DATA_DIR, sanitizeServerId, path, getBanInfo, getActiveBannedIdentityIds }) {
+export function buildPlayersRouter({ asyncRoute, DATA_DIR, sanitizeServerId, path, getBanInfo, getActiveBannedIdentityIds,
+  requirePerm }) {
   const router = express.Router();
+  // Writes (notes, flags) need the same permission BattleMetrics notes needed, so the same staff keep it.
+  const canWriteNotes = typeof requirePerm === 'function' ? requirePerm('writeNotes') : (req, res, next) => next();
+
+  // ─── Our own player system (replaces BattleMetrics) ───────────────────────────────
+  // Everything below reads our own data first and the BattleMetrics archive (bmArchive.js) for the
+  // history BM collected before 2026-09-28. No route here calls BattleMetrics.
+
+  // A name or a GUID -> candidate players, from every name we or BattleMetrics ever saw.
+  router.get('/lookup', asyncRoute(async (req, res) => {
+    const q = String(req.query.q || '').trim();
+    if (q.length < 2) { res.json({ results: [] }); return; }
+    const byId = new Map();
+    const add = (identityId, name, lastSeenMs, source) => {
+      if (!identityId) return;
+      const cur = byId.get(identityId) || { identityId, names: new Set(), lastSeenMs: 0, sources: new Set() };
+      if (name) cur.names.add(name);
+      cur.lastSeenMs = Math.max(cur.lastSeenMs, lastSeenMs || 0);
+      cur.sources.add(source);
+      byId.set(identityId, cur);
+    };
+    if (GUID_RE.test(q)) {
+      const p = getPlayerProfileIndexed(q);
+      if (p) add(q, p.displayName, p.lastSeen, 'ours');
+      const a = bmArchive.forIdentity(q, { sessionLimit: 1 });
+      if (a) add(q, a.names[0]?.name, a.names[0]?.lastSeenMs, 'battlemetrics');
+      if (!byId.size) add(q, null, 0, 'id');
+    } else {
+      for (const r of listPlayersIndexed({ query: q, limit: 50, offset: 0, excludeIds: [] })) {
+        add(r.identityId, r.displayName, r.lastSeen, 'ours');
+      }
+      for (const r of bmArchive.searchNames(q, 50)) add(r.identityId, r.name, r.lastSeenMs, 'battlemetrics');
+    }
+    const results = [...byId.values()]
+      .map((r) => ({ identityId: r.identityId, names: [...r.names], lastSeenMs: r.lastSeenMs || null, sources: [...r.sources] }))
+      .sort((a, b) => (b.lastSeenMs || 0) - (a.lastSeenMs || 0))
+      .slice(0, 50);
+    res.json({ results });
+  }));
+
+  // Sessions: ours since 2026-09-28 plus BattleMetrics' (its last 90 days before the migration).
+  router.get('/:identityId/sessions', asyncRoute(async (req, res) => {
+    const id = String(req.params.identityId || '');
+    if (!GUID_RE.test(id)) { res.status(400).json({ error: 'bad identityId' }); return; }
+    const limit = Math.min(Math.max(Number(req.query.limit) || 200, 1), 1000);
+    const ours = listSessions(id, { limit }).map((s) => ({ ...s, source: 'ours' }));
+    const archived = (bmArchive.forIdentity(id, { sessionLimit: limit })?.sessions || [])
+      .map((s) => ({ serverId: s.server, name: s.name, joinedMs: s.joinedMs, leftMs: s.leftMs, source: 'battlemetrics' }));
+    const sessions = [...ours, ...archived].sort((a, b) => (b.joinedMs || 0) - (a.joinedMs || 0)).slice(0, limit);
+    res.json({ sessions });
+  }));
+
+  // Everything about a player at once, for the profile page.
+  router.get('/:identityId/overview', asyncRoute(async (req, res) => {
+    const id = String(req.params.identityId || '');
+    if (!GUID_RE.test(id)) { res.status(400).json({ error: 'bad identityId' }); return; }
+    const profile = getPlayerProfileIndexed(id);
+    const archive = bmArchive.forIdentity(id, { sessionLimit: 0 });
+    if (!profile && !archive) { res.status(404).json({ error: 'not found' }); return; }
+    res.json({
+      identityId: id,
+      profile: profile || null,
+      ban: getBanInfo(id),
+      notes: listNotes(id),
+      flags: listFlags(id),
+      archive: archive ? { names: archive.names, servers: archive.servers, bans: archive.bans, notes: archive.notes,
+        flags: archive.flags } : null,
+    });
+  }));
+
+  router.get('/:identityId/notes', asyncRoute(async (req, res) => {
+    const id = String(req.params.identityId || '');
+    if (!GUID_RE.test(id)) { res.status(400).json({ error: 'bad identityId' }); return; }
+    res.json({ notes: listNotes(id), archived: bmArchive.forIdentity(id, { sessionLimit: 0 })?.notes || [] });
+  }));
+
+  router.post('/:identityId/notes', canWriteNotes, asyncRoute(async (req, res) => {
+    const id = String(req.params.identityId || '');
+    const note = typeof req.body?.note === 'string' ? req.body.note : '';
+    if (!GUID_RE.test(id)) { res.status(400).json({ error: 'bad identityId' }); return; }
+    if (!note.trim()) { res.status(400).json({ error: 'missing_note' }); return; }
+    const noteId = addNote(id, note, req.rzUser?.username, req.rzUser?.id);
+    postAuditEvent({ actorUsername: req.rzUser?.username, action: 'player.note.create',
+      detail: { identityId: id, noteId, length: note.length }, ctx: ctxFromReq(req) });
+    res.json({ id: noteId });
+  }));
+
+  router.patch('/notes/:noteId', canWriteNotes, asyncRoute(async (req, res) => {
+    const noteId = Number(req.params.noteId);
+    const note = typeof req.body?.note === 'string' ? req.body.note : '';
+    if (!getNote(noteId)) { res.status(404).json({ error: 'not found' }); return; }
+    if (!editNote(noteId, note, req.rzUser?.username)) { res.status(400).json({ error: 'not_changed' }); return; }
+    postAuditEvent({ actorUsername: req.rzUser?.username, action: 'player.note.update', detail: { noteId },
+      ctx: ctxFromReq(req) });
+    res.json({ ok: true });
+  }));
+
+  router.delete('/notes/:noteId', canWriteNotes, asyncRoute(async (req, res) => {
+    const noteId = Number(req.params.noteId);
+    if (!getNote(noteId)) { res.status(404).json({ error: 'not found' }); return; }
+    deleteNote(noteId, req.rzUser?.username);
+    postAuditEvent({ actorUsername: req.rzUser?.username, action: 'player.note.delete', detail: { noteId },
+      ctx: ctxFromReq(req) });
+    res.json({ ok: true });
+  }));
+
+  router.post('/:identityId/flags', canWriteNotes, asyncRoute(async (req, res) => {
+    const id = String(req.params.identityId || '');
+    const flag = typeof req.body?.flag === 'string' ? req.body.flag.trim() : '';
+    if (!GUID_RE.test(id) || !flag) { res.status(400).json({ error: 'bad request' }); return; }
+    const added = addFlag(id, flag, req.rzUser?.username);
+    if (added) postAuditEvent({ actorUsername: req.rzUser?.username, action: 'player.flag.add', detail: { identityId: id, flag },
+      ctx: ctxFromReq(req) });
+    res.json({ ok: true, added, flags: listFlags(id) });
+  }));
+
+  router.delete('/:identityId/flags/:flag', canWriteNotes, asyncRoute(async (req, res) => {
+    const id = String(req.params.identityId || '');
+    if (!GUID_RE.test(id)) { res.status(400).json({ error: 'bad identityId' }); return; }
+    const removed = removeFlag(id, String(req.params.flag || ''), req.rzUser?.username);
+    if (removed) postAuditEvent({ actorUsername: req.rzUser?.username, action: 'player.flag.remove',
+      detail: { identityId: id, flag: req.params.flag }, ctx: ctxFromReq(req) });
+    res.json({ ok: true, removed, flags: listFlags(id) });
+  }));
+
+  // Players online over time: our own once-a-minute samples, with BattleMetrics' history before them.
+  router.get('/population', asyncRoute(async (req, res) => {
+    const server = String(req.query.server || '');
+    if (!server) { res.json({ servers: listPopulationKeys(), archive: bmArchive.archiveInfo() }); return; }
+    const untilMs = Number(req.query.until) || Date.now();
+    const sinceMs = Number(req.query.since) || (untilMs - 7 * 86400_000);
+    const ours = getPopulation(server, { sinceMs, untilMs });
+    const oursFrom = ours.length ? ours[0].tsMs : untilMs;
+    const archived = sinceMs < oursFrom ? bmArchive.population(server, { sinceMs, untilMs: oursFrom }) : [];
+    res.json({ server, points: [...archived.map((p) => ({ ...p, source: 'battlemetrics' })),
+      ...ours.map((p) => ({ ...p, source: 'ours' }))] });
+  }));
 
   // No-query returns everyone, ranked by permanent risk score - this is the
   // "all inclusive" list, not a search-gated one. A query narrows it by name
