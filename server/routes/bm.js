@@ -97,14 +97,24 @@ export function buildBmRouter({ requirePerm, getPteroServers, asyncRoute }) {
       if (p) add(q, p.displayName, p.firstSeen, p.lastSeen, 'reforgedz');
       const a = bmArchive.forIdentity(q.toLowerCase(), { sessionLimit: 0 });
       if (a) add(q, a.names[0]?.name, null, a.names[0]?.lastSeenMs, 'archive');
+      const c = ipBans.isEnabled() ? await ipBans.lookupPlayer(q.toLowerCase()).catch(() => null) : null;
+      if (c?.found) add(q, c.name, c.firstSeen ? Date.parse(c.firstSeen) : null, c.lastSeen ? Date.parse(c.lastSeen) : null, 'servers');
     } else {
       for (const r of listPlayersIndexed({ query: q, limit: 25, offset: 0, excludeIds: [] })) {
         add(r.identityId, r.displayName, null, r.lastSeen, 'reforgedz');
       }
       for (const r of bmArchive.searchNames(q, 25)) add(r.identityId, r.name, null, r.lastSeenMs, 'archive');
+      // every player the servers' own logs have seen since March, typos included (the controller's player index)
+      const found = ipBans.isEnabled() ? await ipBans.findPlayers(q, { limit: 25 }).catch(() => []) : [];
+      for (const c of found) {
+        add(c.uid, c.name, null, c.lastSeen ? Date.parse(c.lastSeen) : null, 'servers');
+        if (c.previousName) add(c.uid, c.previousName, null, null, 'servers');
+      }
     }
+    const typed = q.toLowerCase();
+    const exact = (r) => [...r.names].some((n) => String(n).toLowerCase() === typed);
     const players = [...byGuid.values()]
-      .sort((a, b) => (b.lastSeenMs || 0) - (a.lastSeenMs || 0))
+      .sort((a, b) => (exact(b) - exact(a)) || ((b.lastSeenMs || 0) - (a.lastSeenMs || 0)))
       .slice(0, 25)
       .map((r) => ({
         source: [...r.sources].join('+'),

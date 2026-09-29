@@ -45,6 +45,18 @@ export async function getPlayersByIp(ip) {
   return get(`/api/admin/ip/${encodeURIComponent(ip)}`);
 }
 
+// Every player the game servers' logs have seen (the controller's player index, since 2026-03-13): the most
+// complete name search there is. Names, in-game IDs and last seen only - never an address.
+export async function findPlayers(q, { limit = 25 } = {}) {
+  const out = await get(`/api/players/find?q=${encodeURIComponent(q)}&limit=${limit}&wide=1`);
+  return Array.isArray(out?.candidates) ? out.candidates : [];
+}
+
+export async function lookupPlayer(uid) {
+  if (!uid) return null;
+  return get(`/api/players/lookup/${encodeURIComponent(uid)}`);
+}
+
 export async function listBans() {
   return get('/api/admin/ipbans');
 }
@@ -105,6 +117,12 @@ export async function accountBan({ uid, name, reason, banned_by, origin_server }
 // ban's history, next to who lifted it.
 export async function accountUnban({ uid, name, by, reason }) {
   return send('POST', '/api/admin/account-unbans', { uid, name, by, reason });
+}
+
+// An in-game mute or unmute changed on this site (built by muteKeeper.js): the controller's listeners keep it in
+// the chosen servers' mute files until each one has loaded it.
+export async function muteOp(op) {
+  return send('POST', '/api/admin/mutes', op);
 }
 
 export async function listAccountBans() {

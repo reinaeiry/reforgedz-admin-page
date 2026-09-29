@@ -15,6 +15,7 @@ import { createRetention, DEFAULT_RETENTION_MS } from './lib/retention.js';
 import * as bmClient from './lib/battlemetrics.js';
 import * as ipBans from './lib/ipBans.js';
 import { ingameOutcome } from './lib/ingameOutcome.js';
+import * as muteKeeper from './lib/muteKeeper.js';
 import { parseLiftReason } from './lib/banLift.js';
 import {
   adminCeilingFrom, pqHoldersFromShop, holdersToJson, holdersFromJson, holdersOnServer,
@@ -4456,6 +4457,25 @@ function ingameRequireEdit(kind) {
   return kind === 'mutes' ? requireBmPerm('editIngameMutes') : requireBmPerm('editIngameBans');
 }
 
+// Hand in-game mute changes to the ban controller (lib/muteKeeper.js says why). The files are already written
+// by the time this runs, so a failure here is reported and logged, never turned into a failed edit.
+async function sendMuteOps(ops) {
+  if (!ops.length) return undefined;
+  if (!ipBans.isEnabled()) return { ok: false, reason: 'controller_not_configured' };
+  const ids = [];
+  for (const op of ops) {
+    try {
+      const out = await ipBans.muteOp(op);
+      if (out?.unknown?.length) console.warn(`[ingame] mute keeper: no listener for ${out.unknown.join(', ')}`);
+      ids.push(out?.id ?? null);
+    } catch (err) {
+      console.warn(`[ingame] mute keeper: ${err.message}`);
+      return { ok: false, reason: String(err?.message || err).slice(0, 200) };
+    }
+  }
+  return { ok: true, ids };
+}
+
 function mountIngameBansMutes(app, { requireAuth, requireBmPerm: _bm, asyncRoute }) {
   // _bm is passed in for clarity but we use the closure-scoped requireBmPerm.
   const KINDS = ['bans', 'mutes'];
@@ -4566,13 +4586,16 @@ function mountIngameBansMutes(app, { requireAuth, requireBmPerm: _bm, asyncRoute
           results.push({ server: server.tag, ok: false, error: String(err?.message || err) });
         }
       }
+      const keeper = kind === 'mutes'
+        ? await sendMuteOps([muteKeeper.addOp({ record: recordApi, volumes: targets.map((s) => s.volumeUuid), username: req.rzUser.username })])
+        : undefined;
       postAuditEvent({
         actorUsername: req.rzUser.username,
         action: kind === 'mutes' ? 'ingame.mute.add' : 'ingame.ban.add',
         detail: { uid: recordApi.uid, name, reason, duration, servers: targets.map((s) => s.tag) },
         ctx: ctxFromReq(req)
       });
-      res.json({ ok: true, record: recordApi, results });
+      res.json({ ok: true, record: recordApi, results, ...(keeper ? { keeper } : {}) });
     }));
 
     // PATCH /api/ingame/{bans|mutes}/:uid
@@ -4588,6 +4611,7 @@ function mountIngameBansMutes(app, { requireAuth, requireBmPerm: _bm, asyncRoute
       const targets = allServers.filter((s) => requested.includes(String(s.tag || '').toLowerCase()));
 
       const results = [];
+      const edited = [];
       for (const server of targets) {
         try {
           await withIngestLock(`ingame:${server.pteroId}:${kind}`, async () => {
@@ -4606,6 +4630,7 @@ function mountIngameBansMutes(app, { requireAuth, requireBmPerm: _bm, asyncRoute
             if (patch.reason !== undefined) cur[meta.fields.reason] = String(patch.reason);
             if (patch.name !== undefined) cur[meta.fields.name] = String(patch.name);
             if (patch.duration !== undefined) cur[meta.fields.duration] = Math.max(0, parseInt(patch.duration, 10) || 0);
+            edited.push({ volume: server.volumeUuid, record: ingameToApi(cur, meta) });
             await writeIngameJson(server, kind, json);
             results.push({ server: server.tag, ok: true });
           });
@@ -4613,13 +4638,16 @@ function mountIngameBansMutes(app, { requireAuth, requireBmPerm: _bm, asyncRoute
           results.push({ server: server.tag, ok: false, error: String(err?.message || err) });
         }
       }
+      const keeper = kind === 'mutes'
+        ? await sendMuteOps(muteKeeper.editOps({ uid, edited, username: req.rzUser.username }))
+        : undefined;
       postAuditEvent({
         actorUsername: req.rzUser.username,
         action: kind === 'mutes' ? 'ingame.mute.update' : 'ingame.ban.update',
         detail: { uid, patch, servers: targets.map((s) => s.tag) },
         ctx: ctxFromReq(req)
       });
-      return ingameOutcome(res, results);
+      return ingameOutcome(res, results, keeper ? { keeper } : {});
     }));
 
     // DELETE /api/ingame/{bans|mutes}/:uid?servers=eu1,eu2 (no servers = all)
@@ -4641,6 +4669,7 @@ function mountIngameBansMutes(app, { requireAuth, requireBmPerm: _bm, asyncRoute
       const targets = allServers.filter((s) => requested.includes(String(s.tag || '').toLowerCase()));
 
       const results = [];
+      let removedName = '';
       for (const server of targets) {
         try {
           await withIngestLock(`ingame:${server.pteroId}:${kind}`, async () => {
@@ -4651,6 +4680,8 @@ function mountIngameBansMutes(app, { requireAuth, requireBmPerm: _bm, asyncRoute
             const json = await readIngameJson(server, kind, { skipCache: true });
             const list = json[meta.listKey];
             const before = list.length;
+            const hit = list.find((r) => String(r[meta.fields.uid] || '').toLowerCase() === uid);
+            if (hit && !removedName) removedName = String(hit[meta.fields.name] || '');
             json[meta.listKey] = list.filter((r) => String(r[meta.fields.uid] || '').toLowerCase() !== uid);
             if (json[meta.listKey].length !== before) {
               await writeIngameJson(server, kind, json);
@@ -4686,6 +4717,10 @@ function mountIngameBansMutes(app, { requireAuth, requireBmPerm: _bm, asyncRoute
           central = { ok: true, note: 'nothing to remove' };
         }
       }
+      // A mute that was in a file (or a file that could not be read) is lifted through the controller too.
+      const keeper = kind === 'mutes' && results.some((r) => !r.ok || r.removed)
+        ? await sendMuteOps([muteKeeper.removeOp({ uid, name: removedName, volumes: targets.map((s) => s.volumeUuid), username: req.rzUser.username })])
+        : undefined;
 
       postAuditEvent({
         actorUsername: req.rzUser.username,
@@ -4693,7 +4728,7 @@ function mountIngameBansMutes(app, { requireAuth, requireBmPerm: _bm, asyncRoute
         detail: { uid, servers: targets.map((s) => s.tag), central },
         ctx: ctxFromReq(req)
       });
-      return ingameOutcome(res, results, central ? { central } : {});
+      return ingameOutcome(res, results, { ...(central ? { central } : {}), ...(keeper ? { keeper } : {}) });
     }));
   }
 }

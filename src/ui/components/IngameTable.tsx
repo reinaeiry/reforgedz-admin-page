@@ -72,8 +72,9 @@ export function IngameTable({ kind, serverFilter }: Props) {
     <div>
       {kind === 'mutes' ? (
         <div className="bmNotice" style={{ marginBottom: 10 }}>
-          Editable. Mutes are not synced by the ban controller, so changes here stick — they
-          apply on each server at its next restart, up to 4 hours away.
+          Editable. A change here takes hold on each server at its next restart (00/04/08/12/16/20 UTC);
+          until then the ban controller keeps it in the server's mute file, so an in-game mute in the
+          meantime cannot undo it. For an immediate mute, a GM can also mute them in game.
         </div>
       ) : (
         <div className="bmNotice" style={{ marginBottom: 10 }}>
