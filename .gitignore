@@ -3,3 +3,7 @@ node_modules/*
 .env
 *.tsbuildinfo
 dist/
+# local copies of .env (backups, pre-deploy snapshots) hold secrets: never commit them
+.env.*
+!.env.example
+!.env.backend.example

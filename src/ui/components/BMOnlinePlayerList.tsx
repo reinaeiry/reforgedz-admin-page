@@ -26,8 +26,8 @@ type Row = { key: string; name: string; guid: string };
  * and every link uses it. Names are display only: they are not unique, so navigating by
  * name eventually opens the wrong person's profile with nothing to signal it.
  *
- * Kick is deliberately gone. It created a 10-second BattleMetrics ban, which reaches the
- * game over the same dead RCON - so the button never removed anyone. Showing a control
+ * Kick is deliberately gone. It created a 10-second BattleMetrics ban, which could only reach
+ * the game over a BattleMetrics RCON link we no longer have - so the button never removed anyone. Showing a control
  * that quietly does nothing is how an admin ends up believing a cheater was dealt with.
  */
 export function BMOnlinePlayerList({ server, pollMs = 30_000 }: Props) {

@@ -2764,8 +2764,8 @@ function adminMgrWrapForRegion(region, command) {
 }
 
 // Resolve the SSH connect target + command wrapper for a server.
-// Post-OVH-migration ALL EU instances (EU1, EU2, EU Dev) live on the one EU box
-// (162.19.127.130), so EU2 is reached directly like EU1. The old "EU2 on a
+// Post-OVH-migration ALL EU instances (EU1, EU2, EU Dev) live on the one EU box,
+// so EU2 is reached directly like EU1. The old "EU2 on a
 // separate GER2 node via a nested SSH hop" path is kept for the day the boxes are
 // split again, but it is now OPT-IN via ADMIN_MANAGER_EU2_VIA_HOP=1 — otherwise a
 // leftover GAME_SERVER_EU2_HOST in .env would silently misroute EU2's config.json
@@ -4481,8 +4481,8 @@ function mountIngameBansMutes(app, { requireAuth, requireBmPerm: _bm, asyncRoute
   const KINDS = ['bans', 'mutes'];
 
   // GET /api/ingame/online - who is actually on each server, from the game log.
-  // BattleMetrics answers this with nothing (no RCON since 1.8), which is why the
-  // Servers tab claimed "No players online." on servers holding 45 people.
+  // BattleMetrics answered this with nothing (it had no working RCON link to our servers), which is why
+  // the Servers tab once claimed "No players online." on servers holding 45 people.
   app.get('/api/ingame/online', requireAuth, requireBmPerm('viewServers'),
     asyncRoute(async (req, res) => {
       const servers = await loadIngameServers();
@@ -4736,8 +4736,8 @@ function mountIngameBansMutes(app, { requireAuth, requireBmPerm: _bm, asyncRoute
 // ─── Who is actually online ──────────────────────────────────────────────────
 //
 // BattleMetrics cannot tell us. It has the player COUNT from the game query protocol but
-// needs RCON to enumerate players, and RCON has been dead since 1.8 - so the dashboard
-// showed "No players online." on servers holding 45 people. The game's own console log
+// needs RCON to enumerate players, and it has no working RCON link to our servers - so the
+// dashboard once showed "No players online." on servers holding 45 people. The game's own console log
 // has it: BattlEye prints a line per join and leave. See lib/ingameRoster.js.
 //
 // Only the BattlEye and slots lines are shipped back, not the whole console log, which is
